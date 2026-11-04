@@ -41,8 +41,8 @@ void test_kernel_ds_selector(void) {
 void test_user_cs_selector(void) {
   console_write_string("[TEST] user_cs_selector\r\n");
   
-  // User CS: index=3, RPL=3 → 3*8 + 3 = 24 + 3 = 0x2B
-  TEST_ASSERT(GDT_USER_CS == 0x2BU, "User CS selector is 0x2B");
+  // User CS: index=4, RPL=3 → 4*8 + 3 = 0x23
+  TEST_ASSERT(GDT_USER_CS == 0x23U, "User CS selector is 0x23");
   
   // Verify RPL (lower 2 bits should be 3 for Ring 3)
   TEST_ASSERT((GDT_USER_CS & 3U) == 3U, "User CS has RPL=3 (Ring 3)");
@@ -51,8 +51,8 @@ void test_user_cs_selector(void) {
 void test_user_ds_selector(void) {
   console_write_string("[TEST] user_ds_selector\r\n");
   
-  // User DS: index=4, RPL=3 → 4*8 + 3 = 32 + 3 = 0x33
-  TEST_ASSERT(GDT_USER_DS == 0x33U, "User DS selector is 0x33");
+  // User DS: index=3, RPL=3 → 3*8 + 3 = 0x1B
+  TEST_ASSERT(GDT_USER_DS == 0x1BU, "User DS selector is 0x1B");
   
   // Verify RPL (lower 2 bits should be 3 for Ring 3)
   TEST_ASSERT((GDT_USER_DS & 3U) == 3U, "User DS has RPL=3 (Ring 3)");

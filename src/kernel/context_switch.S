@@ -115,10 +115,12 @@ context_switch:
     mov 120(%rsp), %rax
     mov %rax, REG_RIP_OFFSET(%r12)
 
+    // r10 now holds the destination RSP, so reload the source TCB (saved rdi).
+    mov 72(%rsp), %rcx
     mov REG_RSP_OFFSET(%r12), %rax
-    mov %rax, TCB_STACK_POINTER_OFFSET(%r10)
+    mov %rax, TCB_STACK_POINTER_OFFSET(%rcx)
     mov REG_RIP_OFFSET(%r12), %rax
-    mov %rax, TCB_INSTRUCTION_POINTER_OFFSET(%r10)
+    mov %rax, TCB_INSTRUCTION_POINTER_OFFSET(%rcx)
 
     // Restore destination context from register_state (r13).
     // All general-purpose registers except R10/R11 need to be restored.
@@ -131,17 +133,20 @@ context_switch:
     mov REG_RDI_OFFSET(%r13), %rdi
     mov REG_R8_OFFSET(%r13), %r8
     mov REG_R9_OFFSET(%r13), %r9
-    // Skip R10 and R11 - they hold validated RSP and RIP for the final jump.
+    // R10/R11 still hold the validated RSP/RIP; they are restored last.
     mov REG_R12_OFFSET(%r13), %r12
     mov REG_R14_OFFSET(%r13), %r14
     mov REG_R15_OFFSET(%r13), %r15
     mov REG_RBP_OFFSET(%r13), %rbp
-    // Load R13 last - once we do this, r13 no longer points to register_state.
+    // Stage the resume RIP in the slot just below the destination RSP, point RSP
+    // at it, then restore R10/R11/R13 and finish with ret (which pops the RIP and
+    // leaves RSP at the saved value). An interrupt here only pushes below RSP.
+    mov %r11, -8(%r10)
+    lea -8(%r10), %rsp
+    mov REG_R10_OFFSET(%r13), %r10
+    mov REG_R11_OFFSET(%r13), %r11
     mov REG_R13_OFFSET(%r13), %r13
-    
-    // Set RSP and jump to restored RIP, using the validated values in r10/r11.
-    mov %r10, %rsp
-    jmp *%r11
+    ret
 
 .Lrestore_and_return:
     pop %r15
