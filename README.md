@@ -8,9 +8,11 @@ system, shell and apps. No code or assets from Microsoft Windows or any other OS
 
 Boots under QEMU/UEFI. Working today: UEFI loader, higher-half kernel, physical memory
 manager, paging, heap, GDT/IDT, PIC and timer, preemptive scheduler with stack guards,
-a framebuffer graphics layer (pixels, rectangles, gradients, 8x8 text), and polled PS/2
-keyboard and mouse input driving an interactive demo desktop: mouse cursor, a draggable
-window with a typing area, a Start menu and a taskbar.
+a framebuffer graphics layer (pixels, rectangles, gradients, 8x8 text, clip rectangles),
+polled PS/2 keyboard and mouse input, and a window manager with a desktop shell:
+overlapping windows with z-order and focus, move, resize, minimize, maximize and close,
+a taskbar with one button per window, a Start menu, desktop icons, and dirty-rectangle
+repainting. Three demo apps use it: Notes (multi-instance text), Paint and About.
 
 ![Demo desktop drawn by the kernel](docs/screenshots/framebuffer-desktop.png)
 
@@ -21,8 +23,8 @@ window with a typing area, a Start menu and a taskbar.
 3. Keyboard and mouse input (PS/2 polling done; interrupt-driven PS/2 and USB still to do)
 4. Syscalls and user mode (see `docs/`), process loader
 5. Storage driver (AHCI/NVMe) and filesystem (FAT32 first)
-6. Windowing system and compositor
-7. Desktop shell: taskbar, Start menu, file explorer
+6. Windowing system (done: window manager, see `docs/WINDOW_MANAGER.md`); compositor and double buffering still to do
+7. Desktop shell: taskbar and Start menu (done); file explorer, clock, notifications still to do
 8. Bootable USB installer
 9. Optional: PE loader and a small Win32 subset
 

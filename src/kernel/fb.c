@@ -8,6 +8,35 @@ static uint32_t g_height = 0;
 static uint32_t g_stride = 0;   // pixels per scan line
 static uint32_t g_format = 1;   // 0 = RGBX, 1 = BGRX
 
+// Clip rectangle [x0,x1) x [y0,y1); reset to the screen bounds.
+static int g_clip_x0 = 0, g_clip_y0 = 0, g_clip_x1 = 0, g_clip_y1 = 0;
+
+void fb_reset_clip(void) {
+  g_clip_x0 = 0;
+  g_clip_y0 = 0;
+  g_clip_x1 = (int)g_width;
+  g_clip_y1 = (int)g_height;
+}
+
+void fb_set_clip(int x, int y, int w, int h) {
+  int x1 = x + w, y1 = y + h;
+  if (x < 0) x = 0;
+  if (y < 0) y = 0;
+  if (x1 > (int)g_width) x1 = (int)g_width;
+  if (y1 > (int)g_height) y1 = (int)g_height;
+  g_clip_x0 = x;
+  g_clip_y0 = y;
+  g_clip_x1 = (x1 > x) ? x1 : x;
+  g_clip_y1 = (y1 > y) ? y1 : y;
+}
+
+void fb_get_clip(int *x, int *y, int *w, int *h) {
+  *x = g_clip_x0;
+  *y = g_clip_y0;
+  *w = g_clip_x1 - g_clip_x0;
+  *h = g_clip_y1 - g_clip_y0;
+}
+
 int fb_init(uint64_t base, uint64_t size, uint32_t width, uint32_t height,
             uint32_t stride, uint32_t format) {
   g_fb = 0;
@@ -25,6 +54,7 @@ int fb_init(uint64_t base, uint64_t size, uint32_t width, uint32_t height,
   g_stride = stride;
   g_format = format;
   g_fb = (volatile uint32_t *)(uintptr_t)base;
+  fb_reset_clip();
   return 1;
 }
 
@@ -42,7 +72,7 @@ static inline uint32_t fb_pack(uint32_t rgb) {
 }
 
 void fb_put_pixel(int x, int y, uint32_t rgb) {
-  if (!g_fb || x < 0 || y < 0 || (uint32_t)x >= g_width || (uint32_t)y >= g_height) {
+  if (!g_fb || x < g_clip_x0 || y < g_clip_y0 || x >= g_clip_x1 || y >= g_clip_y1) {
     return;
   }
   g_fb[(uint64_t)y * g_stride + (uint32_t)x] = fb_pack(rgb);
@@ -64,10 +94,10 @@ void fb_fill_rect(int x, int y, int w, int h, uint32_t rgb) {
   }
   x1 = x + w;
   y1 = y + h;
-  if (x < 0) x = 0;
-  if (y < 0) y = 0;
-  if (x1 > (int)g_width) x1 = (int)g_width;
-  if (y1 > (int)g_height) y1 = (int)g_height;
+  if (x < g_clip_x0) x = g_clip_x0;
+  if (y < g_clip_y0) y = g_clip_y0;
+  if (x1 > g_clip_x1) x1 = g_clip_x1;
+  if (y1 > g_clip_y1) y1 = g_clip_y1;
   px = fb_pack(rgb);
   for (row = y; row < y1; row++) {
     volatile uint32_t *line = g_fb + (uint64_t)row * g_stride;
@@ -88,7 +118,7 @@ void fb_draw_rect(int x, int y, int w, int h, uint32_t rgb) {
 }
 
 void fb_clear(uint32_t rgb) {
-  fb_fill_rect(0, 0, (int)g_width, (int)g_height, rgb);
+  fb_fill_rect(g_clip_x0, g_clip_y0, g_clip_x1 - g_clip_x0, g_clip_y1 - g_clip_y0, rgb);
 }
 
 void fb_fill_gradient(int x, int y, int w, int h, uint32_t top_rgb, uint32_t bottom_rgb) {
@@ -101,6 +131,12 @@ void fb_fill_gradient(int x, int y, int w, int h, uint32_t top_rgb, uint32_t bot
   }
   for (row = 0; row < h; row++) {
     int d = (h > 1) ? (h - 1) : 1;
+    if (y + row < g_clip_y0) {
+      continue;
+    }
+    if (y + row >= g_clip_y1) {
+      break;
+    }
     int r = tr + (br - tr) * row / d;
     int g = tg + (bg - tg) * row / d;
     int b = tb + (bb - tb) * row / d;
@@ -117,6 +153,10 @@ void fb_draw_char(int x, int y, char c, uint32_t rgb, int scale) {
   }
   if (c < 0x20 || c > 0x7E) {
     c = '?';
+  }
+  if (x + FB_FONT_WIDTH * scale <= g_clip_x0 || x >= g_clip_x1 ||
+      y + FB_FONT_HEIGHT * scale <= g_clip_y0 || y >= g_clip_y1) {
+    return;
   }
   glyph = g_font8x8[c - 0x20];
   for (row = 0; row < FB_FONT_HEIGHT; row++) {

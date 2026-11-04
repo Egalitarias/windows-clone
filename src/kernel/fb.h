@@ -26,6 +26,13 @@ void fb_fill_rect(int x, int y, int w, int h, uint32_t rgb);
 void fb_draw_rect(int x, int y, int w, int h, uint32_t rgb);  // 1px outline
 void fb_clear(uint32_t rgb);
 
+// Clip rectangle: every drawing call is limited to it (reads are not).
+// The default is the whole screen. Clips do not nest; save and restore the
+// previous one with fb_get_clip() when intersecting.
+void fb_set_clip(int x, int y, int w, int h);
+void fb_reset_clip(void);
+void fb_get_clip(int *x, int *y, int *w, int *h);
+
 // Vertical gradient from top to bottom inside the rectangle.
 void fb_fill_gradient(int x, int y, int w, int h, uint32_t top_rgb, uint32_t bottom_rgb);
 

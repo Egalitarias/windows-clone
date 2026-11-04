@@ -38,6 +38,8 @@ KERNEL_UEFI_CONSOLE_OBJ := $(KERNEL_DIR)/uefi_kernel_console.o
 KERNEL_UEFI_FB_OBJ := $(KERNEL_DIR)/uefi_kernel_fb.o
 KERNEL_UEFI_DESKTOP_OBJ := $(KERNEL_DIR)/uefi_kernel_desktop.o
 KERNEL_UEFI_PS2_OBJ := $(KERNEL_DIR)/uefi_kernel_ps2.o
+KERNEL_UEFI_WM_OBJ := $(KERNEL_DIR)/uefi_kernel_wm.o
+KERNEL_UEFI_APPS_OBJ := $(KERNEL_DIR)/uefi_kernel_apps.o
 KERNEL_UEFI_PMM_OBJ := $(KERNEL_DIR)/uefi_kernel_pmm.o
 KERNEL_UEFI_HEAP_OBJ := $(KERNEL_DIR)/uefi_kernel_heap.o
 KERNEL_UEFI_SCHEDULER_OBJ := $(KERNEL_DIR)/uefi_kernel_scheduler.o
@@ -194,7 +196,13 @@ $(KERNEL_UEFI_CONSOLE_OBJ): src/kernel/console.c | dirs
 $(KERNEL_UEFI_FB_OBJ): src/kernel/fb.c src/kernel/fb.h src/kernel/font8x8.h | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_DESKTOP_OBJ): src/kernel/desktop.c src/kernel/desktop.h src/kernel/fb.h src/kernel/ps2.h | dirs
+$(KERNEL_UEFI_DESKTOP_OBJ): src/kernel/desktop.c src/kernel/desktop.h src/kernel/fb.h src/kernel/ps2.h src/kernel/wm.h src/kernel/apps.h | dirs
+	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_UEFI_WM_OBJ): src/kernel/wm.c src/kernel/wm.h src/kernel/fb.h | dirs
+	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_UEFI_APPS_OBJ): src/kernel/apps.c src/kernel/apps.h src/kernel/wm.h src/kernel/fb.h | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
 $(KERNEL_UEFI_PS2_OBJ): src/kernel/ps2.c src/kernel/ps2.h | dirs
@@ -257,7 +265,7 @@ $(KERNEL_UEFI_TIMER_TEST_OBJ): src/kernel/test_timer.c | dirs
 $(KERNEL_UEFI_GDT_TEST_OBJ): src/kernel/test_gdt.c | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_ELF): $(KERNEL_UEFI_STUB_OBJ) $(KERNEL_UEFI_MAIN_OBJ) $(KERNEL_UEFI_CONSOLE_OBJ) $(KERNEL_UEFI_FB_OBJ) $(KERNEL_UEFI_DESKTOP_OBJ) $(KERNEL_UEFI_PS2_OBJ) $(KERNEL_UEFI_PMM_OBJ) $(KERNEL_UEFI_HEAP_OBJ) $(KERNEL_UEFI_PAGING_OBJ) $(KERNEL_UEFI_IDT_OBJ) $(KERNEL_UEFI_PIC_OBJ) $(KERNEL_UEFI_GDT_OBJ) $(KERNEL_UEFI_EXCEPTIONS_OBJ) $(KERNEL_UEFI_SCHEDULER_OBJ) $(KERNEL_UEFI_CONTEXT_SWITCH_OBJ) $(KERNEL_UEFI_TCB_OBJ) $(KERNEL_UEFI_STACK_GUARD_OBJ) $(KERNEL_UEFI_TIMER_OBJ) $(KERNEL_UEFI_TIMER_STUB_OBJ) $(KERNEL_TEST_OBJS)
+$(KERNEL_UEFI_ELF): $(KERNEL_UEFI_STUB_OBJ) $(KERNEL_UEFI_MAIN_OBJ) $(KERNEL_UEFI_CONSOLE_OBJ) $(KERNEL_UEFI_FB_OBJ) $(KERNEL_UEFI_DESKTOP_OBJ) $(KERNEL_UEFI_PS2_OBJ) $(KERNEL_UEFI_WM_OBJ) $(KERNEL_UEFI_APPS_OBJ) $(KERNEL_UEFI_PMM_OBJ) $(KERNEL_UEFI_HEAP_OBJ) $(KERNEL_UEFI_PAGING_OBJ) $(KERNEL_UEFI_IDT_OBJ) $(KERNEL_UEFI_PIC_OBJ) $(KERNEL_UEFI_GDT_OBJ) $(KERNEL_UEFI_EXCEPTIONS_OBJ) $(KERNEL_UEFI_SCHEDULER_OBJ) $(KERNEL_UEFI_CONTEXT_SWITCH_OBJ) $(KERNEL_UEFI_TCB_OBJ) $(KERNEL_UEFI_STACK_GUARD_OBJ) $(KERNEL_UEFI_TIMER_OBJ) $(KERNEL_UEFI_TIMER_STUB_OBJ) $(KERNEL_TEST_OBJS)
 	$(KERNEL_LD) -pie -T src/kernel/kernel.ld -o $@ $^
 
 $(KERNEL_UEFI_BIN): $(KERNEL_UEFI_ELF)
