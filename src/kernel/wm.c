@@ -265,6 +265,15 @@ void wm_toggle_maximize(wm_window_t *win) {
   wm_invalidate_window(win);
 }
 
+void wm_set_title(wm_window_t *win, const char *title) {
+  if (!win) {
+    return;
+  }
+  copy_title(win->title, title);
+  wm_invalidate(win->x, win->y, win->w, WM_TITLE_H);
+  invalidate_taskbar();
+}
+
 wm_window_t *wm_focused(void) {
   int i;
   for (i = g_count - 1; i >= 0; i--) {
@@ -440,6 +449,9 @@ int wm_mouse_down(int x, int y, int double_click) {
       g_cap = CAP_CLIENT;
       g_cap_win = win;
       win->mouse(win, x - cx, y - cy, WM_MOUSE_DOWN);
+      if (double_click && g_cap == CAP_CLIENT && g_cap_win == win) {
+        win->mouse(win, x - cx, y - cy, WM_MOUSE_DOUBLE);
+      }
     }
   }
   return 1;

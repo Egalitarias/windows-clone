@@ -180,6 +180,7 @@ static const char kKeymapShift[0x3A] = {
 static int g_shift = 0;
 static int g_caps = 0;
 static int g_extended = 0;
+static int g_ctrl = 0;
 
 static int decode_key(uint8_t code, ps2_event_t *ev) {
   int pressed = !(code & 0x80);
@@ -192,6 +193,25 @@ static int decode_key(uint8_t code, ps2_event_t *ev) {
   }
   if (g_extended) {
     g_extended = 0;
+    if (key == 0x1D) {                 // right ctrl
+      g_ctrl = pressed;
+      return 0;
+    }
+    switch (key) {
+      case 0x48: ch = PS2_KEY_UP; break;
+      case 0x50: ch = PS2_KEY_DOWN; break;
+      case 0x4B: ch = PS2_KEY_LEFT; break;
+      case 0x4D: ch = PS2_KEY_RIGHT; break;
+      case 0x53: ch = PS2_KEY_DELETE; break;
+      default: return 0;
+    }
+    ev->type = PS2_EVENT_KEY;
+    ev->ch = ch;
+    ev->pressed = pressed;
+    return 1;
+  }
+  if (key == 0x1D) {                   // left ctrl
+    g_ctrl = pressed;
     return 0;
   }
   if (key == 0x2A || key == 0x36) {  // left / right shift
@@ -211,6 +231,9 @@ static int decode_key(uint8_t code, ps2_event_t *ev) {
     } else if (g_caps && ch >= 'A' && ch <= 'Z' && g_shift) {
       ch = (char)(ch - 'A' + 'a');
     }
+  }
+  if (g_ctrl && ch >= 'a' && ch <= 'z') {
+    ch = (char)(ch - 'a' + 1);         // Ctrl+letter -> control code
   }
   ev->type = PS2_EVENT_KEY;
   ev->ch = ch;

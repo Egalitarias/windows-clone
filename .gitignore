@@ -1,3 +1,5 @@
 out/
 vms/
 OVMF/
+__pycache__/
+*.pyc

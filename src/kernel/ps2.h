@@ -10,6 +10,14 @@
 #define PS2_HAS_KEYBOARD 0x1
 #define PS2_HAS_MOUSE    0x2
 
+// Non-printing keys are delivered as these control codes in `ch`.
+#define PS2_KEY_LEFT   0x1C
+#define PS2_KEY_RIGHT  0x1D
+#define PS2_KEY_UP     0x1E
+#define PS2_KEY_DOWN   0x1F
+#define PS2_KEY_DELETE 0x7F
+// Ctrl+letter arrives as the usual control code (Ctrl+A = 0x01 ... Ctrl+Z = 0x1A).
+
 #define PS2_MOUSE_LEFT   0x1
 #define PS2_MOUSE_RIGHT  0x2
 #define PS2_MOUSE_MIDDLE 0x4

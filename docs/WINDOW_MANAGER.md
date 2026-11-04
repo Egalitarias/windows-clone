@@ -47,6 +47,6 @@ Double-clicking a title bar toggles maximize. Taskbar buttons restore, focus or 
 - No double buffering, so fast repaints can flicker on real hardware.
 - Input and timing are interrupt-driven (see `INTERRUPTS.md`), but the shell is a single
   loop on its own stack, not a scheduled task.
-- Fixed pool of 16 windows; Paint is single instance, Notes allows 4.
+- Fixed pool of 16 windows; Paint and Files are single instance, Notes allows 4.
 - No Alt+Tab, window snapping, or per-window keyboard shortcuts.
 - Windows can run a once-a-second `tick` callback; there is no finer timer API yet.

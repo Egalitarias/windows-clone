@@ -81,6 +81,10 @@ def main():
         "-drive", "if=pflash,format=raw,file=" + vars_fd,
         "-drive", "format=raw,file=fat:rw:" + os.path.join(ROOT, "out", "uefi"),
     ]
+    data_img = os.path.join(run_dir, "data.img")
+    if os.path.exists(data_img):
+        cmd += ["-drive", "if=none,id=data,format=raw,file=" + data_img,
+                "-device", "ide-hd,drive=data,bus=ide.1"]
     proc = subprocess.Popen(cmd, cwd=ROOT)
     try:
         time.sleep(wait)

@@ -249,6 +249,11 @@ int paging_map_range(uint64_t phys_start, uint64_t size) {
   return map_range_virt(phys_start, phys_start, size, PAGE_WRITE);
 }
 
+int paging_map_mmio(uint64_t phys_start, uint64_t size) {
+  // PWT | PCD selects the strong-uncached PAT entry.
+  return map_range_virt(phys_start, phys_start, size, PAGE_WRITE | 0x08ULL | 0x10ULL);
+}
+
 void paging_unmap_identity_range(uint64_t phys_start, uint64_t size) {
   uint64_t addr;
   uint64_t end;

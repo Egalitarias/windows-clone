@@ -7,4 +7,7 @@
 // usually UTC). Returns 1 on success.
 int rtc_read_time(int *hour, int *minute, int *second);
 
+// Calendar date from the same clock. Returns 1 on success.
+int rtc_read_date(int *year, int *month, int *day);
+
 #endif // KERNEL_RTC_H

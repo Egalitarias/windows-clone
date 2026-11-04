@@ -6,6 +6,10 @@ CFLAGS := -ffreestanding -fno-stack-protector -fno-pie -m64 -O2 -Wall -Wextra
 ASFLAGS := -c
 KERNEL_CFLAGS := --target=x86_64-unknown-elf -ffreestanding -fno-stack-protector -fpie -m64 -O2 -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -mno-avx -Wall -Wextra
 KERNEL_ASFLAGS := --target=x86_64-unknown-elf -c
+FS_SELFTEST ?= 0
+ifeq ($(FS_SELFTEST),1)
+KERNEL_CFLAGS += -DKERNEL_FS_SELFTEST=1
+endif
 FAULT_TEST ?= 0
 ifeq ($(FAULT_TEST),1)
 KERNEL_CFLAGS += -DKERNEL_FAULT_TEST=1
@@ -42,6 +46,13 @@ KERNEL_UEFI_WM_OBJ := $(KERNEL_DIR)/uefi_kernel_wm.o
 KERNEL_UEFI_IRQ_OBJ := $(KERNEL_DIR)/uefi_kernel_irq.o
 KERNEL_UEFI_IRQ_STUBS_OBJ := $(KERNEL_DIR)/uefi_kernel_irq_stubs.o
 KERNEL_UEFI_RTC_OBJ := $(KERNEL_DIR)/uefi_kernel_rtc.o
+KERNEL_UEFI_STRING_OBJ := $(KERNEL_DIR)/uefi_kernel_string.o
+KERNEL_UEFI_PCI_OBJ := $(KERNEL_DIR)/uefi_kernel_pci.o
+KERNEL_UEFI_AHCI_OBJ := $(KERNEL_DIR)/uefi_kernel_ahci.o
+KERNEL_UEFI_BLOCK_OBJ := $(KERNEL_DIR)/uefi_kernel_block.o
+KERNEL_UEFI_FAT32_OBJ := $(KERNEL_DIR)/uefi_kernel_fat32.o
+KERNEL_UEFI_FS_OBJ := $(KERNEL_DIR)/uefi_kernel_fs.o
+KERNEL_UEFI_EXPLORER_OBJ := $(KERNEL_DIR)/uefi_kernel_explorer.o
 KERNEL_UEFI_APPS_OBJ := $(KERNEL_DIR)/uefi_kernel_apps.o
 KERNEL_UEFI_PMM_OBJ := $(KERNEL_DIR)/uefi_kernel_pmm.o
 KERNEL_UEFI_HEAP_OBJ := $(KERNEL_DIR)/uefi_kernel_heap.o
@@ -202,6 +213,27 @@ $(KERNEL_UEFI_FB_OBJ): src/kernel/fb.c src/kernel/fb.h src/kernel/font8x8.h | di
 $(KERNEL_UEFI_DESKTOP_OBJ): src/kernel/desktop.c src/kernel/desktop.h src/kernel/fb.h src/kernel/ps2.h src/kernel/wm.h src/kernel/apps.h | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
+$(KERNEL_UEFI_STRING_OBJ): src/kernel/string.c $(wildcard src/kernel/*.h) | dirs
+	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_UEFI_PCI_OBJ): src/kernel/pci.c $(wildcard src/kernel/*.h) | dirs
+	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_UEFI_AHCI_OBJ): src/kernel/ahci.c $(wildcard src/kernel/*.h) | dirs
+	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_UEFI_BLOCK_OBJ): src/kernel/block.c $(wildcard src/kernel/*.h) | dirs
+	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_UEFI_FAT32_OBJ): src/kernel/fat32.c $(wildcard src/kernel/*.h) | dirs
+	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_UEFI_FS_OBJ): src/kernel/fs.c $(wildcard src/kernel/*.h) | dirs
+	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_UEFI_EXPLORER_OBJ): src/kernel/explorer.c $(wildcard src/kernel/*.h) | dirs
+	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
+
 $(KERNEL_UEFI_IRQ_OBJ): src/kernel/irq.c src/kernel/irq.h src/kernel/pic.h | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
@@ -277,7 +309,7 @@ $(KERNEL_UEFI_TIMER_TEST_OBJ): src/kernel/test_timer.c | dirs
 $(KERNEL_UEFI_GDT_TEST_OBJ): src/kernel/test_gdt.c | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_ELF): $(KERNEL_UEFI_STUB_OBJ) $(KERNEL_UEFI_MAIN_OBJ) $(KERNEL_UEFI_CONSOLE_OBJ) $(KERNEL_UEFI_FB_OBJ) $(KERNEL_UEFI_DESKTOP_OBJ) $(KERNEL_UEFI_PS2_OBJ) $(KERNEL_UEFI_WM_OBJ) $(KERNEL_UEFI_APPS_OBJ) $(KERNEL_UEFI_IRQ_OBJ) $(KERNEL_UEFI_IRQ_STUBS_OBJ) $(KERNEL_UEFI_RTC_OBJ) $(KERNEL_UEFI_PMM_OBJ) $(KERNEL_UEFI_HEAP_OBJ) $(KERNEL_UEFI_PAGING_OBJ) $(KERNEL_UEFI_IDT_OBJ) $(KERNEL_UEFI_PIC_OBJ) $(KERNEL_UEFI_GDT_OBJ) $(KERNEL_UEFI_EXCEPTIONS_OBJ) $(KERNEL_UEFI_SCHEDULER_OBJ) $(KERNEL_UEFI_CONTEXT_SWITCH_OBJ) $(KERNEL_UEFI_TCB_OBJ) $(KERNEL_UEFI_STACK_GUARD_OBJ) $(KERNEL_UEFI_TIMER_OBJ) $(KERNEL_UEFI_TIMER_STUB_OBJ) $(KERNEL_TEST_OBJS)
+$(KERNEL_UEFI_ELF): $(KERNEL_UEFI_STUB_OBJ) $(KERNEL_UEFI_MAIN_OBJ) $(KERNEL_UEFI_CONSOLE_OBJ) $(KERNEL_UEFI_FB_OBJ) $(KERNEL_UEFI_DESKTOP_OBJ) $(KERNEL_UEFI_PS2_OBJ) $(KERNEL_UEFI_WM_OBJ) $(KERNEL_UEFI_APPS_OBJ) $(KERNEL_UEFI_IRQ_OBJ) $(KERNEL_UEFI_IRQ_STUBS_OBJ) $(KERNEL_UEFI_RTC_OBJ) $(KERNEL_UEFI_STRING_OBJ) $(KERNEL_UEFI_PCI_OBJ) $(KERNEL_UEFI_AHCI_OBJ) $(KERNEL_UEFI_BLOCK_OBJ) $(KERNEL_UEFI_FAT32_OBJ) $(KERNEL_UEFI_FS_OBJ) $(KERNEL_UEFI_EXPLORER_OBJ) $(KERNEL_UEFI_PMM_OBJ) $(KERNEL_UEFI_HEAP_OBJ) $(KERNEL_UEFI_PAGING_OBJ) $(KERNEL_UEFI_IDT_OBJ) $(KERNEL_UEFI_PIC_OBJ) $(KERNEL_UEFI_GDT_OBJ) $(KERNEL_UEFI_EXCEPTIONS_OBJ) $(KERNEL_UEFI_SCHEDULER_OBJ) $(KERNEL_UEFI_CONTEXT_SWITCH_OBJ) $(KERNEL_UEFI_TCB_OBJ) $(KERNEL_UEFI_STACK_GUARD_OBJ) $(KERNEL_UEFI_TIMER_OBJ) $(KERNEL_UEFI_TIMER_STUB_OBJ) $(KERNEL_TEST_OBJS)
 	$(KERNEL_LD) -pie -T src/kernel/kernel.ld -o $@ $^
 
 $(KERNEL_UEFI_BIN): $(KERNEL_UEFI_ELF)

@@ -17,6 +17,10 @@ void paging_set_page_table_pool(void *pool, uint64_t size);
 // Safe to call after paging_init has activated CR3.
 int paging_map_range(uint64_t phys_start, uint64_t size);
 
+// Identity-map device memory (MMIO) as uncached. Use this for PCI BARs; a
+// cacheable mapping would let the CPU cache or reorder register accesses.
+int paging_map_mmio(uint64_t phys_start, uint64_t size);
+
 void paging_unmap_identity_range(uint64_t phys_start, uint64_t size);
 
 #endif // KERNEL_PAGING_H

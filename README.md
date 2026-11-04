@@ -13,7 +13,9 @@ interrupt-driven PS/2 keyboard and mouse (IRQ layer, 1 kHz PIT timer, RTC clock,
 `hlt`), and a window manager with a desktop shell:
 overlapping windows with z-order and focus, move, resize, minimize, maximize and close,
 a taskbar with one button per window and a real-time clock, a Start menu, desktop icons
-(double-click to launch), and dirty-rectangle repainting. Three demo apps use it: Notes (multi-instance text), Paint and About.
+(double-click to launch), and dirty-rectangle repainting. A native AHCI/SATA driver, MBR/GPT partition scan and a FAT32 file system
+(long names, read/write/mkdir/delete) back a Files explorer and Notes open/save.
+Demo apps: Files, Notes, Paint and About.
 
 ![Demo desktop drawn by the kernel](docs/screenshots/framebuffer-desktop.png)
 
@@ -23,7 +25,7 @@ a taskbar with one button per window and a real-time clock, a Start menu, deskto
 2. UEFI GOP framebuffer and text drawing (done); on-screen text console still to do
 3. Keyboard and mouse input (PS/2 interrupt-driven, done; USB still to do), timer and clock (done)
 4. Syscalls and user mode (see `docs/`), process loader
-5. Storage driver (AHCI/NVMe) and filesystem (FAT32 first)
+5. Storage driver and filesystem (AHCI + FAT32 done, see `docs/STORAGE.md`); NVMe, USB storage, FAT16/exFAT and our own filesystem still to do
 6. Windowing system (done: window manager, see `docs/WINDOW_MANAGER.md`); compositor and double buffering still to do
 7. Desktop shell: taskbar and Start menu (done); file explorer, clock, notifications still to do
 8. Bootable USB installer
@@ -36,6 +38,7 @@ See `INSTALL.md` (Windows 11 and macOS). Quick start from Git Bash on Windows:
 ```bash
 make CC=clang uefi-loader
 scripts/run-qemu-windows.sh
+python scripts/make-disk-image.py out/run/data.img      # test disk (MBR + FAT32), optional
 python scripts/qemu-screenshot.py out/run/screen.png   # headless screenshot
 # Inject input through the QEMU monitor before the screenshot:
 python scripts/qemu-screenshot.py out/run/s.png 14 "mouse_move 50 50" "sendkey h"

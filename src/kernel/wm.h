@@ -20,6 +20,7 @@
 #define WM_MOUSE_DOWN 0
 #define WM_MOUSE_MOVE 1   // only while the left button is held
 #define WM_MOUSE_UP   2
+#define WM_MOUSE_DOUBLE 3 // sent right after DOWN when the press completes a double click
 
 typedef struct wm_window wm_window_t;
 
@@ -59,6 +60,8 @@ void wm_raise(wm_window_t *win);
 void wm_minimize(wm_window_t *win);
 void wm_restore(wm_window_t *win);
 void wm_toggle_maximize(wm_window_t *win);
+
+void wm_set_title(wm_window_t *win, const char *title);
 
 wm_window_t *wm_focused(void);
 // Pool slot i (for taskbar buttons); returns 0 for an unused slot.

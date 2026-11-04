@@ -69,3 +69,27 @@ int rtc_read_time(int *hour, int *minute, int *second) {
   *second = s;
   return 1;
 }
+
+int rtc_read_date(int *year, int *month, int *day) {
+  int y, m, d, spins = 0;
+  uint8_t status_b;
+
+  while (update_in_progress() && spins++ < 100000) {
+  }
+  d = cmos_read(0x07);
+  m = cmos_read(0x08);
+  y = cmos_read(0x09);
+  status_b = cmos_read(RTC_STATUS_B);
+  if (!(status_b & 0x04)) {
+    d = from_bcd(d);
+    m = from_bcd(m);
+    y = from_bcd(y);
+  }
+  if (m < 1 || m > 12 || d < 1 || d > 31) {
+    return 0;
+  }
+  *year = 2000 + y;
+  *month = m;
+  *day = d;
+  return 1;
+}

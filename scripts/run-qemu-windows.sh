@@ -21,9 +21,15 @@ VARS_TEMPLATE="$QEMU_SHARE/edk2-i386-vars.fd"
 mkdir -p out/run
 cp "$VARS_TEMPLATE" out/run/vars.fd
 
+# Optional data disk (python scripts/make-disk-image.py creates it).
+DATA_DRIVE=()
+if [ -f out/run/data.img ]; then
+  DATA_DRIVE=(-drive if=none,id=data,format=raw,file=out/run/data.img -device ide-hd,drive=data,bus=ide.1)
+fi
+
 timeout "$TIMEOUT" qemu-system-x86_64 \
   -machine q35 -m 512 -display "$DISPLAY_MODE" \
   -serial stdio -monitor none \
   -drive if=pflash,format=raw,readonly=on,file="$CODE" \
   -drive if=pflash,format=raw,file=out/run/vars.fd \
-  -drive format=raw,file=fat:rw:out/uefi || [ $? -eq 124 ]
+  -drive format=raw,file=fat:rw:out/uefi   "${DATA_DRIVE[@]}" || [ $? -eq 124 ]

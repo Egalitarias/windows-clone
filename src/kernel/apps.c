@@ -1,5 +1,7 @@
 #include "apps.h"
 #include "fb.h"
+#include "fs.h"
+#include "string.h"
 #include "timer.h"
 #include "wm.h"
 
@@ -16,24 +18,37 @@ static void next_position(int *x, int *y) {
 // ---- Notes -----------------------------------------------------------------
 
 #define NOTES_INSTANCES 4
-#define NOTES_MAX       1024
+#define NOTES_MAX       4096
+#define NOTES_STATUS_H  16
 
 typedef struct {
   int in_use;
   int len;
+  int has_file;                 // loaded from / saved to a file
+  fat_volume_t *vol;
+  uint32_t dir_cluster;
+  char file[FAT_NAME_MAX];
+  char status[48];
   char text[NOTES_MAX + 1];
 } NotesData;
 
 static NotesData g_notes[NOTES_INSTANCES];
+static uint8_t g_io_buf[NOTES_MAX * 2 + 16];     // file <-> text conversion buffer
 
 static void notes_paint(wm_window_t *win, int cx, int cy, int cw, int ch) {
   NotesData *d = (NotesData *)win->data;
+  int text_h = ch - NOTES_STATUS_H;
   int cols = (cw - 16) / FB_FONT_WIDTH;
-  int rows = (ch - 16) / 12;
+  int rows = (text_h - 16) / 12;
   int i, row = 0, col = 0;
 
-  (void)ch;
-  fb_fill_rect(cx + 4, cy + 4, cw - 8, ch - 8, FB_RGB(255, 255, 255));
+  fb_fill_rect(cx + 4, cy + 4, cw - 8, text_h - 4, FB_RGB(255, 255, 255));
+
+  // Status line
+  fb_fill_rect(cx, cy + ch - NOTES_STATUS_H, cw, NOTES_STATUS_H, FB_RGB(228, 230, 238));
+  fb_draw_text(cx + 6, cy + ch - NOTES_STATUS_H + 4,
+               d->status[0] ? d->status : "Ctrl+S saves", FB_RGB(70, 75, 95), 1);
+
   if (cols < 1 || rows < 1) {
     return;
   }
@@ -62,9 +77,72 @@ static void notes_paint(wm_window_t *win, int cx, int cy, int cw, int ch) {
   }
 }
 
+static void notes_set_title(wm_window_t *win, const char *file) {
+  char title[WM_TITLE_CHARS];
+  int n = (int)str_copy(title, "Notes - ", sizeof(title));
+  str_copy(title + n, file, sizeof(title) - (size_t)n);
+  wm_set_title(win, title);
+}
+
+static void notes_set_status(NotesData *d, const char *a, const char *b) {
+  int n = (int)str_copy(d->status, a, sizeof(d->status));
+  if (b) {
+    str_copy(d->status + n, b, sizeof(d->status) - (size_t)n);
+  }
+}
+
+// Save to the associated file, or to a new NOTEn.TXT on the first volume.
+static void notes_save(wm_window_t *win) {
+  NotesData *d = (NotesData *)win->data;
+  fat_volume_t *vol = d->has_file ? d->vol : fs_volume(0);
+  uint32_t dir, len = 0;
+  int i;
+
+  if (!vol) {
+    notes_set_status(d, "No disk available", 0);
+    wm_invalidate_window(win);
+    return;
+  }
+  dir = d->has_file ? d->dir_cluster : vol->root_cluster;
+  if (!d->has_file) {
+    fat_dirent_t probe;
+    int n;
+    for (n = 1; n < 1000; n++) {
+      char name[16];
+      int k = (int)str_copy(name, "NOTE", sizeof(name));
+      k += u32_to_str((uint32_t)n, name + k);
+      str_copy(name + k, ".TXT", sizeof(name) - (size_t)k);
+      if (!fat_lookup(vol, dir, name, &probe)) {
+        str_copy(d->file, name, sizeof(d->file));
+        break;
+      }
+    }
+  }
+  for (i = 0; i < d->len; i++) {            // text uses LF; files use CR LF
+    if (d->text[i] == '\n') {
+      g_io_buf[len++] = '\r';
+    }
+    g_io_buf[len++] = (uint8_t)d->text[i];
+  }
+  if (fat_write_file(vol, dir, d->file, g_io_buf, len)) {
+    d->has_file = 1;
+    d->vol = vol;
+    d->dir_cluster = dir;
+    notes_set_title(win, d->file);
+    notes_set_status(d, "Saved ", d->file);
+  } else {
+    notes_set_status(d, "Save failed", 0);
+  }
+  wm_invalidate_window(win);
+}
+
 static void notes_key(wm_window_t *win, char ch) {
   NotesData *d = (NotesData *)win->data;
 
+  if (ch == 0x13) {                         // Ctrl+S
+    notes_save(win);
+    return;
+  }
   if (ch == '\b') {
     if (d->len > 0) {
       d->len--;
@@ -76,6 +154,7 @@ static void notes_key(wm_window_t *win, char ch) {
   } else {
     return;
   }
+  d->status[0] = 0;
   wm_invalidate_window(win);
 }
 
@@ -86,29 +165,86 @@ static void notes_closing(wm_window_t *win) {
   }
 }
 
-void app_notes_open(void) {
-  int i, x, y;
+static NotesData *notes_alloc(void) {
+  int i;
+  for (i = 0; i < NOTES_INSTANCES; i++) {
+    if (!g_notes[i].in_use) {
+      g_notes[i].in_use = 1;
+      g_notes[i].len = 0;
+      g_notes[i].text[0] = 0;
+      g_notes[i].has_file = 0;
+      g_notes[i].vol = 0;
+      g_notes[i].dir_cluster = 0;
+      g_notes[i].file[0] = 0;
+      g_notes[i].status[0] = 0;
+      return &g_notes[i];
+    }
+  }
+  return 0;
+}
+
+static wm_window_t *notes_window(NotesData *d, const char *title) {
+  int x, y;
   wm_window_t *win;
 
-  for (i = 0; i < NOTES_INSTANCES && g_notes[i].in_use; i++) {
-  }
-  if (i == NOTES_INSTANCES) {
-    return;
-  }
   next_position(&x, &y);
-  win = wm_create("Notes", x, y, 420, 260);
+  win = wm_create(title, x, y, 460, 300);
   if (!win) {
-    return;
+    d->in_use = 0;
+    return 0;
   }
-  g_notes[i].in_use = 1;
-  g_notes[i].len = 0;
-  g_notes[i].text[0] = 0;
-  win->data = &g_notes[i];
+  win->data = d;
   win->paint = notes_paint;
   win->key = notes_key;
   win->closing = notes_closing;
-  win->min_w = 200;
-  win->min_h = 120;
+  win->min_w = 220;
+  win->min_h = 140;
+  return win;
+}
+
+void app_notes_open(void) {
+  NotesData *d = notes_alloc();
+  if (d) {
+    notes_window(d, "Notes");
+  }
+}
+
+void app_notes_open_file(fat_volume_t *vol, const fat_dirent_t *ent) {
+  NotesData *d = notes_alloc();
+  uint32_t got = 0, i;
+  wm_window_t *win;
+
+  if (!d) {
+    return;
+  }
+  win = notes_window(d, "Notes");
+  if (!win) {
+    return;
+  }
+  d->has_file = 1;
+  d->vol = vol;
+  d->dir_cluster = ent->dir_cluster;
+  str_copy(d->file, ent->name, sizeof(d->file));
+  notes_set_title(win, d->file);
+
+  if (fat_read_file(vol, ent, g_io_buf, NOTES_MAX * 2, &got)) {
+    for (i = 0; i < got && d->len < NOTES_MAX; i++) {
+      uint8_t c = g_io_buf[i];
+      if (c == '\r') {
+        continue;
+      }
+      if (c == '\n' || c == '\t' || (c >= 0x20 && c <= 0x7E)) {
+        d->text[d->len++] = (c == '\t') ? ' ' : (char)c;
+      }
+    }
+    d->text[d->len] = 0;
+    if (got > NOTES_MAX) {
+      notes_set_status(d, "File truncated to 4096 bytes: do not save", 0);
+    }
+  } else {
+    notes_set_status(d, "Could not read file", 0);
+  }
+  wm_invalidate_window(win);
 }
 
 // ---- Paint -----------------------------------------------------------------

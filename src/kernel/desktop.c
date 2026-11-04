@@ -1,7 +1,9 @@
 #include "desktop.h"
 #include "apps.h"
 #include "fb.h"
+#include "fs.h"
 #include "idt.h"
+#include "block.h"
 #include "irq.h"
 #include "ps2.h"
 #include "rtc.h"
@@ -35,11 +37,11 @@
 #define TASK_PITCH   132
 #define MENU_W       200
 #define MENU_ITEM_H  28
-#define MENU_COUNT   4
+#define MENU_COUNT   5
 #define ICON_X       24
 #define ICON_Y0      24
 #define ICON_PITCH   84
-#define ICON_COUNT   3
+#define ICON_COUNT   4
 
 #define DOUBLE_CLICK_MS   400
 #define DOUBLE_CLICK_SLOP 5
@@ -65,19 +67,22 @@ static int menu_y(void) { return bar_y() - MENU_COUNT * MENU_ITEM_H - 4; }
 
 static const char *menu_label(int i) {
   switch (i) {
-    case 0:  return "Notes";
-    case 1:  return "Paint";
-    case 2:  return "About WinClone";
+    case 0:  return "Files";
+    case 1:  return "Notes";
+    case 2:  return "Paint";
+    case 3:  return "About WinClone";
     default: return "Shut down";
   }
 }
 
 static const char *icon_label(int i) {
-  return i == 0 ? "Notes" : (i == 1 ? "Paint" : "About");
+  return i == 0 ? "Files" : (i == 1 ? "Notes" : (i == 2 ? "Paint" : "About"));
 }
 
 static uint32_t icon_color(int i) {
-  return i == 0 ? FB_RGB(240, 210, 80) : (i == 1 ? FB_RGB(220, 90, 90) : FB_RGB(90, 190, 130));
+  return i == 0 ? FB_RGB(235, 190, 60)
+       : (i == 1 ? FB_RGB(240, 235, 120)
+       : (i == 2 ? FB_RGB(220, 90, 90) : FB_RGB(90, 190, 130)));
 }
 
 // ---- painting --------------------------------------------------------------
@@ -218,8 +223,10 @@ static __attribute__((noreturn)) void shut_down(void) {
 
 static void launch(int which) {
   if (which == 0) {
-    app_notes_open();
+    app_files_open();
   } else if (which == 1) {
+    app_notes_open();
+  } else if (which == 2) {
     app_paint_open();
   } else {
     app_about_open();
@@ -399,10 +406,27 @@ static __attribute__((noreturn)) void desktop_run(void) {
   irq_unmask(0);
   ps2_init();
   update_clock();
+
+  // Storage: AHCI disks, partitions, FAT32 volumes. Logged to the console
+  // (serial) before the first repaint covers the screen.
+  {
+    int volumes = fs_init();
+    int i;
+    console_printf("[storage] %d block device(s), %d FAT32 volume(s)\r\n", block_count(), volumes);
+#ifdef KERNEL_FS_SELFTEST
+    if (volumes > 0) {
+      fs_selftest();
+    }
+#endif
+    for (i = 0; i < volumes; i++) {
+      console_printf("[storage]   volume %d: \"%s\" on %s\r\n", i, fs_volume_name(i),
+                     block_get(fs_volume(i)->dev)->name);
+    }
+  }
   last_second = timer_get_ms();
 
   app_notes_open();
-  app_about_open();
+  app_files_open();
 
   for (;;) {
     while (ps2_poll(&ev)) {
