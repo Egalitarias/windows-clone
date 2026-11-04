@@ -4,6 +4,7 @@
 #define PAGE_SIZE_BYTES 4096ULL
 #define PAGE_PRESENT    0x001ULL
 #define PAGE_WRITE      0x002ULL
+#define PAGE_USER       0x004ULL
 #define PAGE_NX         (1ULL << 63)
 #define MANAGED_MEMORY_LIMIT (PMM_MAX_PAGES * PAGE_SIZE_BYTES)
 
@@ -54,12 +55,16 @@ static uint64_t *alloc_page_table(void) {
   return table;
 }
 
-static uint64_t *ensure_table(uint64_t *parent, uint64_t index) {
+static uint64_t *ensure_table(uint64_t *parent, uint64_t index, uint64_t extra_flags) {
   uint64_t entry;
   uint64_t *child;
 
   entry = parent[index];
   if ((entry & PAGE_PRESENT) != 0) {
+    // A user mapping needs U/S set at every level of the walk. Setting it on a
+    // shared upper-level entry is safe: kernel leaf pages stay supervisor-only
+    // because their own PTEs lack the U bit.
+    parent[index] = entry | extra_flags;
     return (uint64_t *)(uintptr_t)(entry & 0x000FFFFFFFFFF000ULL);
   }
 
@@ -68,7 +73,7 @@ static uint64_t *ensure_table(uint64_t *parent, uint64_t index) {
     return 0;
   }
 
-  parent[index] = ((uint64_t)(uintptr_t)child) | PAGE_PRESENT | PAGE_WRITE;
+  parent[index] = ((uint64_t)(uintptr_t)child) | PAGE_PRESENT | PAGE_WRITE | extra_flags;
   return child;
 }
 
@@ -80,6 +85,7 @@ static int map_page_virt(uint64_t virt, uint64_t phys, uint64_t flags) {
   uint64_t pdpt_index;
   uint64_t pd_index;
   uint64_t pt_index;
+  uint64_t extra;
 
   if (g_pml4 == 0) {
     return 0;
@@ -90,17 +96,18 @@ static int map_page_virt(uint64_t virt, uint64_t phys, uint64_t flags) {
   pd_index = page_index(virt, 21);
   pt_index = page_index(virt, 12);
 
-  pdpt = ensure_table(g_pml4, pml4_index);
+  extra = flags & PAGE_USER;
+  pdpt = ensure_table(g_pml4, pml4_index, extra);
   if (pdpt == 0) {
     return 0;
   }
 
-  pd = ensure_table(pdpt, pdpt_index);
+  pd = ensure_table(pdpt, pdpt_index, extra);
   if (pd == 0) {
     return 0;
   }
 
-  pt = ensure_table(pd, pd_index);
+  pt = ensure_table(pd, pd_index, extra);
   if (pt == 0) {
     return 0;
   }
@@ -268,4 +275,26 @@ void paging_unmap_identity_range(uint64_t phys_start, uint64_t size) {
     clear_page_virt(addr);
     addr += PAGE_SIZE_BYTES;
   }
+}
+
+int paging_map_user(uint64_t virt_start, uint64_t phys_start, uint64_t size, int writable) {
+  uint64_t flags = PAGE_USER | (writable ? PAGE_WRITE : 0ULL);
+  uint64_t offset;
+  uint64_t total = align_up(size, PAGE_SIZE_BYTES);
+
+  if (virt_start != align_down(virt_start, PAGE_SIZE_BYTES) ||
+      phys_start != align_down(phys_start, PAGE_SIZE_BYTES) ||
+      virt_start >= KERNEL_HIGH_HALF_BASE) {
+    return 0;
+  }
+
+  // NX is not used here: EFER.NXE is not guaranteed to be set by the firmware,
+  // and a set bit 63 with NXE clear is a reserved-bit page fault.
+  for (offset = 0; offset < total; offset += PAGE_SIZE_BYTES) {
+    if (!map_page_virt(virt_start + offset, phys_start + offset, flags)) {
+      return 0;
+    }
+    __asm__ volatile("invlpg (%0)" : : "r"((void *)(uintptr_t)(virt_start + offset)) : "memory");
+  }
+  return 1;
 }

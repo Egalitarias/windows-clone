@@ -13,7 +13,7 @@ Status: draft. Companion to `SYSCALL_DESIGN.md` (mechanism choice) and `USERSPAC
 
 ## Phases
 
-### 1. Ring-3 plumbing (no syscalls yet)
+### 1. Ring-3 plumbing (no syscalls yet) - DONE
 
 - Fix the GDT layout. SYSRET needs user data at STAR base+8 and user code at base+16, so the order is kernel CS, kernel DS, user DS, user CS.
 - Add a 64-bit TSS with `rsp0` and load it with `ltr`. Update `rsp0` on every context switch.
@@ -59,6 +59,8 @@ Status: draft. Companion to `SYSCALL_DESIGN.md` (mechanism choice) and `USERSPAC
 
 - Add tests for bad pointers, a stack overflow in user mode, unknown syscall numbers, and a user process that never yields (preemption).
 - Update the docs and the README roadmap.
+
+**Phase 1 status.** GDT reordered (user DS 0x1B, user CS 0x23, TSS 0x28), TSS loaded with `gdt_set_kernel_stack()`, `paging_map_user()` added, `user_enter()` in `usermode.c`, and the exception dump now shows RIP/CS/RSP. Verify with `make CC=clang USER_SELFTEST=1 uefi-loader` and boot: the user program runs `hlt` at CPL 3 and the kernel reports `Vector: 13`, `CS: 0x23 (ring 3)`. Known issue found on the way (not from this change): the `TESTS=1` build page-faults in the context-switch suite, so the GDT suite does not run there.
 
 ## Risks
 

@@ -1,7 +1,7 @@
 #include "console.h"
 #include "gdt.h"
 
-// Minimal 3-entry GDT in .data so the values are baked in at compile time.
+// Kernel GDT in .data so the values are baked in at compile time.
 // Being in .data (not .bss) means they are non-zero and in the kernel binary,
 // but more importantly they live inside the kernel image region that
 // paging_init() identity-maps, so the CPU can read them after CR3 is loaded.
@@ -14,21 +14,35 @@
 //   [55:52] Flags
 //   [63:56] Base  31:24
 //
-// Kernel 64-bit code (index 1, selector 0x08):
-//   L=1, G=1, P=1, S=1, DPL=0, type=code/exec/read  →  0x00AF9A000000FFFF
-// Kernel 64-bit data (index 2, selector 0x10):
-//   G=1, D/B=1, P=1, S=1, DPL=0, type=data/read/write →  0x00CF92000000FFFF
-// User 64-bit code (index 3, selector 0x2B = 3*8 + 3):
-//   L=1, G=1, P=1, S=1, DPL=3, type=code/exec/read  →  0x00AFFA000000FFFF
-// User 64-bit data (index 4, selector 0x33 = 4*8 + 3):
-//   G=1, D/B=1, P=1, S=1, DPL=3, type=data/read/write →  0x00CFF2000000FFFF
-static uint64_t g_gdt[5] = {
+// Kernel 64-bit code (index 1, selector 0x08):  0x00AF9A000000FFFF
+// Kernel 64-bit data (index 2, selector 0x10):  0x00CF92000000FFFF
+// User   64-bit data (index 3, selector 0x1B):  0x00CFF2000000FFFF  (DPL=3)
+// User   64-bit code (index 4, selector 0x23):  0x00AFFA000000FFFF  (DPL=3)
+// TSS    (index 5-6, selector 0x28): 16-byte system descriptor, filled in at
+//        runtime by gdt_init() because it holds the TSS address.
+static uint64_t g_gdt[7] = {
     0x0000000000000000ULL,
     0x00AF9A000000FFFFULL,
     0x00CF92000000FFFFULL,
-    0x00AFFA000000FFFFULL,
     0x00CFF2000000FFFFULL,
+    0x00AFFA000000FFFFULL,
+    0x0000000000000000ULL,
+    0x0000000000000000ULL,
 };
+
+// 64-bit Task State Segment. Only rsp0 matters for us: it is the stack the CPU
+// loads on a ring 3 -> ring 0 transition via an interrupt or exception.
+typedef struct {
+    uint32_t Reserved0;
+    uint64_t Rsp[3];
+    uint64_t Reserved1;
+    uint64_t Ist[7];
+    uint64_t Reserved2;
+    uint16_t Reserved3;
+    uint16_t IoMapBase;
+} __attribute__((packed)) TSS64;
+
+static TSS64 g_tss;
 
 typedef struct {
     unsigned short Limit;
@@ -37,7 +51,24 @@ typedef struct {
 
 static GDTPointer g_gdt_ptr;
 
+static void gdt_install_tss(void) {
+    uint64_t base = (uint64_t)(uintptr_t)&g_tss;
+    uint64_t limit = (uint64_t)sizeof(g_tss) - 1ULL;
+
+    g_tss.IoMapBase = (uint16_t)sizeof(g_tss);  // no I/O permission bitmap
+
+    // Access 0x89 = present, DPL=0, type 9 (available 64-bit TSS).
+    g_gdt[5] = (limit & 0xFFFFULL)
+             | ((base & 0xFFFFFFULL) << 16)
+             | (0x89ULL << 40)
+             | (((limit >> 16) & 0xFULL) << 48)
+             | (((base >> 24) & 0xFFULL) << 56);
+    g_gdt[6] = base >> 32;
+}
+
 unsigned short gdt_init(void) {
+    gdt_install_tss();
+
     g_gdt_ptr.Limit = (unsigned short)(sizeof(g_gdt) - 1U);
     g_gdt_ptr.Base  = (uint64_t)(uintptr_t)g_gdt;
 
@@ -62,5 +93,17 @@ unsigned short gdt_init(void) {
         : "rax", "memory"
     );
 
+    // Load the task register. The CPU marks the descriptor busy, so ltr must
+    // only run once per descriptor.
+    __asm__ volatile("ltr %0" : : "r"((uint16_t)GDT_TSS) : "memory");
+
     return 0x08U;
+}
+
+void gdt_set_kernel_stack(uint64_t rsp0) {
+    g_tss.Rsp[0] = rsp0;
+}
+
+uint64_t gdt_get_kernel_stack(void) {
+    return g_tss.Rsp[0];
 }

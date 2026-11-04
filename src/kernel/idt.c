@@ -99,10 +99,19 @@ static void idt_set_gate(unsigned int vector, void *handler, uint16_t selector) 
   idt_set_gate_with_type(vector, handler, selector, IDT_GATE_TYPE_INTERRUPT);
 }
 
-__attribute__((noreturn)) void exception_dispatch(uint64_t vector, uint64_t error_code) {
+__attribute__((noreturn)) void exception_dispatch(uint64_t vector, uint64_t error_code, const uint64_t *frame) {
   console_write_string("\r\n*** EXCEPTION ***\r\n");
   console_printf("Vector: %llu\r\n", vector);
   console_printf("Error:  0x%llx\r\n", error_code);
+  if (frame != 0) {
+    // The stubs pass a pointer to the CPU-pushed frame. Vectors that push an
+    // error code have it at frame[0]; RIP, CS, RFLAGS, RSP, SS follow.
+    int has_error = (vector == 8 || (vector >= 10 && vector <= 14) || vector == 17 || vector == 30);
+    const uint64_t *f = has_error ? frame + 1 : frame;
+    console_printf("RIP:    0x%llx\r\n", f[0]);
+    console_printf("CS:     0x%llx (%s)\r\n", f[1], (f[1] & 3ULL) == 3ULL ? "ring 3" : "ring 0");
+    console_printf("RSP:    0x%llx\r\n", f[3]);
+  }
   console_write_string("System halted.\r\n");
 
   __asm__ volatile("cli");

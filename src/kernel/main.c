@@ -10,6 +10,7 @@
 #include "timer.h"
 #include "fb.h"
 #include "desktop.h"
+#include "usermode.h"
 
 #ifdef KERNEL_TESTS
 extern void run_tcb_tests(void);
@@ -166,6 +167,10 @@ static __attribute__((noreturn)) void kernel_runtime(const KERNEL_BOOT_INFO *boo
   console_write_string("[6] Initializing Task Control Block pool\r\n");
   tcb_init();
   console_write_string("    TCB pool initialized (256 max tasks)\r\n");
+
+#ifdef KERNEL_USER_SELFTEST
+  usermode_selftest();
+#endif
 
 #ifdef KERNEL_TESTS
   console_newline();

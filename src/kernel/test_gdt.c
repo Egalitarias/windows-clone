@@ -76,8 +76,12 @@ void test_selector_calculation(void) {
   uint16_t user_cs_index = GDT_USER_CS >> 3;
   uint16_t user_ds_index = GDT_USER_DS >> 3;
   
-  TEST_ASSERT(user_cs_index == 3U, "User CS index is 3");
-  TEST_ASSERT(user_ds_index == 4U, "User DS index is 4");
+  TEST_ASSERT(user_cs_index == 4U, "User CS index is 4");
+  TEST_ASSERT(user_ds_index == 3U, "User DS index is 3");
+
+  // SYSRET (STAR[63:48] = 0x10) loads SS = base+8 and CS = base+16.
+  TEST_ASSERT((GDT_USER_DS & ~3U) == 0x10U + 8U, "User DS is SYSRET base + 8");
+  TEST_ASSERT((GDT_USER_CS & ~3U) == 0x10U + 16U, "User CS is SYSRET base + 16");
 }
 
 void test_selector_rpl_bits(void) {
@@ -98,6 +102,21 @@ void test_selector_rpl_bits(void) {
   TEST_ASSERT(kernel_ds_rpl == 0U, "Kernel DS RPL is 0 (kernel mode)");
 }
 
+void test_tss_loaded(void) {
+  uint16_t tr;
+  uint64_t saved;
+
+  console_write_string("[TEST] tss_loaded\r\n");
+
+  __asm__ volatile("str %0" : "=r"(tr));
+  TEST_ASSERT(tr == GDT_TSS, "Task register holds the TSS selector");
+
+  saved = gdt_get_kernel_stack();
+  gdt_set_kernel_stack(0x1234000ULL);
+  TEST_ASSERT(gdt_get_kernel_stack() == 0x1234000ULL, "TSS rsp0 can be set and read back");
+  gdt_set_kernel_stack(saved);
+}
+
 void run_gdt_tests(void) {
   console_write_string("========================================\r\n");
   console_write_string("GDT Test Suite\r\n");
@@ -110,6 +129,7 @@ void run_gdt_tests(void) {
   test_user_selectors_different();
   test_selector_calculation();
   test_selector_rpl_bits();
+  test_tss_loaded();
 
   console_write_string("\n========================================\r\n");
   console_write_string("Test Results: ");
