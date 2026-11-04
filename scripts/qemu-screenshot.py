@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Boot out/uefi in QEMU, wait, and save a screenshot as a PNG.
 
-Usage: python scripts/qemu-screenshot.py [output.png] [wait-seconds]
+Usage: python scripts/qemu-screenshot.py [output.png] [wait-seconds] [monitor-cmd ...]
+
+Extra arguments are QEMU monitor commands run (in order) before the
+screenshot, e.g. to drive the guest:
+    python scripts/qemu-screenshot.py out.png 14 "mouse_move 100 50" "sleep 0.3" "sendkey h"
+"sleep N" pauses N seconds between commands.
 
 Needs QEMU (Scoop: `scoop install qemu`) and a built loader
 (`make CC=clang uefi-loader`). Serial output is written to out/run/serial.log.
@@ -55,6 +60,7 @@ def ppm_to_png(ppm_path, png_path):
 def main():
     out_png = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "out", "run", "screen.png")
     wait = float(sys.argv[2]) if len(sys.argv) > 2 else 12.0
+    commands = sys.argv[3:]
     qemu = find_qemu()
     share = os.path.join(os.path.dirname(qemu), "share")
     code = os.path.join(share, "edk2-x86_64-code.fd")
@@ -80,6 +86,13 @@ def main():
         time.sleep(wait)
         s = socket.create_connection(("127.0.0.1", MONITOR_PORT), timeout=10)
         s.settimeout(5)
+        time.sleep(0.5)
+        for command in commands:
+            if command.startswith("sleep "):
+                time.sleep(float(command.split()[1]))
+            else:
+                s.sendall((command + "\n").encode())
+                time.sleep(0.15)
         time.sleep(0.5)
         s.sendall(("screendump %s\n" % ppm.replace("\\", "/")).encode())
         time.sleep(1.5)

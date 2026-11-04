@@ -48,6 +48,13 @@ void fb_put_pixel(int x, int y, uint32_t rgb) {
   g_fb[(uint64_t)y * g_stride + (uint32_t)x] = fb_pack(rgb);
 }
 
+uint32_t fb_get_pixel(int x, int y) {
+  if (!g_fb || x < 0 || y < 0 || (uint32_t)x >= g_width || (uint32_t)y >= g_height) {
+    return 0;
+  }
+  return fb_pack(g_fb[(uint64_t)y * g_stride + (uint32_t)x]);  // the pack swap is its own inverse
+}
+
 void fb_fill_rect(int x, int y, int w, int h, uint32_t rgb) {
   int x1, y1, row, col;
   uint32_t px;

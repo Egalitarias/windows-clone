@@ -8,8 +8,9 @@ system, shell and apps. No code or assets from Microsoft Windows or any other OS
 
 Boots under QEMU/UEFI. Working today: UEFI loader, higher-half kernel, physical memory
 manager, paging, heap, GDT/IDT, PIC and timer, preemptive scheduler with stack guards,
-and a framebuffer graphics layer (pixels, rectangles, gradients, 8x8 text) that draws a
-static demo desktop.
+a framebuffer graphics layer (pixels, rectangles, gradients, 8x8 text), and polled PS/2
+keyboard and mouse input driving an interactive demo desktop: mouse cursor, a draggable
+window with a typing area, a Start menu and a taskbar.
 
 ![Demo desktop drawn by the kernel](docs/screenshots/framebuffer-desktop.png)
 
@@ -17,7 +18,7 @@ static demo desktop.
 
 1. Build and boot on Windows 11 (done, see `INSTALL.md`)
 2. UEFI GOP framebuffer and text drawing (done); on-screen text console still to do
-3. Keyboard and mouse input
+3. Keyboard and mouse input (PS/2 polling done; interrupt-driven PS/2 and USB still to do)
 4. Syscalls and user mode (see `docs/`), process loader
 5. Storage driver (AHCI/NVMe) and filesystem (FAT32 first)
 6. Windowing system and compositor
@@ -33,6 +34,8 @@ See `INSTALL.md` (Windows 11 and macOS). Quick start from Git Bash on Windows:
 make CC=clang uefi-loader
 scripts/run-qemu-windows.sh
 python scripts/qemu-screenshot.py out/run/screen.png   # headless screenshot
+# Inject input through the QEMU monitor before the screenshot:
+python scripts/qemu-screenshot.py out/run/s.png 14 "mouse_move 50 50" "sendkey h"
 ```
 
 ## License
@@ -260,3 +263,11 @@ sudo out/installer-package/install.sh \
 - Enhanced QEMU/installer validation workflow (Issue #3)
 - File system integration (for applications)
 - System call interface for user tasks
+
+## Kernel coding notes
+
+- The kernel is a PIE and the loader applies **no relocations**. Do not create static
+  tables of pointers (`const char *names[] = {...}`); the stored addresses are not fixed
+  up and dereferencing them page-faults. Use flat arrays (`char names[N][M]`) or code.
+- The kernel runs with the UEFI boot services still active; the framebuffer comes from
+  the UEFI Graphics Output Protocol and stays valid for the life of the kernel.

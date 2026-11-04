@@ -21,6 +21,7 @@ uint32_t fb_width(void);
 uint32_t fb_height(void);
 
 void fb_put_pixel(int x, int y, uint32_t rgb);
+uint32_t fb_get_pixel(int x, int y);  // 0x00RRGGBB; 0 when out of range
 void fb_fill_rect(int x, int y, int w, int h, uint32_t rgb);
 void fb_draw_rect(int x, int y, int w, int h, uint32_t rgb);  // 1px outline
 void fb_clear(uint32_t rgb);
