@@ -1,0 +1,58 @@
+Secure Personal OS Source-Available License
+
+Copyright (c) 2026 Gary Davies
+All rights reserved.
+
+1. Limited permission for personal evaluation
+
+You are permitted to access, view, build, run, and test this software and its source code
+(the "Software"), and to make only those temporary or local copies of the Software that are
+technically necessary to inspect, evaluate, build, run, or test the Software, solely for
+personal, non-commercial evaluation purposes.
+
+2. Restrictions
+
+Except for the limited permission above, you may not, without prior written permission from
+the copyright holder:
+
+- use the Software for any commercial purpose;
+- copy, reproduce, distribute, publish, share, sublicense, sell, lease, or otherwise make
+  the Software available to any third party;
+- modify, adapt, translate, create derivative works from, or incorporate any portion of the
+  Software into any other software, product, or service;
+- use the Software, in whole or in part, to provide services to others;
+- remove, alter, or obscure any copyright, attribution, or license notice.
+
+3. No open-source grant
+
+This license is not an open-source license. No right is granted to use, modify, distribute,
+or commercially exploit the Software except as expressly stated in this license.
+
+4. Ownership
+
+The Software is licensed, not sold. All rights, title, and interest in and to the Software,
+including all intellectual property rights, remain exclusively with Gary Davies.
+
+5. Termination
+
+Any breach of this license automatically terminates your permission to access or use the
+Software. Upon termination, you must immediately stop using the Software and destroy all
+copies in your possession or control.
+
+6. No patent or trademark license
+
+No patent rights, trademark rights, trade dress rights, or other branding rights are granted
+under this license.
+
+7. Disclaimer
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE,
+TITLE, AND NON-INFRINGEMENT.
+
+8. Limitation of liability
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE COPYRIGHT HOLDER SHALL NOT BE LIABLE FOR ANY
+CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE,
+ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OF OR OTHER DEALINGS IN
+THE SOFTWARE.
