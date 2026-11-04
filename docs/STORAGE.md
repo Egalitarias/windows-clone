@@ -1,7 +1,8 @@
 # Storage and file system
 
-Source: `pci.c`, `ahci.c`, `block.c`, `fat32.c`, `fs.c` (kernel) and the Files app
-(`explorer.c`). Host tools: `scripts/make-disk-image.py`, `scripts/fat32-ls.py`.
+Source: `pci.c`, `ahci.c`, `nvme.c`, `disk.c`, `block.c`, `fat32.c`, `fs.c` (kernel) and
+the Files app (`explorer.c`). Partitioning, formatting and the installer are in
+`INSTALLER.md`. Host tools: `scripts/make-disk-image.py`, `scripts/fat32-ls.py`.
 
 ## Stack
 
@@ -9,9 +10,10 @@ Source: `pci.c`, `ahci.c`, `block.c`, `fat32.c`, `fs.c` (kernel) and the Files a
 Files app / Notes (explorer.c, apps.c)
         |
 fs.c        mounted FAT32 volumes (fs_volume(i))
-fat32.c     FAT32: long names, read, write, mkdir, delete
+fat32.c     FAT16 and FAT32: long names, read, write, mkdir, delete
 block.c     block devices = partitions (MBR / GPT) or whole disks
-ahci.c      AHCI SATA controller, polled, DMA via a bounce buffer
+disk.c      one list of whole disks across controllers
+ahci.c      AHCI SATA controller    nvme.c   NVMe controller   (both polled, DMA via a bounce buffer)
 pci.c       PCI configuration space (ports 0xCF8 / 0xCFC)
 ```
 
@@ -30,8 +32,8 @@ it a command list, FIS area and command table (one page), restarts it and issues
 through a 64 KB physically contiguous bounce buffer, so callers can use ordinary memory.
 Commands are issued one at a time on slot 0 and completed by polling `PxCI`.
 
-Not done: NVMe, ATAPI (CD/DVD), hot-plug, NCQ and interrupt-driven completion, USB mass
-storage, error recovery beyond failing the command.
+Not done: ATAPI (CD/DVD), hot-plug, NCQ and interrupt-driven completion, USB mass
+storage, error recovery beyond failing the command. NVMe is described in `INSTALLER.md`.
 
 ## Block layer
 
@@ -43,7 +45,10 @@ Device names look like `disk1p1`. All sector numbers given to `block_read` /
 
 ## FAT32
 
-- Reads and writes FAT32 with 512-byte sectors and any power-of-two cluster size.
+- Reads and writes **FAT16 and FAT32** with 512-byte sectors and any power-of-two cluster
+  size. On FAT16 the root directory is a fixed region (addressed as directory 0): it works
+  like any directory but cannot grow, so a full root reports an error. FAT12 is not
+  supported.
 - **Long file names** (VFAT): read, and written for any name that is not a plain upper-case
   8.3 name. `~N` aliases are generated and kept unique. Only ASCII is kept in long names;
   other characters show as `?`.
@@ -53,8 +58,7 @@ Device names look like `disk1p1`. All sector numbers given to `block_read` /
 - Both FAT copies are updated on every change; writes go straight to the disk (no
   write-back cache), so there is nothing to flush.
 - Timestamps come from the CMOS clock.
-- **Not supported:** FAT12/16 (so the QEMU boot disk is listed as a block device but not
-  mounted), exFAT/NTFS, the FSInfo free-space hints (left as written by the formatter),
+- **Not supported:** FAT12, exFAT/NTFS, the FSInfo free-space hints (left as written by the formatter),
   file attributes other than directory, subdirectory renames, rename and move, and
   files larger than 4 GiB.
 

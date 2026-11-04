@@ -40,6 +40,7 @@ static int g_sel = -1;                       // index into g_order
 static int g_scroll = 0;
 static char g_status[64];
 static int g_status_error = 0;
+static unsigned int g_gen = 0;               // fs_generation() the view was built from
 
 // ---- helpers ---------------------------------------------------------------
 
@@ -123,6 +124,7 @@ static void refresh(void) {
 }
 
 static void load_view(void) {
+  g_gen = fs_generation();
   g_count = 0;
   g_sel = -1;
   g_scroll = 0;
@@ -308,12 +310,23 @@ static void format_size(uint32_t size, char *out) {
   }
 }
 
+// The volumes were remounted (partitioning, install): our cached view is stale.
+static void sync_generation(void) {
+  if (g_gen != fs_generation()) {
+    g_vol = -1;
+    g_depth = 0;
+    load_view();
+  }
+}
+
 static void explorer_paint(wm_window_t *win, int cx, int cy, int cw, int ch) {
   char path[96];
-  int rows = visible_rows(ch);
+  int rows;
   int i;
 
   (void)win;
+  sync_generation();
+  rows = visible_rows(ch);
   // Toolbar
   fb_fill_rect(cx, cy, cw, TOOLBAR_H, FB_RGB(232, 234, 242));
   draw_button(cx + BTN_UP_X, cy + BTN_Y, BTN_UP_W, "Up", g_vol >= 0);
@@ -390,6 +403,7 @@ static void explorer_mouse(wm_window_t *win, int lx, int ly, int event) {
   if (event == WM_MOUSE_UP) {
     return;
   }
+  sync_generation();
   wm_client_rect(win, &cx, &cy, &cw, &ch);
   if (ly < TOOLBAR_H) {
     if (event != WM_MOUSE_DOWN || ly < BTN_Y || ly >= BTN_Y + BTN_H || g_vol < 0) {
@@ -421,6 +435,7 @@ static void explorer_mouse(wm_window_t *win, int lx, int ly, int event) {
 
 static void explorer_key(wm_window_t *win, char ch) {
   (void)win;
+  sync_generation();
   if (ch == PS2_KEY_UP) {
     select_index(g_sel - 1);
   } else if (ch == PS2_KEY_DOWN) {

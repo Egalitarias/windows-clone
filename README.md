@@ -13,9 +13,11 @@ interrupt-driven PS/2 keyboard and mouse (IRQ layer, 1 kHz PIT timer, RTC clock,
 `hlt`), and a window manager with a desktop shell:
 overlapping windows with z-order and focus, move, resize, minimize, maximize and close,
 a taskbar with one button per window and a real-time clock, a Start menu, desktop icons
-(double-click to launch), and dirty-rectangle repainting. A native AHCI/SATA driver, MBR/GPT partition scan and a FAT32 file system
-(long names, read/write/mkdir/delete) back a Files explorer and Notes open/save.
-Demo apps: Files, Notes, Paint and About.
+(double-click to launch), and dirty-rectangle repainting. Native AHCI/SATA and NVMe drivers, MBR/GPT partition scan and FAT16/FAT32 (long names,
+read/write/mkdir/delete) back a Files explorer and Notes open/save. An in-kernel GPT writer
+and FAT32 formatter power **Setup**, which installs WinClone onto a disk (GPT + ESP +
+data partition + boot files) that then boots on its own. Demo apps: Files, Notes, Paint,
+About and Setup.
 
 ![Demo desktop drawn by the kernel](docs/screenshots/framebuffer-desktop.png)
 
@@ -25,10 +27,10 @@ Demo apps: Files, Notes, Paint and About.
 2. UEFI GOP framebuffer and text drawing (done); on-screen text console still to do
 3. Keyboard and mouse input (PS/2 interrupt-driven, done; USB still to do), timer and clock (done)
 4. Syscalls and user mode (see `docs/`), process loader
-5. Storage driver and filesystem (AHCI + FAT32 done, see `docs/STORAGE.md`); NVMe, USB storage, FAT16/exFAT and our own filesystem still to do
+5. Storage and filesystem (AHCI, NVMe, FAT16/FAT32 done, see `docs/STORAGE.md`); USB storage, exFAT/NTFS and our own filesystem still to do
 6. Windowing system (done: window manager, see `docs/WINDOW_MANAGER.md`); compositor and double buffering still to do
 7. Desktop shell: taskbar and Start menu (done); file explorer, clock, notifications still to do
-8. Bootable USB installer
+8. Installer (done for fixed disks, see `docs/INSTALLER.md`); building a bootable USB image from the build still to do
 9. Optional: PE loader and a small Win32 subset
 
 ## Build and run

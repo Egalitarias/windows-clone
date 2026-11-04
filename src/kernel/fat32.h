@@ -3,10 +3,14 @@
 
 #include "console.h"
 
-// FAT32 file system on a block device: long file names, read, create/replace
-// files, directories, delete. Writes go straight through to the device (no
-// write-back cache). The FSInfo sector is not maintained (its counts are only
-// hints). Single-threaded: call from one context only.
+// FAT16 and FAT32 file systems on a block device: long file names, read,
+// create/replace files, directories, delete. (FAT12 is not supported.) Writes go
+// straight through to the device (no write-back cache). The FSInfo sector is not
+// maintained (its counts are only hints). Single-threaded: call from one
+// context only.
+//
+// On FAT16 the root directory is a fixed region, not a cluster chain; it is
+// addressed as directory "cluster" 0 (v->root_cluster == 0) and cannot grow.
 
 #define FAT_NAME_MAX 128      // longest name we keep (long names are cut here)
 
@@ -23,6 +27,11 @@ typedef struct {
   uint32_t reserved_sectors;
   uint32_t num_fats;
   uint32_t fat_size;           // sectors per FAT
+  int fat_bits;                // 16 or 32
+  uint32_t eoc_min;            // first end-of-chain value
+  uint32_t eoc;                // value written for end-of-chain
+  uint32_t root_dir_lba;       // FAT16: first sector of the fixed root directory
+  uint32_t root_dir_entries;   // FAT16: capacity of the fixed root directory
   uint32_t root_cluster;
   uint32_t total_sectors;
   uint32_t fat_lba;
@@ -59,9 +68,10 @@ typedef struct {
   uint32_t sec_lba;
   int sec_valid;
   int done;
+  int fixed_root;              // iterating the FAT16 fixed root directory
 } fat_iter_t;
 
-// Mount the FAT32 volume on block device `dev`. Returns 1 on success.
+// Mount the FAT16 or FAT32 volume on block device `dev`. Returns 1 on success.
 int fat_mount(int dev, fat_volume_t *v);
 
 // Directories are identified by their first cluster; the root is v->root_cluster.

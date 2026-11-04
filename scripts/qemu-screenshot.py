@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Boot out/uefi in QEMU, wait, and save a screenshot as a PNG.
 
-Usage: python scripts/qemu-screenshot.py [output.png] [wait-seconds] [monitor-cmd ...]
+Usage: python scripts/qemu-screenshot.py [options] [output.png] [wait-seconds] [monitor-cmd ...]
+
+Options:
+    --nvme IMAGE   also attach IMAGE as an NVMe disk (repeatable)
+    --no-esp       do not attach the virtual FAT boot disk (boot from --nvme only)
+    --no-data      do not attach out/run/data.img
 
 Extra arguments are QEMU monitor commands run (in order) before the
 screenshot, e.g. to drive the guest:
@@ -58,9 +63,27 @@ def ppm_to_png(ppm_path, png_path):
 
 
 def main():
-    out_png = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "out", "run", "screen.png")
-    wait = float(sys.argv[2]) if len(sys.argv) > 2 else 12.0
-    commands = sys.argv[3:]
+    argv = sys.argv[1:]
+    nvme_images = []
+    no_esp = no_data = False
+    rest = []
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--nvme":
+            nvme_images.append(argv[i + 1])
+            i += 2
+        elif argv[i] == "--no-esp":
+            no_esp = True
+            i += 1
+        elif argv[i] == "--no-data":
+            no_data = True
+            i += 1
+        else:
+            rest.append(argv[i])
+            i += 1
+    out_png = rest[0] if len(rest) > 0 else os.path.join(ROOT, "out", "run", "screen.png")
+    wait = float(rest[1]) if len(rest) > 1 else 12.0
+    commands = rest[2:]
     qemu = find_qemu()
     share = os.path.join(os.path.dirname(qemu), "share")
     code = os.path.join(share, "edk2-x86_64-code.fd")
@@ -79,10 +102,14 @@ def main():
         "-monitor", "tcp:127.0.0.1:%d,server,nowait" % MONITOR_PORT,
         "-drive", "if=pflash,format=raw,readonly=on,file=" + code,
         "-drive", "if=pflash,format=raw,file=" + vars_fd,
-        "-drive", "format=raw,file=fat:rw:" + os.path.join(ROOT, "out", "uefi"),
     ]
+    if not no_esp:
+        cmd += ["-drive", "format=raw,file=fat:rw:" + os.path.join(ROOT, "out", "uefi")]
+    for n, image in enumerate(nvme_images):
+        cmd += ["-drive", "if=none,id=nvm%d,format=raw,file=%s" % (n, image),
+                "-device", "nvme,serial=winclone%d,drive=nvm%d" % (n, n)]
     data_img = os.path.join(run_dir, "data.img")
-    if os.path.exists(data_img):
+    if os.path.exists(data_img) and not no_data:
         cmd += ["-drive", "if=none,id=data,format=raw,file=" + data_img,
                 "-device", "ide-hd,drive=data,bus=ide.1"]
     proc = subprocess.Popen(cmd, cwd=ROOT)

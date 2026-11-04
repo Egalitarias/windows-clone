@@ -12,5 +12,7 @@ void app_notes_open_file(fat_volume_t *vol, const fat_dirent_t *ent);
 void app_files_open(void);
 void app_paint_open(void);
 void app_about_open(void);
+// Installer: partitions and formats a disk and copies the boot files onto it.
+void app_setup_open(void);
 
 #endif // KERNEL_APPS_H

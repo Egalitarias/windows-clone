@@ -33,7 +33,7 @@ static uint32_t cluster_lba(const fat_volume_t *v, uint32_t cluster) {
   return v->data_lba + (cluster - 2u) * v->sectors_per_cluster;
 }
 
-static int is_eoc(uint32_t value) { return value >= FAT_EOC_MIN; }
+static int is_eoc(const fat_volume_t *v, uint32_t value) { return value >= v->eoc_min; }
 
 // ---- FAT table -------------------------------------------------------------
 
@@ -51,25 +51,31 @@ static int fat_load(fat_volume_t *v, uint32_t lba) {
 }
 
 static int fat_get(fat_volume_t *v, uint32_t cluster, uint32_t *value) {
-  uint32_t lba = v->fat_lba + (cluster * 4u) / 512u;
-  uint32_t off = (cluster * 4u) % 512u;
+  uint32_t width = (v->fat_bits == 16) ? 2u : 4u;
+  uint32_t lba = v->fat_lba + (cluster * width) / 512u;
+  uint32_t off = (cluster * width) % 512u;
   if (cluster >= v->cluster_count + 2u || !fat_load(v, lba)) {
     return 0;
   }
-  *value = le32(v->fat_buf + off) & FAT_MASK;
+  *value = (v->fat_bits == 16) ? le16(v->fat_buf + off) : (le32(v->fat_buf + off) & FAT_MASK);
   return 1;
 }
 
 static int fat_set(fat_volume_t *v, uint32_t cluster, uint32_t value) {
-  uint32_t lba = v->fat_lba + (cluster * 4u) / 512u;
-  uint32_t off = (cluster * 4u) % 512u;
+  uint32_t width = (v->fat_bits == 16) ? 2u : 4u;
+  uint32_t lba = v->fat_lba + (cluster * width) / 512u;
+  uint32_t off = (cluster * width) % 512u;
   uint32_t i, old;
 
   if (cluster >= v->cluster_count + 2u || !fat_load(v, lba)) {
     return 0;
   }
-  old = le32(v->fat_buf + off);
-  put32(v->fat_buf + off, (old & ~FAT_MASK) | (value & FAT_MASK));
+  if (v->fat_bits == 16) {
+    put16(v->fat_buf + off, (uint16_t)value);
+  } else {
+    old = le32(v->fat_buf + off);
+    put32(v->fat_buf + off, (old & ~FAT_MASK) | (value & FAT_MASK));
+  }
   for (i = 0; i < v->num_fats; i++) {
     if (!block_write(v->dev, lba + i * v->fat_size, 1, v->fat_buf)) {
       return 0;
@@ -102,7 +108,7 @@ static uint32_t alloc_cluster(fat_volume_t *v) {
       c -= total;
     }
     if (fat_get(v, c, &value) && value == 0) {
-      if (!fat_set(v, c, FAT_EOC)) {
+      if (!fat_set(v, c, v->eoc)) {
         return 0;
       }
       v->next_free = c + 1;
@@ -122,7 +128,7 @@ static void free_chain(fat_volume_t *v, uint32_t cluster) {
     if (cluster < v->next_free) {
       v->next_free = cluster;
     }
-    if (is_eoc(next)) {
+    if (is_eoc(v, next)) {
       return;
     }
     cluster = next;
@@ -144,8 +150,8 @@ uint64_t fat_free_bytes(fat_volume_t *v) {
 
 int fat_mount(int dev, fat_volume_t *v) {
   uint8_t sec[512];
-  uint32_t bps, spc, total, data_sectors;
-  int i;
+  uint32_t bps, spc, total, root_entries, fat16, root_dir_sectors;
+  int i, label_at;
 
   if (!block_read(dev, 0, 1, sec)) {
     return 0;
@@ -158,29 +164,63 @@ int fat_mount(int dev, fat_volume_t *v) {
   if (bps != 512 || spc == 0 || (spc & (spc - 1)) != 0) {
     return 0;
   }
-  if (le16(sec + 17) != 0 || le16(sec + 22) != 0 || le32(sec + 36) == 0) {
-    return 0;       // FAT12/16 (fixed root directory) is not supported
-  }
+  root_entries = le16(sec + 17);
+  fat16 = le16(sec + 22);
   total = le16(sec + 19) ? le16(sec + 19) : le32(sec + 32);
 
   v->dev = dev;
   v->sectors_per_cluster = spc;
   v->reserved_sectors = le16(sec + 14);
   v->num_fats = sec[16];
-  v->fat_size = le32(sec + 36);
-  v->root_cluster = le32(sec + 44);
   v->total_sectors = total;
   v->fat_lba = v->reserved_sectors;
-  v->data_lba = v->reserved_sectors + v->num_fats * v->fat_size;
-  if (v->num_fats == 0 || v->num_fats > 2 || v->data_lba >= total || v->root_cluster < 2) {
+  if (v->num_fats == 0 || v->num_fats > 2 || v->reserved_sectors == 0 || total == 0) {
     return 0;
   }
-  data_sectors = total - v->data_lba;
-  v->cluster_count = data_sectors / spc;
+
+  if (fat16 != 0) {                          // FAT12 / FAT16: fixed root directory
+    if (root_entries == 0) {
+      return 0;
+    }
+    root_dir_sectors = (root_entries * 32u + 511u) / 512u;
+    v->fat_size = fat16;
+    v->root_dir_lba = v->reserved_sectors + v->num_fats * fat16;
+    v->root_dir_entries = root_entries;
+    v->data_lba = v->root_dir_lba + root_dir_sectors;
+    if (v->data_lba >= total) {
+      return 0;
+    }
+    v->cluster_count = (total - v->data_lba) / spc;
+    if (v->cluster_count < 4085u || v->cluster_count >= 65525u) {
+      return 0;                              // FAT12 (too small) is not supported
+    }
+    v->fat_bits = 16;
+    v->eoc_min = 0xFFF8u;
+    v->eoc = 0xFFFFu;
+    v->root_cluster = 0;
+    label_at = 43;
+  } else {                                   // FAT32
+    if (root_entries != 0 || le32(sec + 36) == 0) {
+      return 0;
+    }
+    v->fat_size = le32(sec + 36);
+    v->root_cluster = le32(sec + 44);
+    v->root_dir_lba = 0;
+    v->root_dir_entries = 0;
+    v->data_lba = v->reserved_sectors + v->num_fats * v->fat_size;
+    if (v->data_lba >= total || v->root_cluster < 2) {
+      return 0;
+    }
+    v->cluster_count = (total - v->data_lba) / spc;
+    v->fat_bits = 32;
+    v->eoc_min = FAT_EOC_MIN;
+    v->eoc = FAT_EOC;
+    label_at = 71;
+  }
   v->next_free = 2;
   v->fat_buf_valid = 0;
   for (i = 0; i < 11; i++) {
-    v->label[i] = (char)sec[71 + i];
+    v->label[i] = (char)sec[label_at + i];
   }
   v->label[11] = 0;
   for (i = 10; i >= 0 && v->label[i] == ' '; i--) {
@@ -201,7 +241,8 @@ void fat_iter_open(fat_volume_t *v, uint32_t dir_cluster, fat_iter_t *it) {
   it->index = 0;
   it->abs = 0;
   it->sec_valid = 0;
-  it->done = (dir_cluster < 2);
+  it->fixed_root = (dir_cluster == 0 && v->fat_bits == 16);
+  it->done = (dir_cluster < 2 && !it->fixed_root);
 }
 
 // Read the next raw 32-byte record (including deleted and end markers). Returns
@@ -214,8 +255,17 @@ static int iter_raw(fat_iter_t *it, uint8_t out[32], uint32_t *abs_index) {
   if (it->done) {
     return 0;
   }
-  lba = cluster_lba(v, it->cluster) + (it->index * 32u) / 512u;
-  off = (it->index * 32u) % 512u;
+  if (it->fixed_root) {
+    if (it->abs >= v->root_dir_entries) {
+      it->done = 1;
+      return 0;
+    }
+    lba = v->root_dir_lba + (it->abs * 32u) / 512u;
+    off = (it->abs * 32u) % 512u;
+  } else {
+    lba = cluster_lba(v, it->cluster) + (it->index * 32u) / 512u;
+    off = (it->index * 32u) % 512u;
+  }
   if (!it->sec_valid || it->sec_lba != lba) {
     if (!block_read(v->dev, lba, 1, it->sec)) {
       it->done = 1;
@@ -229,8 +279,11 @@ static int iter_raw(fat_iter_t *it, uint8_t out[32], uint32_t *abs_index) {
 
   it->abs++;
   it->index++;
+  if (it->fixed_root) {
+    return 1;                                  // no chain to follow
+  }
   if (it->index >= per_cluster) {
-    if (!fat_get(v, it->cluster, &next) || is_eoc(next) || next < 2) {
+    if (!fat_get(v, it->cluster, &next) || is_eoc(v, next) || next < 2) {
       it->done = 1;
     } else {
       it->cluster = next;
@@ -398,7 +451,7 @@ int fat_read_file(fat_volume_t *v, const fat_dirent_t *ent, void *buf, uint32_t 
         remaining -= take;
       }
     }
-    if (remaining == 0 || !fat_get(v, cluster, &next) || is_eoc(next)) {
+    if (remaining == 0 || !fat_get(v, cluster, &next) || is_eoc(v, next)) {
       break;
     }
     cluster = next;
@@ -418,11 +471,19 @@ static int dir_locate(fat_volume_t *v, uint32_t dir_cluster, uint32_t abs, int e
   uint32_t rem = abs % per_cluster;
   uint32_t cluster = dir_cluster, next;
 
+  if (dir_cluster == 0 && v->fat_bits == 16) {  // fixed root directory: no growth
+    if (abs >= v->root_dir_entries) {
+      return 0;
+    }
+    *lba = v->root_dir_lba + (abs * 32u) / 512u;
+    *offset = (abs * 32u) % 512u;
+    return 1;
+  }
   while (hops > 0) {
     if (!fat_get(v, cluster, &next)) {
       return 0;
     }
-    if (is_eoc(next) || next < 2) {
+    if (is_eoc(v, next) || next < 2) {
       uint32_t fresh;
       if (!extend) {
         return 0;

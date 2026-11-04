@@ -26,6 +26,7 @@ typedef struct {
   int len;
   int has_file;                 // loaded from / saved to a file
   fat_volume_t *vol;
+  unsigned int generation;      // fs_generation() when vol was taken
   uint32_t dir_cluster;
   char file[FAT_NAME_MAX];
   char status[48];
@@ -91,12 +92,18 @@ static void notes_set_status(NotesData *d, const char *a, const char *b) {
   }
 }
 
-// Save to the associated file, or to a new NOTEn.TXT on the first volume.
+// Save to the associated file, or to a new NOTEn.TXT on the default volume.
 static void notes_save(wm_window_t *win) {
   NotesData *d = (NotesData *)win->data;
-  fat_volume_t *vol = d->has_file ? d->vol : fs_volume(0);
+  fat_volume_t *vol = d->has_file ? d->vol : fs_default_volume();
   uint32_t dir, len = 0;
   int i;
+
+  if (d->has_file && d->generation != fs_generation()) {
+    notes_set_status(d, "Disks changed since this file was opened: cannot save", 0);
+    wm_invalidate_window(win);
+    return;
+  }
 
   if (!vol) {
     notes_set_status(d, "No disk available", 0);
@@ -127,6 +134,7 @@ static void notes_save(wm_window_t *win) {
   if (fat_write_file(vol, dir, d->file, g_io_buf, len)) {
     d->has_file = 1;
     d->vol = vol;
+    d->generation = fs_generation();
     d->dir_cluster = dir;
     notes_set_title(win, d->file);
     notes_set_status(d, "Saved ", d->file);
@@ -223,6 +231,7 @@ void app_notes_open_file(fat_volume_t *vol, const fat_dirent_t *ent) {
   }
   d->has_file = 1;
   d->vol = vol;
+  d->generation = fs_generation();
   d->dir_cluster = ent->dir_cluster;
   str_copy(d->file, ent->name, sizeof(d->file));
   notes_set_title(win, d->file);

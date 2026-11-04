@@ -2,29 +2,95 @@
 """Independent FAT32 reader and checker for disk images (verifies what the OS wrote).
 
 Usage:
-    python scripts/fat32-ls.py IMAGE            list the whole tree
+    python scripts/fat32-ls.py IMAGE --gpt      show and validate the GPT (CRCs, backup, overlaps)
+    python scripts/fat32-ls.py IMAGE [--part N] list the whole tree (N = GPT/MBR partition number)
     python scripts/fat32-ls.py IMAGE --cat PATH print a file (PATH like /DOCS/HELLO.TXT)
     python scripts/fat32-ls.py IMAGE --check    consistency check (exit status 1 on problems)
 
-Handles an MBR with one FAT32 partition, or a bare FAT32 volume. This is a
+Handles an MBR with FAT32 partitions, a GPT disk, or a bare FAT32 volume. This is a
 deliberately separate implementation from the kernel's driver. Standard
 library only.
 """
 import struct
 import sys
+import zlib
 
 SECTOR = 512
 
 
+def parse_gpt(f):
+    """Return (header, entries, problems). Validates both headers and entry arrays."""
+    def read(lba, n=1):
+        f.seek(lba * SECTOR)
+        return f.read(n * SECTOR)
+
+    problems = []
+    f.seek(0, 2)
+    total = f.tell() // SECTOR
+    mbr = read(0)
+    if mbr[510:512] != b"\x55\xAA" or mbr[446 + 4] != 0xEE:
+        return None, [], ["no protective MBR"]
+    result = None
+    for name, lba in (("primary", 1), ("backup", total - 1)):
+        h = read(lba)
+        if h[0:8] != b"EFI PART":
+            problems.append("%s header: bad signature" % name)
+            continue
+        size = struct.unpack_from("<I", h, 12)[0]
+        crc = struct.unpack_from("<I", h, 16)[0]
+        body = bytearray(h[:size])
+        body[16:20] = b"\x00\x00\x00\x00"
+        if zlib.crc32(bytes(body)) != crc:
+            problems.append("%s header: CRC mismatch" % name)
+        my, alt, first, last = struct.unpack_from("<QQQQ", h, 24)
+        guid = h[56:72]
+        ent_lba, n, esize, ecrc = struct.unpack_from("<QIII", h, 72)
+        if my != lba:
+            problems.append("%s header: MyLBA %d != %d" % (name, my, lba))
+        entries = read(ent_lba, (n * esize + SECTOR - 1) // SECTOR)[:n * esize]
+        if zlib.crc32(entries) != ecrc:
+            problems.append("%s entry array: CRC mismatch" % name)
+        parsed = []
+        for i in range(n):
+            e = entries[i * esize:(i + 1) * esize]
+            if e[0:16] == b"\x00" * 16:
+                continue
+            s, en = struct.unpack_from("<QQ", e, 32)
+            label = e[56:128].decode("utf-16-le").split("\x00")[0]
+            if s < first or en > last or en < s:
+                problems.append("%s: partition %d outside usable area" % (name, i + 1))
+            parsed.append(dict(index=i + 1, type=e[0:16].hex(), start=s, end=en, name=label))
+        if result is None:
+            result = dict(first=first, last=last, guid=guid.hex(), total=total), parsed
+        elif result[1] != parsed:
+            problems.append("primary and backup partition entries differ")
+    for i, a in enumerate(result[1] if result else []):
+        for b in (result[1] if result else [])[i + 1:]:
+            if a["start"] <= b["end"] and b["start"] <= a["end"]:
+                problems.append("partitions %d and %d overlap" % (a["index"], b["index"]))
+    return (result[0] if result else None), (result[1] if result else []), problems
+
+
 class Volume:
-    def __init__(self, path):
+    def __init__(self, path, part=None):
         self.f = open(path, "rb")
         self.base = 0
         boot = self.read(0, SECTOR)
+        if part is not None or not self.valid_boot(boot):
+            header, entries, _ = parse_gpt(self.f)
+            if header is not None:
+                chosen = [e for e in entries if part is None or e["index"] == part]
+                for e in chosen:
+                    self.base = e["start"] * SECTOR
+                    if self.valid_boot(self.read(0, SECTOR)):
+                        break
+                boot = self.read(0, SECTOR)
         if not self.valid_boot(boot):
             # try MBR partitions
             for i in range(4):
-                e = boot[446 + i * 16:446 + (i + 1) * 16]
+                if part is not None and i + 1 != part:
+                    continue
+                e = boot[446 + i * 16:446 + (i + 1) * 16] if self.base == 0 else b"\x00" * 16
                 if e[4] in (0x0B, 0x0C):
                     self.base = struct.unpack_from("<I", e, 8)[0] * SECTOR
                     boot = self.read(0, SECTOR)
@@ -170,7 +236,21 @@ def check(vol):
 def main():
     if len(sys.argv) < 2:
         raise SystemExit(__doc__)
-    vol = Volume(sys.argv[1])
+    if "--gpt" in sys.argv:
+        with open(sys.argv[1], "rb") as f:
+            header, entries, problems = parse_gpt(f)
+        if header:
+            print("disk GUID %s, usable LBA %d-%d of %d" % (header["guid"], header["first"],
+                                                         header["last"], header["total"]))
+        for e in entries:
+            print("  partition %d: LBA %d-%d (%d MiB) type %s name %r" % (
+                e["index"], e["start"], e["end"], (e["end"] - e["start"] + 1) // 2048, e["type"], e["name"]))
+        for p in problems:
+            print("PROBLEM:", p)
+        print("GPT: %s" % ("OK" if not problems else "%d problem(s)" % len(problems)))
+        sys.exit(1 if problems else 0)
+    part = int(sys.argv[sys.argv.index("--part") + 1]) if "--part" in sys.argv else None
+    vol = Volume(sys.argv[1], part)
     if "--cat" in sys.argv:
         path = sys.argv[sys.argv.index("--cat") + 1]
         ent = resolve(vol, path)

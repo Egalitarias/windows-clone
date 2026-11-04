@@ -6,11 +6,12 @@ static fat_volume_t g_volumes[FS_MAX_VOLUMES];
 static char g_names[FS_MAX_VOLUMES][24];
 static int g_count = 0;
 
-int fs_init(void) {
-  int devs, i;
+static unsigned int g_generation = 0;
+
+static int mount_all(void) {
+  int devs = block_count(), i;
 
   g_count = 0;
-  devs = block_init();
   for (i = 0; i < devs && g_count < FS_MAX_VOLUMES; i++) {
     fat_volume_t *v = &g_volumes[g_count];
     if (!fat_mount(i, v)) {
@@ -24,13 +25,38 @@ int fs_init(void) {
     }
     g_count++;
   }
+  g_generation++;
   return g_count;
 }
+
+int fs_init(void) {
+  block_init();
+  return mount_all();
+}
+
+int fs_rescan(void) {
+  block_rescan();
+  return mount_all();
+}
+
+unsigned int fs_generation(void) { return g_generation; }
 
 int fs_volume_count(void) { return g_count; }
 
 fat_volume_t *fs_volume(int index) {
   return (index >= 0 && index < g_count) ? &g_volumes[index] : 0;
+}
+
+fat_volume_t *fs_default_volume(void) {
+  int i;
+  fat_dirent_t efi;
+  for (i = 0; i < g_count; i++) {
+    // Skip boot volumes (ESPs and the installation medium): they hold \EFI.
+    if (!fat_lookup(&g_volumes[i], g_volumes[i].root_cluster, "EFI", &efi)) {
+      return &g_volumes[i];
+    }
+  }
+  return g_count > 0 ? &g_volumes[0] : 0;
 }
 
 const char *fs_volume_name(int index) {

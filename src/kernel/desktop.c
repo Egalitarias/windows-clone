@@ -37,7 +37,7 @@
 #define TASK_PITCH   132
 #define MENU_W       200
 #define MENU_ITEM_H  28
-#define MENU_COUNT   5
+#define MENU_COUNT   6
 #define ICON_X       24
 #define ICON_Y0      24
 #define ICON_PITCH   84
@@ -71,6 +71,7 @@ static const char *menu_label(int i) {
     case 1:  return "Notes";
     case 2:  return "Paint";
     case 3:  return "About WinClone";
+    case 4:  return "Setup";
     default: return "Shut down";
   }
 }
@@ -228,8 +229,10 @@ static void launch(int which) {
     app_notes_open();
   } else if (which == 2) {
     app_paint_open();
-  } else {
+  } else if (which == 3) {
     app_about_open();
+  } else {
+    app_setup_open();
   }
 }
 
@@ -387,10 +390,27 @@ static void update_menu_hover(void) {
 
 // ---- main loop -------------------------------------------------------------
 
+// Repaint the accumulated dirty region, if any. Returns 1 if something was drawn.
+static int repaint_dirty(void) {
+  int dx, dy, dw, dh;
+  if (!wm_take_dirty(&dx, &dy, &dw, &dh)) {
+    return 0;
+  }
+  cursor_restore();
+  fb_set_clip(dx, dy, dw, dh);
+  paint_scene();
+  fb_reset_clip();
+  cursor_save_and_draw();
+  return 1;
+}
+
+void desktop_pump(void) {
+  repaint_dirty();
+}
+
 static __attribute__((noreturn)) void desktop_run(void) {
   ps2_event_t ev;
   int moved = 0;
-  int dx, dy, dw, dh;
 
   uint64_t last_second;
 
@@ -407,12 +427,12 @@ static __attribute__((noreturn)) void desktop_run(void) {
   ps2_init();
   update_clock();
 
-  // Storage: AHCI disks, partitions, FAT32 volumes. Logged to the console
+  // Storage: disks, partitions, FAT volumes. Logged to the console
   // (serial) before the first repaint covers the screen.
   {
     int volumes = fs_init();
     int i;
-    console_printf("[storage] %d block device(s), %d FAT32 volume(s)\r\n", block_count(), volumes);
+    console_printf("[storage] %d block device(s), %d FAT volume(s)\r\n", block_count(), volumes);
 #ifdef KERNEL_FS_SELFTEST
     if (volumes > 0) {
       fs_selftest();
@@ -473,12 +493,7 @@ static __attribute__((noreturn)) void desktop_run(void) {
       }
     }
 
-    if (wm_take_dirty(&dx, &dy, &dw, &dh)) {
-      cursor_restore();
-      fb_set_clip(dx, dy, dw, dh);
-      paint_scene();
-      fb_reset_clip();
-      cursor_save_and_draw();
+    if (repaint_dirty()) {
       moved = 0;
     } else if (moved) {
       cursor_restore();

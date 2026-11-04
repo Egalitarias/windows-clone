@@ -1,5 +1,5 @@
 #include "block.h"
-#include "ahci.h"
+#include "disk.h"
 #include "string.h"
 
 static block_dev_t g_devs[BLOCK_MAX_DEVICES];
@@ -14,12 +14,8 @@ static uint64_t le64(const uint8_t *p) {
 }
 
 static void make_name(char *out, int disk, int partition) {
-  int n = 0;
-  out[n++] = 'd';
-  out[n++] = 'i';
-  out[n++] = 's';
-  out[n++] = 'k';
-  n += u32_to_str((uint32_t)disk, out + n);
+  const disk_info_t *info = disk_get(disk);
+  int n = (int)str_copy(out, info ? info->name : "disk", 16);
   if (partition > 0) {
     out[n++] = 'p';
     n += u32_to_str((uint32_t)partition, out + n);
@@ -63,7 +59,7 @@ static void scan_gpt(int disk, uint64_t disk_sectors) {
   uint32_t count, entry_size, i;
   int part_no = 0;
 
-  if (!ahci_read(disk, 1, 1, header) || memcmp(header, "EFI PART", 8) != 0) {
+  if (!disk_read(disk, 1, 1, header) || memcmp(header, "EFI PART", 8) != 0) {
     return;
   }
   entries_lba = le64(header + 72);
@@ -79,7 +75,7 @@ static void scan_gpt(int disk, uint64_t disk_sectors) {
     uint64_t first, last;
     int empty = 1, k;
 
-    if (idx == 0 && !ahci_read(disk, entries_lba + i / per_sector, 1, entries)) {
+    if (idx == 0 && !disk_read(disk, entries_lba + i / per_sector, 1, entries)) {
       return;
     }
     e = entries + idx * entry_size;
@@ -102,10 +98,10 @@ static void scan_gpt(int disk, uint64_t disk_sectors) {
 
 static void scan_disk(int disk) {
   static uint8_t sector[512];
-  const ahci_disk_t *d = ahci_disk(disk);
+  const disk_info_t *d = disk_get(disk);
   int p, found = 0;
 
-  if (!d || !ahci_read(disk, 0, 1, sector)) {
+  if (!d || !disk_read(disk, 0, 1, sector)) {
     return;
   }
   if (looks_like_fat_boot_sector(sector)) {
@@ -134,15 +130,19 @@ static void scan_disk(int disk) {
   add_device(disk, 0, d->sectors, 0);          // unknown layout: expose the raw disk
 }
 
-int block_init(void) {
-  int disks, i;
+int block_rescan(void) {
+  int i;
 
   g_count = 0;
-  disks = ahci_init();
-  for (i = 0; i < disks; i++) {
+  for (i = 0; i < disk_count(); i++) {
     scan_disk(i);
   }
   return g_count;
+}
+
+int block_init(void) {
+  disk_init();
+  return block_rescan();
 }
 
 int block_count(void) { return g_count; }
@@ -159,7 +159,7 @@ int block_read(int dev, uint64_t lba, uint32_t count, void *buf) {
   if (!d || lba + count > d->sectors) {
     return 0;
   }
-  return ahci_read(d->disk, d->start + lba, count, buf);
+  return disk_read(d->disk, d->start + lba, count, buf);
 }
 
 int block_write(int dev, uint64_t lba, uint32_t count, const void *buf) {
@@ -167,5 +167,5 @@ int block_write(int dev, uint64_t lba, uint32_t count, const void *buf) {
   if (!d || lba + count > d->sectors) {
     return 0;
   }
-  return ahci_write(d->disk, d->start + lba, count, buf);
+  return disk_write(d->disk, d->start + lba, count, buf);
 }

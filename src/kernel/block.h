@@ -11,16 +11,20 @@
 #define BLOCK_SECTOR_SIZE 512
 
 typedef struct {
-  int disk;             // index in the AHCI disk list
+  int disk;             // index in the disk list (disk.h)
   uint64_t start;       // first sector on the disk
   uint64_t sectors;     // length in sectors
   int partition;        // 0 = whole disk, otherwise 1-based partition number
-  char name[24];        // e.g. "disk0" or "disk1p1"
+  char name[24];        // e.g. "sata0" or "nvme0p2"
 } block_dev_t;
 
 // Bring up storage controllers and enumerate devices. Returns the number of
 // block devices.
 int block_init(void);
+
+// Re-read every disk's partition table (after partitioning). Existing block
+// device numbers may change; remount file systems afterwards (fs_rescan).
+int block_rescan(void);
 
 int block_count(void);
 const block_dev_t *block_get(int index);
