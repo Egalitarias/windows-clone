@@ -34,6 +34,7 @@ static SchedulerTask g_tasks[SCHEDULER_MAX_TASKS];
 static ReadyQueue g_ready_queues[SCHEDULER_PRIORITY_LEVELS];
 static unsigned int g_task_count = 0;
 static unsigned int g_completed_tasks = 0;
+static void (*g_idle_callback)(void) = 0;
 static unsigned int g_current_index = SCHEDULER_INVALID_INDEX;
 static int g_scheduler_started = 0;
 static volatile int g_timer_irq_active = 0;
@@ -602,11 +603,18 @@ void scheduler_task_entry(void) {
     if (g_completed_tasks >= g_task_count) {
       scheduler_print_summary();
       console_write_string("Scheduler idle\r\n");
+      if (g_idle_callback != 0) {
+        g_idle_callback();
+      }
       scheduler_halt_forever();
     }
 
     scheduler_wait_for_reschedule();
   }
+}
+
+void scheduler_set_idle_callback(void (*callback)(void)) {
+  g_idle_callback = callback;
 }
 
 __attribute__((noreturn)) void scheduler_run(void) {

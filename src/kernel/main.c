@@ -8,6 +8,8 @@
 #include "tcb.h"
 #include "scheduler.h"
 #include "timer.h"
+#include "fb.h"
+#include "desktop.h"
 
 #ifdef KERNEL_TESTS
 extern void run_tcb_tests(void);
@@ -97,6 +99,13 @@ typedef struct {
   unsigned long long MemoryMapSize;
   unsigned long long MemoryMapDescSize;
   unsigned long long MemoryMapEntries;
+  // Linear framebuffer from the UEFI Graphics Output Protocol (0 = none)
+  unsigned long long FramebufferBase;
+  unsigned long long FramebufferSize;
+  unsigned int FramebufferWidth;
+  unsigned int FramebufferHeight;
+  unsigned int FramebufferStride;
+  unsigned int FramebufferFormat;
 } KERNEL_BOOT_INFO;
 
 typedef struct DemoTaskState {
@@ -197,6 +206,7 @@ static __attribute__((noreturn)) void kernel_runtime(const KERNEL_BOOT_INFO *boo
     DemoTaskState task_b = {"task-b", 0, 0};
 
     scheduler_init();
+    scheduler_set_idle_callback(desktop_draw_demo);
     scheduler_add_task("task-a", demo_task, &task_a);
     scheduler_add_task("task-b", demo_task, &task_b);
     scheduler_run();
@@ -283,6 +293,24 @@ __attribute__((noreturn)) void kernel_entry(const KERNEL_BOOT_INFO *boot_info) {
     kernel_cs = gdt_init();
     idt_reload_selector(kernel_cs);
     console_write_string("    Kernel GDT installed\r\n");
+
+    if (boot_info->FramebufferBase != 0) {
+      if (fb_init(boot_info->FramebufferBase,
+                  boot_info->FramebufferSize,
+                  boot_info->FramebufferWidth,
+                  boot_info->FramebufferHeight,
+                  boot_info->FramebufferStride,
+                  boot_info->FramebufferFormat)) {
+        console_printf("    Framebuffer: %ux%u at 0x%llx\r\n",
+                       boot_info->FramebufferWidth,
+                       boot_info->FramebufferHeight,
+                       boot_info->FramebufferBase);
+      } else {
+        console_write_string("    Framebuffer: init failed\r\n");
+      }
+    } else {
+      console_write_string("    Framebuffer: none\r\n");
+    }
   } else {
     console_write_string("    Paging setup failed\r\n");
     for (;;) {

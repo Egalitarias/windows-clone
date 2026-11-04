@@ -76,6 +76,9 @@ struct SIMPLE_TEXT_OUTPUT_PROTOCOL {
   EFI_TEXT_STRING OutputString;
 };
 
+typedef EFI_STATUS(EFIAPI *EFI_LOCATE_PROTOCOL)(EFI_GUID *Protocol,
+                                                void *Registration,
+                                                void **Interface);
 typedef EFI_STATUS(EFIAPI *EFI_HANDLE_PROTOCOL)(EFI_HANDLE Handle,
                                                 EFI_GUID *Protocol,
                                                 void **Interface);
@@ -143,7 +146,7 @@ struct EFI_BOOT_SERVICES {
   void *OpenProtocolInformation;
   void *ProtocolsPerHandle;
   void *LocateHandleBuffer;
-  void *LocateProtocol;
+  EFI_LOCATE_PROTOCOL LocateProtocol;
   void *InstallMultipleProtocolInterfaces;
   void *UninstallMultipleProtocolInterfaces;
   void *CalculateCrc32;
@@ -241,6 +244,38 @@ typedef struct {
   UINT64 BssSize;   // extra zero-fill bytes the loader must append after ImageSize
 } KERNEL_IMAGE_HEADER;
 
+typedef struct {
+  UINT32 RedMask;
+  UINT32 GreenMask;
+  UINT32 BlueMask;
+  UINT32 ReservedMask;
+} EFI_PIXEL_BITMASK;
+
+typedef struct {
+  UINT32 Version;
+  UINT32 HorizontalResolution;
+  UINT32 VerticalResolution;
+  UINT32 PixelFormat;  // 0 = RGBX, 1 = BGRX, 2 = bitmask, 3 = blt only
+  EFI_PIXEL_BITMASK PixelInformation;
+  UINT32 PixelsPerScanLine;
+} EFI_GRAPHICS_OUTPUT_MODE_INFORMATION;
+
+typedef struct {
+  UINT32 MaxMode;
+  UINT32 Mode;
+  EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *Info;
+  UINTN SizeOfInfo;
+  EFI_PHYSICAL_ADDRESS FrameBufferBase;
+  UINTN FrameBufferSize;
+} EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE;
+
+typedef struct {
+  void *QueryMode;
+  void *SetMode;
+  void *Blt;
+  EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE *Mode;
+} EFI_GRAPHICS_OUTPUT_PROTOCOL;
+
 struct KERNEL_BOOT_INFO {
   UINT64 Magic;
   UINT32 Version;
@@ -252,6 +287,14 @@ struct KERNEL_BOOT_INFO {
   UINT64 MemoryMapSize;
   UINT64 MemoryMapDescSize;
   UINT64 MemoryMapEntries;
+  // Linear framebuffer from the UEFI Graphics Output Protocol.
+  // FramebufferBase == 0 means no usable graphics mode was found.
+  UINT64 FramebufferBase;
+  UINT64 FramebufferSize;
+  UINT32 FramebufferWidth;
+  UINT32 FramebufferHeight;
+  UINT32 FramebufferStride;  // pixels per scan line
+  UINT32 FramebufferFormat;  // 0 = RGBX, 1 = BGRX (EFI_GRAPHICS_PIXEL_FORMAT)
 };
 
 typedef void(EFIAPI *KERNEL_ENTRY_POINT)(const KERNEL_BOOT_INFO *BootInfo);
@@ -259,6 +302,9 @@ typedef void(EFIAPI *KERNEL_ENTRY_POINT)(const KERNEL_BOOT_INFO *BootInfo);
 static EFI_GUID gEfiLoadedImageProtocolGuid = {
     0x5B1B31A1U, 0x9562U, 0x11D2U,
     {0x8E, 0x3F, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B}};
+static EFI_GUID gEfiGraphicsOutputProtocolGuid = {
+    0x9042A9DEU, 0x23DCU, 0x4A38U,
+    {0x96, 0xFB, 0x7A, 0xDE, 0xD0, 0x80, 0x51, 0x6A}};
 static EFI_GUID gEfiSimpleFileSystemProtocolGuid = {
     0x964E5B22U, 0x6459U, 0x11D2U,
     {0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B}};
@@ -645,6 +691,28 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
   boot_info.MemoryMapDescSize = (UINT64)mem_desc_size;
   boot_info.MemoryMapEntries  = (mem_desc_size > 0)
                                 ? (UINT64)(mem_map_size / mem_desc_size) : 0;
+
+  boot_info.FramebufferBase   = 0;
+  boot_info.FramebufferSize   = 0;
+  boot_info.FramebufferWidth  = 0;
+  boot_info.FramebufferHeight = 0;
+  boot_info.FramebufferStride = 0;
+  boot_info.FramebufferFormat = 0;
+  {
+    EFI_GRAPHICS_OUTPUT_PROTOCOL *gop = 0;
+    EFI_STATUS gop_status = system_table->BootServices->LocateProtocol(
+        &gEfiGraphicsOutputProtocolGuid, 0, (void **)&gop);
+    if (!EFI_ERROR(gop_status) && gop != 0 && gop->Mode != 0 &&
+        gop->Mode->Info != 0 && gop->Mode->FrameBufferBase != 0 &&
+        gop->Mode->Info->PixelFormat <= 1) {
+      boot_info.FramebufferBase   = (UINT64)gop->Mode->FrameBufferBase;
+      boot_info.FramebufferSize   = (UINT64)gop->Mode->FrameBufferSize;
+      boot_info.FramebufferWidth  = gop->Mode->Info->HorizontalResolution;
+      boot_info.FramebufferHeight = gop->Mode->Info->VerticalResolution;
+      boot_info.FramebufferStride = gop->Mode->Info->PixelsPerScanLine;
+      boot_info.FramebufferFormat = gop->Mode->Info->PixelFormat;
+    }
+  }
 
   kernel_entry(&boot_info);
 

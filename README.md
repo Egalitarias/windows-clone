@@ -7,12 +7,16 @@ system, shell and apps. No code or assets from Microsoft Windows or any other OS
 ## Status
 
 Boots under QEMU/UEFI. Working today: UEFI loader, higher-half kernel, physical memory
-manager, paging, heap, GDT/IDT, PIC and timer, preemptive scheduler with stack guards.
+manager, paging, heap, GDT/IDT, PIC and timer, preemptive scheduler with stack guards,
+and a framebuffer graphics layer (pixels, rectangles, gradients, 8x8 text) that draws a
+static demo desktop.
+
+![Demo desktop drawn by the kernel](docs/screenshots/framebuffer-desktop.png)
 
 ## Roadmap
 
 1. Build and boot on Windows 11 (done, see `INSTALL.md`)
-2. UEFI GOP framebuffer, font rendering, text console on screen
+2. UEFI GOP framebuffer and text drawing (done); on-screen text console still to do
 3. Keyboard and mouse input
 4. Syscalls and user mode (see `docs/`), process loader
 5. Storage driver (AHCI/NVMe) and filesystem (FAT32 first)
@@ -28,6 +32,7 @@ See `INSTALL.md` (Windows 11 and macOS). Quick start from Git Bash on Windows:
 ```bash
 make CC=clang uefi-loader
 scripts/run-qemu-windows.sh
+python scripts/qemu-screenshot.py out/run/screen.png   # headless screenshot
 ```
 
 ## License

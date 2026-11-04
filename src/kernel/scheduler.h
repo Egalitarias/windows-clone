@@ -7,6 +7,9 @@
 typedef int (*SCHEDULER_TASK_FN)(void *arg);
 
 void scheduler_init(void);
+
+// Called once, after all tasks complete and before the scheduler halts.
+void scheduler_set_idle_callback(void (*callback)(void));
 int scheduler_add_task(const char *name, SCHEDULER_TASK_FN fn, void *arg);
 int scheduler_add_task_with_priority(const char *name, SCHEDULER_TASK_FN fn, void *arg, uint32_t priority);
 int scheduler_task_block(TCB *task);
