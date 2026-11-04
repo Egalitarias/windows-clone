@@ -1,50 +1,39 @@
-# Windows clone
+# WinClone
 
-> A from-scratch UEFI x86-64 kernel, heading toward a Windows-style desktop OS. Windows 11 build steps are in `INSTALL.md`.
+A from-scratch x86-64 operating system with a Windows-style desktop as the goal.
+It has its own UEFI loader and kernel and, eventually, its own installer, windowing
+system, shell and apps. No code or assets from Microsoft Windows or any other OS are used.
 
-# Secure Personal OS
+## Status
 
-A personal PC operating system designed around one core idea: **strong separation for strong security**.
+Boots under QEMU/UEFI. Working today: UEFI loader, higher-half kernel, physical memory
+manager, paging, heap, GDT/IDT, PIC and timer, preemptive scheduler with stack guards.
 
-## Setup
+## Roadmap
 
-- macOS prerequisites and install steps: see `INSTALL.md`
+1. Build and boot on Windows 11 (done, see `INSTALL.md`)
+2. UEFI GOP framebuffer, font rendering, text console on screen
+3. Keyboard and mouse input
+4. Syscalls and user mode (see `docs/`), process loader
+5. Storage driver (AHCI/NVMe) and filesystem (FAT32 first)
+6. Windowing system and compositor
+7. Desktop shell: taskbar, Start menu, file explorer
+8. Bootable USB installer
+9. Optional: PE loader and a small Win32 subset
 
-## Premise
+## Build and run
 
-Secure Personal OS is built to be:
+See `INSTALL.md` (Windows 11 and macOS). Quick start from Git Bash on Windows:
 
-- **Separation-first**: core capabilities and user-facing functions are isolated to reduce blast radius.
-- **Security-first**: minimal attack surface, hardened defaults, and a design goal of being effectively virus-resistant.
-- **Simple by design**: a clean desktop with exactly **5 apps**.
-- **Owner-customized out of the box**: no generic setup flow, no system settings app, no post-install tweaking required.
-
-## User Experience
-
-The interface intentionally avoids traditional OS complexity:
-
-- No system settings panel
-- No deep configuration menus
-- No feature sprawl
-
-You open the machine and use the five apps. That is the product.
-
-## Product Philosophy
-
-Most operating systems optimize for flexibility and broad compatibility.  
-Secure Personal OS optimizes for:
-
-1. Personal fit
-2. Predictability
-3. Security through strict boundaries
-
-This is not a general-purpose OS for everyone.  
-It is a tightly scoped, personal OS with security and clarity as first principles.
+```bash
+make CC=clang uefi-loader
+scripts/run-qemu-windows.sh
+```
 
 ## License
 
-This repository is source-available, not open source. You may read and evaluate the code for
-personal, non-commercial purposes only. See `LICENSE` for the full terms.
+Source-available, not open source: read and evaluate for personal, non-commercial
+purposes only. See `LICENSE`.
 
 ## Week 1: Concrete Bootstrap Plan
 
@@ -60,7 +49,7 @@ Week 1 is about proving a repeatable low-level build flow, not shipping a full O
 ### Repository Structure
 
 ```text
-secure-personal-os/
+windows-clone/
 ├── Makefile
 ├── src/
 │   ├── boot/
@@ -126,7 +115,7 @@ secure-personal-os/
 - Build output staged at: `out/uefi/EFI/BOOT/KERNEL.BIN`
 - Format is a flat binary built from `src/kernel/uefi_kernel.S`.
 - Header format at image offset `0`:
-  - `Magic[8] = "SPOSKRNL"`
+  - `Magic[8] = "WCLNKRNL"`
   - `AbiVersion = 1`
   - `HeaderSize`
   - `EntryOffset`
@@ -138,7 +127,7 @@ secure-personal-os/
 - Loader validates `KERNEL.BIN` header before transfer.
 - Kernel entry is called as `void entry(const KERNEL_BOOT_INFO* info)` using x64 UEFI calling convention.
 - `KERNEL_BOOT_INFO` contains:
-  - `Magic = 0x31544F4F42535053` (`"SPOSBOOT1"` in little-endian)
+  - `Magic = 0x31544F4F424C4357` (`"WCLBOOT1"` in little-endian)
   - `Version = 1`
   - `Size`
   - `KernelImageBase`

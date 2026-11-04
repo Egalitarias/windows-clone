@@ -269,10 +269,10 @@ static EFI_GUID gEfiFileInfoGuid = {
 static CHAR16 kKernelPath[] = L"\\EFI\\BOOT\\KERNEL.BIN";
 static CHAR16 kKernelPathRelative[] = L"EFI\\BOOT\\KERNEL.BIN";
 static CHAR16 kKernelPathLocal[] = L"KERNEL.BIN";
-static UINT8 kKernelImageMagic[8] = {'S', 'P', 'O', 'S', 'K', 'R', 'N', 'L'};
+static UINT8 kKernelImageMagic[8] = {'W', 'C', 'L', 'N', 'K', 'R', 'N', 'L'};
 
 #define KERNEL_ABI_VERSION 1U
-#define KERNEL_BOOT_INFO_MAGIC 0x31544F4F42535053ULL
+#define KERNEL_BOOT_INFO_MAGIC 0x31544F4F424C4357ULL
 #define KERNEL_PAGE_SIZE 4096ULL
 
 static UINTN align_up_u64(UINTN value, UINTN alignment) {
@@ -538,7 +538,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *system_tab
   UINTN mem_desc_size;
   UINT32 mem_desc_version;
 
-  status = write_line(system_table, L"Secure Personal OS UEFI loader\r\n");
+  status = write_line(system_table, L"WinClone UEFI loader\r\n");
   if (EFI_ERROR(status)) {
     return status;
   }

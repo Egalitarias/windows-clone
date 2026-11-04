@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the Global Descriptor Table (GDT) enhancements required to support Ring 3 user-mode processes in the secure personal OS kernel. The current kernel-only GDT has been extended with user-mode code and data segments, enabling privilege-separated execution.
+This document describes the Global Descriptor Table (GDT) enhancements required to support Ring 3 user-mode processes in WinClone kernel. The current kernel-only GDT has been extended with user-mode code and data segments, enabling privilege-separated execution.
 
 ## Current Architecture (Before)
 

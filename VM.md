@@ -1,4 +1,4 @@
-# VM Configuration for Secure Personal OS (Intel Mac)
+# VM Configuration for WinClone (Intel Mac)
 
 This file defines a practical virtual machine profile for testing and deployment of this project.
 

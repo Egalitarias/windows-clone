@@ -3,7 +3,7 @@
 
 .global kernel_image_start
 kernel_image_start:
-  .ascii "SPOSKRNL"                                  # Magic[8]
+  .ascii "WCLNKRNL"                                  # Magic[8]
   .long 1                                            # AbiVersion
   .long kernel_header_end - kernel_image_start       # HeaderSize
   .quad _asm_kernel_entry - kernel_image_start       # EntryOffset

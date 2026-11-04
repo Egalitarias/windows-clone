@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the virtual address space layout for user-mode processes in the secure personal OS. Each user process gets its own isolated 64-bit virtual address space, with kernel code and data mapped read-only (or not accessible) into each user's page tables.
+This document describes the virtual address space layout for user-mode processes in WinClone. Each user process gets its own isolated 64-bit virtual address space, with kernel code and data mapped read-only (or not accessible) into each user's page tables.
 
 ## Memory Space Partitioning
 

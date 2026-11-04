@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-This document analyzes three privilege-level transition mechanisms available on x86-64 and recommends **SYSCALL/SYSRET** for the secure personal OS, with implementation details and design rationale.
+This document analyzes three privilege-level transition mechanisms available on x86-64 and recommends **SYSCALL/SYSRET** for WinClone, with implementation details and design rationale.
 
 | Mechanism | Speed | Compat | Complexity | Recommendation |
 |-----------|-------|--------|------------|-----------------|
@@ -534,7 +534,7 @@ Benefits:
 
 ## Conclusion
 
-**SYSCALL/SYSRET is the recommended mechanism** for the secure personal OS:
+**SYSCALL/SYSRET is the recommended mechanism** for WinClone:
 
 1. ✅ **Fastest** (10× faster than INT)
 2. ✅ **Simplest** (straightforward semantics)

@@ -22,7 +22,7 @@ llvm-objcopy -O binary ...
 
 **Bootloader Features:**
 - Loads kernel from `\EFI\BOOT\KERNEL.BIN`
-- Validates kernel image header (magic: "SPOSKRNL")
+- Validates kernel image header (magic: "WCLNKRNL")
 - Verifies ABI version compatibility
 - Hands off to kernel entry point with boot info structure
 - Provides clear console output for debugging
@@ -114,7 +114,7 @@ To perform the complete boot → install → restart cycle:
 3. **Inside QEMU:**
    - UEFI firmware loads
    - BOOTX64.EFI runs and prints:
-     - "Secure Personal OS UEFI loader"
+     - "WinClone UEFI loader"
      - "Loading \\EFI\\BOOT\\KERNEL.BIN ..."
      - "Kernel image validated."
      - "Handing off to kernel entrypoint..."

@@ -1,4 +1,4 @@
-# Secure Personal OS - Installation Prerequisites (macOS)
+# WinClone - Installation Prerequisites (macOS)
 
 This guide installs everything needed to build and run the current project targets on macOS.
 

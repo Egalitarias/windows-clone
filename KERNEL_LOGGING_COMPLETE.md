@@ -38,7 +38,7 @@ struct KERNEL_BOOT_INFO {
 **File:** `src/kernel/uefi_kernel.S`
 - Implemented kernel entry point with UEFI console output
 - Kernel now prints three messages to verify each stage:
-  1. "Secure Personal OS Kernel"
+  1. "WinClone Kernel"
   2. "Kernel entry point called"
   3. "Kernel ready for tasks"
 - Uses UTF-16 (wide character) string format for UEFI compatibility
@@ -54,7 +54,7 @@ struct KERNEL_BOOT_INFO {
 
 **Sample Output:**
 ```
-Secure Personal OS Kernel
+WinClone Kernel
 Kernel entry point called
 Kernel ready for tasks
 ```
@@ -87,13 +87,13 @@ Expected behavior when kernel boots:
 
 ```
 [BOOTLOADER OUTPUT]
-Secure Personal OS UEFI loader
+WinClone UEFI loader
 Loading \EFI\BOOT\KERNEL.BIN ...
 Kernel image validated.
 Handing off to kernel entrypoint...
 
 [KERNEL OUTPUT]
-Secure Personal OS Kernel
+WinClone Kernel
 Kernel entry point called
 Kernel ready for tasks
 ```

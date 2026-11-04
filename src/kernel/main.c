@@ -235,7 +235,7 @@ __attribute__((noreturn)) void kernel_entry(const KERNEL_BOOT_INFO *boot_info) {
   paging_set_page_table_pool(page_table_pool, 64ULL * 4096ULL);
 
   console_write_string("================================\r\n");
-  console_write_string("Secure Personal OS Kernel\r\n");
+  console_write_string("WinClone Kernel\r\n");
   console_write_string("================================\r\n");
   console_newline();
   idt_init();
@@ -245,7 +245,7 @@ __attribute__((noreturn)) void kernel_entry(const KERNEL_BOOT_INFO *boot_info) {
   // Verify boot info
   console_write_string("Boot Info:\r\n");
   console_write_string("  Magic: ");
-  if (boot_info->Magic == 0x31544F4F42535053ULL) {
+  if (boot_info->Magic == 0x31544F4F424C4357ULL) {
     console_write_string("OK\r\n");
   } else {
     console_write_string("INVALID\r\n");

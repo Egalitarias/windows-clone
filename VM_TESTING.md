@@ -1,6 +1,6 @@
 # VM Testing Workflow
 
-This document describes how to test the Secure Personal OS bootloader and installer in a QEMU VM.
+This document describes how to test the WinClone bootloader and installer in a QEMU VM.
 
 ## Quick Start
 
@@ -32,7 +32,7 @@ This will:
 **Expected behavior:**
 - UEFI firmware loads
 - `BOOTX64.EFI` runs and prints:
-  - "Secure Personal OS UEFI loader"
+  - "WinClone UEFI loader"
   - "Loading \\EFI\\BOOT\\KERNEL.BIN ..."
   - "Kernel image validated."
   - "Handing off to kernel entrypoint..."

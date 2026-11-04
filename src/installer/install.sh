@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Secure Personal OS Installer (UEFI-standard deploy)
+# WinClone Installer (UEFI-standard deploy)
 # Installs BOOTX64.EFI and KERNEL.BIN into <ESP>/EFI/BOOT.
 #
 
