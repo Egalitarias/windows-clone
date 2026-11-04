@@ -28,7 +28,7 @@ Status: draft. Companion to `SYSCALL_DESIGN.md` (mechanism choice) and `USERSPAC
 - Add user-stack and heap setup with guard pages, reusing `stack_guard.c`.
 - Handle page faults. A user fault should kill the process, not the kernel.
 
-### 3. SYSCALL/SYSRET entry
+### 3. SYSCALL/SYSRET entry - DONE
 
 - Set `EFER.SCE`, `STAR`, `LSTAR` and `SFMASK`.
 - Write the entry stub. It does `swapgs` (or uses a per-CPU stack variable), switches to the kernel stack, saves registers, and dispatches through a table.
@@ -61,6 +61,8 @@ Status: draft. Companion to `SYSCALL_DESIGN.md` (mechanism choice) and `USERSPAC
 - Update the docs and the README roadmap.
 
 **Phase 1 status.** GDT reordered (user DS 0x1B, user CS 0x23, TSS 0x28), TSS loaded with `gdt_set_kernel_stack()`, `paging_map_user()` added, `user_enter()` in `usermode.c`, and the exception dump now shows RIP/CS/RSP. Verify with `make CC=clang USER_SELFTEST=1 uefi-loader` and boot: the user program runs `hlt` at CPL 3 and the kernel reports `Vector: 13`, `CS: 0x23 (ring 3)`. Known issue found on the way (not from this change): the `TESTS=1` build page-faults in the context-switch suite, so the GDT suite does not run there.
+
+**Phase 3 status.** `syscall.c` / `syscall_entry.S`: EFER.SCE, STAR (SYSRET base 0x10), LSTAR, SFMASK (clears IF/DF/TF). Single-CPU entry stub uses globals instead of `swapgs` (`g_kernel_rsp0` mirrors TSS.rsp0, kept in sync by `gdt_set_kernel_stack`). Syscalls: `exit`, `write` (fd 1/2 to console), `yield` (no-op until phase 4), `getpid` (placeholder), unknown -> -ENOSYS. User pointers are validated by `paging_user_range_ok()` (page-table walk, U/S at every level) and user VAs are capped at `USER_VA_LIMIT` so SYSRET never sees a non-canonical RCX. Verify: `make CC=clang USER_SELFTEST=1 uefi-loader` and boot; expect `PASS ... (exit 42)`. `USER_SELFTEST=2` runs the old `hlt` -> #GP test. Limits: syscalls run with interrupts off; no `swapgs`/SMP; a fault inside a syscall is not recovered; arg 6 (R9) is not forwarded.
 
 ## Risks
 

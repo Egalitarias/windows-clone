@@ -44,6 +44,9 @@ typedef struct {
 
 static TSS64 g_tss;
 
+// Mirror of g_tss.Rsp[0] for the SYSCALL entry stub (single CPU, no swapgs).
+uint64_t g_kernel_rsp0;
+
 typedef struct {
     unsigned short Limit;
     uint64_t Base;
@@ -102,6 +105,7 @@ unsigned short gdt_init(void) {
 
 void gdt_set_kernel_stack(uint64_t rsp0) {
     g_tss.Rsp[0] = rsp0;
+    g_kernel_rsp0 = rsp0;  // syscall_entry.S reads this to switch off the user stack
 }
 
 uint64_t gdt_get_kernel_stack(void) {

@@ -284,7 +284,7 @@ int paging_map_user(uint64_t virt_start, uint64_t phys_start, uint64_t size, int
 
   if (virt_start != align_down(virt_start, PAGE_SIZE_BYTES) ||
       phys_start != align_down(phys_start, PAGE_SIZE_BYTES) ||
-      virt_start >= KERNEL_HIGH_HALF_BASE) {
+      virt_start >= USER_VA_LIMIT || total > USER_VA_LIMIT - virt_start) {
     return 0;
   }
 
@@ -295,6 +295,47 @@ int paging_map_user(uint64_t virt_start, uint64_t phys_start, uint64_t size, int
       return 0;
     }
     __asm__ volatile("invlpg (%0)" : : "r"((void *)(uintptr_t)(virt_start + offset)) : "memory");
+  }
+  return 1;
+}
+
+int paging_user_range_ok(uint64_t virt, uint64_t len) {
+  uint64_t addr;
+  uint64_t end;
+
+  if (g_pml4 == 0) {
+    return 0;
+  }
+  if (len == 0) {
+    return 1;
+  }
+  if (virt >= USER_VA_LIMIT || len > USER_VA_LIMIT - virt) {
+    return 0;
+  }
+
+  addr = align_down(virt, PAGE_SIZE_BYTES);
+  end = virt + len;
+  while (addr < end) {
+    uint64_t entry;
+    uint64_t *table = g_pml4;
+    int level;
+    // Walk PML4 -> PDPT -> PD -> PT; every level must be present and user-accessible.
+    for (level = 39; level >= 12; level -= 9) {
+      entry = table[page_index(addr, (uint64_t)level)];
+      if ((entry & PAGE_PRESENT) == 0 || (entry & PAGE_USER) == 0) {
+        return 0;
+      }
+      if (level == 12) {
+        break;
+      }
+      // A 1 GiB or 2 MiB leaf (PS bit) ends the walk early; this kernel only
+      // creates 4 KiB mappings, so treat large pages as not user memory.
+      if ((entry & 0x80ULL) != 0) {
+        return 0;
+      }
+      table = (uint64_t *)(uintptr_t)(entry & 0x000FFFFFFFFFF000ULL);
+    }
+    addr += PAGE_SIZE_BYTES;
   }
   return 1;
 }

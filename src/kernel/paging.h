@@ -26,6 +26,17 @@ int paging_map_mmio(uint64_t phys_start, uint64_t size);
 // lower (user) half. The caller must pick a virtual range that nothing else maps.
 int paging_map_user(uint64_t virt_start, uint64_t phys_start, uint64_t size, int writable);
 
+// Highest user address + 1. Kept below the canonical-address boundary (with a
+// guard page) so a SYSCALL at the very top of user space can never leave a
+// non-canonical RCX for SYSRET.
+#define USER_VA_LIMIT 0x00007FFFFFFFF000ULL
+
+// Nonzero if every page of [virt, virt+len) is present with U/S set at all four
+// levels, i.e. ring 3 may access it and the kernel will not fault reading it.
+// A zero-length range is always fine. Rejects wrap-around and anything at or
+// above USER_VA_LIMIT.
+int paging_user_range_ok(uint64_t virt, uint64_t len);
+
 void paging_unmap_identity_range(uint64_t phys_start, uint64_t size);
 
 #endif // KERNEL_PAGING_H

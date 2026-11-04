@@ -6,6 +6,7 @@ typedef unsigned short uint16_t;
 typedef unsigned int uint32_t;
 typedef unsigned long long uint64_t;
 typedef unsigned long uintptr_t;
+typedef long long int64_t;
 
 // Forward declare UEFI types
 typedef struct EFI_SYSTEM_TABLE EFI_SYSTEM_TABLE;

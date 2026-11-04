@@ -11,6 +11,7 @@
 #include "fb.h"
 #include "desktop.h"
 #include "usermode.h"
+#include "syscall.h"
 
 #ifdef KERNEL_TESTS
 extern void run_tcb_tests(void);
@@ -167,6 +168,9 @@ static __attribute__((noreturn)) void kernel_runtime(const KERNEL_BOOT_INFO *boo
   console_write_string("[6] Initializing Task Control Block pool\r\n");
   tcb_init();
   console_write_string("    TCB pool initialized (256 max tasks)\r\n");
+
+  syscall_init();
+  console_write_string("    SYSCALL/SYSRET enabled\r\n");
 
 #ifdef KERNEL_USER_SELFTEST
   usermode_selftest();
