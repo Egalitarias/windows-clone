@@ -54,6 +54,22 @@ extern void exception_stub_31(void);
 
 extern void timer_interrupt_stub(void);
 
+extern void irq_stub_1(void);
+extern void irq_stub_2(void);
+extern void irq_stub_3(void);
+extern void irq_stub_4(void);
+extern void irq_stub_5(void);
+extern void irq_stub_6(void);
+extern void irq_stub_7(void);
+extern void irq_stub_8(void);
+extern void irq_stub_9(void);
+extern void irq_stub_10(void);
+extern void irq_stub_11(void);
+extern void irq_stub_12(void);
+extern void irq_stub_13(void);
+extern void irq_stub_14(void);
+extern void irq_stub_15(void);
+
 static IDTEntry g_idt[IDT_ENTRY_COUNT];
 static IDTPointer g_idt_ptr;
 
@@ -145,10 +161,38 @@ void idt_init(void) {
 
   idt_set_gate_with_type(32, (void *)timer_interrupt_stub, selector, IDT_GATE_TYPE_TRAP);
 
+  // Remaining PIC lines go through the generic IRQ dispatcher. Without these,
+  // a stray hardware interrupt would land on the exception stub and be
+  // misreported as a CPU exception.
+  idt_set_gate(33, (void *)irq_stub_1, selector);
+  idt_set_gate(34, (void *)irq_stub_2, selector);
+  idt_set_gate(35, (void *)irq_stub_3, selector);
+  idt_set_gate(36, (void *)irq_stub_4, selector);
+  idt_set_gate(37, (void *)irq_stub_5, selector);
+  idt_set_gate(38, (void *)irq_stub_6, selector);
+  idt_set_gate(39, (void *)irq_stub_7, selector);
+  idt_set_gate(40, (void *)irq_stub_8, selector);
+  idt_set_gate(41, (void *)irq_stub_9, selector);
+  idt_set_gate(42, (void *)irq_stub_10, selector);
+  idt_set_gate(43, (void *)irq_stub_11, selector);
+  idt_set_gate(44, (void *)irq_stub_12, selector);
+  idt_set_gate(45, (void *)irq_stub_13, selector);
+  idt_set_gate(46, (void *)irq_stub_14, selector);
+  idt_set_gate(47, (void *)irq_stub_15, selector);
+
   g_idt_ptr.Limit = (uint16_t)(sizeof(g_idt) - 1U);
   g_idt_ptr.Base = (uint64_t)(uintptr_t)g_idt;
 
   __asm__ volatile("lidt %0" : : "m"(g_idt_ptr));
+}
+
+void idt_set_handler(unsigned int vector, void *handler) {
+  if (vector >= IDT_ENTRY_COUNT) {
+    return;
+  }
+  // Keep whatever selector the table currently uses (it changes when the
+  // kernel installs its own GDT).
+  idt_set_gate(vector, handler, g_idt[vector].Selector);
 }
 
 void idt_reload_selector(uint16_t new_cs) {

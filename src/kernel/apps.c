@@ -1,5 +1,6 @@
 #include "apps.h"
 #include "fb.h"
+#include "timer.h"
 #include "wm.h"
 
 #define COL_TEXT FB_RGB(30, 30, 30)
@@ -310,8 +311,33 @@ static void about_paint(wm_window_t *win, int cx, int cy, int cw, int ch) {
   res[n] = 0;
   fb_draw_text(cx + 16, cy + 80, "Display:", COL_TEXT, 1);
   fb_draw_text(cx + 16 + 9 * FB_FONT_WIDTH, cy + 80, res, COL_TEXT, 1);
-  fb_draw_text(cx + 16, cy + 96, "Input:   PS/2 keyboard and mouse (polled)", COL_TEXT, 1);
-  fb_draw_text(cx + 16, cy + 112, "Windows: move, resize, minimize, maximize, close", COL_TEXT, 1);
+  fb_draw_text(cx + 16, cy + 96, "Input:   PS/2 keyboard and mouse (IRQ1/IRQ12)", COL_TEXT, 1);
+  fb_draw_text(cx + 16, cy + 112, "Timer:   PIT at 1000 Hz, interrupt-driven", COL_TEXT, 1);
+  {
+    uint64_t secs = timer_get_ms() / 1000;
+    char up[32];
+    int n = 0, i2;
+    char part[12];
+
+    put_int(part, (unsigned int)(secs / 3600));
+    for (i2 = 0; part[i2]; i2++) up[n++] = part[i2];
+    up[n++] = 'h';
+    up[n++] = ' ';
+    put_int(part, (unsigned int)((secs / 60) % 60));
+    for (i2 = 0; part[i2]; i2++) up[n++] = part[i2];
+    up[n++] = 'm';
+    up[n++] = ' ';
+    put_int(part, (unsigned int)(secs % 60));
+    for (i2 = 0; part[i2]; i2++) up[n++] = part[i2];
+    up[n++] = 's';
+    up[n] = 0;
+    fb_draw_text(cx + 16, cy + 128, "Uptime:", COL_TEXT, 1);
+    fb_draw_text(cx + 16 + 9 * FB_FONT_WIDTH, cy + 128, up, COL_TEXT, 1);
+  }
+}
+
+static void about_tick(wm_window_t *win) {
+  wm_invalidate_window(win);
 }
 
 void app_about_open(void) {
@@ -319,11 +345,12 @@ void app_about_open(void) {
   wm_window_t *win;
 
   next_position(&x, &y);
-  win = wm_create("About WinClone", x, y, 470, 170);
+  win = wm_create("About WinClone", x, y, 470, 190);
   if (!win) {
     return;
   }
   win->paint = about_paint;
+  win->tick = about_tick;
   win->min_w = 200;
   win->min_h = 100;
 }

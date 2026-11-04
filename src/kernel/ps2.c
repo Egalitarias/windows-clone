@@ -1,4 +1,5 @@
 #include "ps2.h"
+#include "irq.h"
 
 #define PS2_DATA   0x60
 #define PS2_STATUS 0x64
@@ -19,6 +20,42 @@ static inline uint8_t inb(uint16_t port) {
   __asm__ volatile("inb %1, %0" : "=a"(value) : "Nd"(port));
   return value;
 }
+
+// ---- Interrupt side ---------------------------------------------------------
+// Single producer (the IRQ handlers) and single consumer (ps2_poll): the
+// producer only moves g_head, the consumer only moves g_tail.
+
+#define RING_SIZE 256
+#define RING_AUX  0x100
+
+static volatile uint16_t g_ring[RING_SIZE];
+static volatile unsigned int g_head = 0;
+static volatile unsigned int g_tail = 0;
+
+static void ring_push(uint8_t byte, int aux) {
+  unsigned int next = (g_head + 1) % RING_SIZE;
+  if (next == g_tail) {
+    return;  // full: drop the byte
+  }
+  g_ring[g_head] = (uint16_t)(byte | (aux ? RING_AUX : 0));
+  g_head = next;
+}
+
+// Both lines share the data port, so either handler drains whatever is pending
+// and tags each byte with its source from the status register.
+static void drain_controller(void) {
+  int guard;
+  for (guard = 0; guard < 32; guard++) {
+    uint8_t status = inb(PS2_STATUS);
+    if (!(status & PS2_STATUS_OUT_FULL)) {
+      return;
+    }
+    ring_push(inb(PS2_DATA), (status & PS2_STATUS_AUX) != 0);
+  }
+}
+
+static void keyboard_irq(void) { drain_controller(); }
+static void mouse_irq(void) { drain_controller(); }
 
 static int wait_write_ready(void) {
   int i;
@@ -91,7 +128,7 @@ int ps2_init(void) {
 
   controller_cmd(0x20);  // read configuration byte
   config = wait_read_ready() ? inb(PS2_DATA) : 0;
-  config &= (uint8_t)~0x03;  // no IRQ1 / IRQ12: we poll
+  config &= (uint8_t)~0x03;  // IRQs stay off while we talk to the devices
   config &= (uint8_t)~0x30;  // enable both port clocks
   config |= 0x40;            // translate keyboard to scancode set 1
   controller_cmd_arg(0x60, config);
@@ -108,6 +145,19 @@ int ps2_init(void) {
     found |= PS2_HAS_MOUSE;
   }
   flush_output();
+
+  // Devices are up: now let the controller raise IRQ1 / IRQ12.
+  controller_cmd(0x20);
+  config = wait_read_ready() ? inb(PS2_DATA) : config;
+  config |= 0x03;
+  controller_cmd_arg(0x60, config);
+
+  g_head = 0;
+  g_tail = 0;
+  irq_register(1, keyboard_irq);
+  irq_register(12, mouse_irq);
+  irq_unmask(1);
+  irq_unmask(12);
   return found;
 }
 
@@ -195,23 +245,19 @@ static int decode_mouse(uint8_t byte, ps2_event_t *ev) {
 }
 
 int ps2_poll(ps2_event_t *ev) {
-  int budget;
+  while (g_tail != g_head) {
+    uint16_t entry = g_ring[g_tail];
+    uint8_t byte = (uint8_t)(entry & 0xFF);
+    int aux = (entry & RING_AUX) != 0;
 
-  for (budget = 0; budget < 16; budget++) {
-    uint8_t status = inb(PS2_STATUS);
-    uint8_t byte;
-
-    if (!(status & PS2_STATUS_OUT_FULL)) {
-      return 0;
-    }
-    byte = inb(PS2_DATA);
+    g_tail = (g_tail + 1) % RING_SIZE;
     ev->type = PS2_EVENT_NONE;
     ev->ch = 0;
     ev->pressed = 0;
     ev->dx = 0;
     ev->dy = 0;
     ev->buttons = 0;
-    if (status & PS2_STATUS_AUX) {
+    if (aux) {
       if (decode_mouse(byte, ev)) {
         return 1;
       }

@@ -43,6 +43,9 @@ struct wm_window {
   void (*mouse)(wm_window_t *win, int lx, int ly, int event);
   // Called once just before the window is destroyed.
   void (*closing)(wm_window_t *win);
+  // Called about once a second while the window is not minimized (clocks,
+  // uptime displays). Call wm_invalidate_window() if something changed.
+  void (*tick)(wm_window_t *win);
 };
 
 // desk_w x desk_h is the full screen; the bottom `taskbar_h` rows belong to
@@ -74,8 +77,13 @@ int wm_take_dirty(int *x, int *y, int *w, int *h);
 // Paint all visible windows back to front. Call with the clip already set.
 void wm_paint_windows(void);
 
+// Drive the per-window tick callbacks; the shell calls this once a second.
+void wm_tick(void);
+
 // Input routing. wm_mouse_down returns 1 if the click landed on a window.
-int wm_mouse_down(int x, int y);
+// `double_click` is set by the shell when this press completes a double click;
+// on a title bar it toggles maximize.
+int wm_mouse_down(int x, int y, int double_click);
 void wm_mouse_move(int x, int y, unsigned int buttons);
 void wm_mouse_up(int x, int y);
 void wm_key(char ch);

@@ -1,11 +1,15 @@
 #include "desktop.h"
 #include "apps.h"
 #include "fb.h"
+#include "idt.h"
+#include "irq.h"
 #include "ps2.h"
+#include "rtc.h"
+#include "timer.h"
 #include "wm.h"
 
-// The shell: wallpaper, desktop icons, taskbar (Start button plus one button
-// per window), Start menu and the mouse cursor. Windows themselves belong to
+// The shell: wallpaper, desktop icons, taskbar (Start button, one button per
+// window, clock), Start menu and the mouse cursor. Windows themselves belong to
 // the window manager (wm.c). Painting is dirty-rectangle based: anything that
 // changes calls wm_invalidate(); the main loop repaints only that region with
 // the fb clip set to it, back to front.
@@ -37,6 +41,13 @@
 #define ICON_PITCH   84
 #define ICON_COUNT   3
 
+#define DOUBLE_CLICK_MS   400
+#define DOUBLE_CLICK_SLOP 5
+
+static char g_clock[6] = "--:--";
+static int g_icon_selected = -1;
+static uint64_t g_last_click_ms = 0;
+static int g_last_click_x = -9999, g_last_click_y = -9999;
 static int g_menu_open = 0;
 static int g_menu_hover = -1;
 static int g_mouse_x = 0, g_mouse_y = 0;
@@ -78,6 +89,10 @@ static void draw_wallpaper(void) {
                    FB_RGB(20, 70, 160), FB_RGB(90, 170, 230));
   for (i = 0; i < ICON_COUNT; i++) {
     int y = ICON_Y0 + i * ICON_PITCH;
+    if (i == g_icon_selected) {
+      fb_fill_rect(ICON_X - 8, y - 4, 56, 64, FB_RGB(60, 110, 200));
+      fb_draw_rect(ICON_X - 8, y - 4, 56, 64, FB_RGB(180, 205, 255));
+    }
     fb_fill_rect(ICON_X, y, 40, 36, FB_RGB(235, 236, 242));
     fb_fill_rect(ICON_X + 4, y + 4, 32, 28, icon_color(i));
     fb_draw_text(ICON_X + 20 - fb_text_width(icon_label(i), 1) / 2, y + 44, icon_label(i), COL_WHITE, 1);
@@ -113,7 +128,7 @@ static void draw_taskbar(void) {
     fb_draw_text(slot_x + 10, y + 16, label, COL_WHITE, 1);
     slot_x += TASK_PITCH;
   }
-  fb_draw_text(w - 8 * 5 - 14, y + 16, "12:00", COL_WHITE, 1);
+  fb_draw_text(w - 8 * 5 - 14, y + 16, g_clock, COL_WHITE, 1);
 }
 
 static void draw_menu(void) {
@@ -258,7 +273,20 @@ static void taskbar_click(int x) {
   }
 }
 
-static void handle_click(int x, int y) {
+static void select_icon(int which) {
+  int i;
+  if (which == g_icon_selected) {
+    return;
+  }
+  for (i = 0; i < ICON_COUNT; i++) {
+    if (i == g_icon_selected || i == which) {
+      wm_invalidate(ICON_X - 8, ICON_Y0 + i * ICON_PITCH - 4, 56, 64);
+    }
+  }
+  g_icon_selected = which;
+}
+
+static void handle_click(int x, int y, int double_click) {
   int i;
 
   // Start button
@@ -286,15 +314,43 @@ static void handle_click(int x, int y) {
     return;
   }
   // Windows
-  if (wm_mouse_down(x, y)) {
+  if (wm_mouse_down(x, y, double_click)) {
+    select_icon(-1);
     return;
   }
-  // Desktop icons
+  // Desktop icons: click selects, double click launches.
   for (i = 0; i < ICON_COUNT; i++) {
-    if (in_rect(x, y, ICON_X - 8, ICON_Y0 + i * ICON_PITCH, 56, 60)) {
-      launch(i);
+    if (in_rect(x, y, ICON_X - 8, ICON_Y0 + i * ICON_PITCH - 4, 56, 64)) {
+      select_icon(i);
+      if (double_click) {
+        launch(i);
+      }
       return;
     }
+  }
+  select_icon(-1);
+}
+
+static void update_clock(void) {
+  int h, m, s;
+  char text[6];
+
+  if (!rtc_read_time(&h, &m, &s)) {
+    return;
+  }
+  text[0] = (char)('0' + h / 10);
+  text[1] = (char)('0' + h % 10);
+  text[2] = ':';
+  text[3] = (char)('0' + m / 10);
+  text[4] = (char)('0' + m % 10);
+  text[5] = 0;
+  if (text[0] != g_clock[0] || text[1] != g_clock[1] || text[3] != g_clock[3] ||
+      text[4] != g_clock[4]) {
+    int i;
+    for (i = 0; i < 6; i++) {
+      g_clock[i] = text[i];
+    }
+    wm_invalidate((int)fb_width() - 80, bar_y(), 80, TASKBAR_H);
   }
 }
 
@@ -329,10 +385,21 @@ static __attribute__((noreturn)) void desktop_run(void) {
   int moved = 0;
   int dx, dy, dw, dh;
 
+  uint64_t last_second;
+
   wm_init((int)fb_width(), (int)fb_height(), TASKBAR_H);
   g_mouse_x = (int)fb_width() / 2;
   g_mouse_y = (int)fb_height() / 2;
+
+  // Interrupts: take over vector 32 from the scheduler's tick handler (the
+  // scheduler has finished), mask every line, then enable only what we use.
+  irq_init();
+  idt_set_handler(32, (void *)irq_stub_0);
+  irq_register(0, timer_tick);
+  irq_unmask(0);
   ps2_init();
+  update_clock();
+  last_second = timer_get_ms();
 
   app_notes_open();
   app_about_open();
@@ -358,7 +425,22 @@ static __attribute__((noreturn)) void desktop_run(void) {
           moved = 1;
         }
         if (pressed_now & PS2_MOUSE_LEFT) {
-          handle_click(g_mouse_x, g_mouse_y);
+          uint64_t now = timer_get_ms();
+          int near = (g_mouse_x - g_last_click_x < DOUBLE_CLICK_SLOP) &&
+                     (g_last_click_x - g_mouse_x < DOUBLE_CLICK_SLOP) &&
+                     (g_mouse_y - g_last_click_y < DOUBLE_CLICK_SLOP) &&
+                     (g_last_click_y - g_mouse_y < DOUBLE_CLICK_SLOP);
+          int is_double = near && (now - g_last_click_ms) < DOUBLE_CLICK_MS;
+
+          handle_click(g_mouse_x, g_mouse_y, is_double);
+          if (is_double) {
+            g_last_click_x = -9999;       // a triple click is not a second double click
+            g_last_click_y = -9999;
+          } else {
+            g_last_click_x = g_mouse_x;
+            g_last_click_y = g_mouse_y;
+            g_last_click_ms = now;
+          }
         }
         if (released_now & PS2_MOUSE_LEFT) {
           wm_mouse_up(g_mouse_x, g_mouse_y);
@@ -379,14 +461,25 @@ static __attribute__((noreturn)) void desktop_run(void) {
       cursor_save_and_draw();
       moved = 0;
     }
-    __asm__ volatile("pause");
+    {
+      uint64_t now = timer_get_ms();
+      if (now - last_second >= 1000) {
+        last_second = now;
+        update_clock();
+        wm_tick();
+      }
+    }
+
+    // Sleep until the next interrupt (timer, keyboard or mouse). `sti; hlt`
+    // is atomic: an interrupt arriving right after sti still wakes the hlt.
+    __asm__ volatile("sti; hlt" : : : "memory");
   }
 }
 
 // ---- entry from the scheduler ----------------------------------------------
 
 // The scheduler idle callback runs on a small task stack, so the desktop gets
-// its own stack. Interrupts stay off: input is polled.
+// its own stack. Interrupts stay off until desktop_run has set up the IRQ layer.
 static uint8_t g_desktop_stack[64 * 1024] __attribute__((aligned(16)));
 
 void desktop_draw_demo(void) {

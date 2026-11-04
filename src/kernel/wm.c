@@ -163,6 +163,7 @@ wm_window_t *wm_create(const char *title, int x, int y, int w, int h) {
   win->key = 0;
   win->mouse = 0;
   win->closing = 0;
+  win->tick = 0;
   copy_title(win->title, title);
   g_order[g_count++] = idx_of(win);
   wm_invalidate_window(win);
@@ -373,7 +374,16 @@ static wm_window_t *window_at(int x, int y) {
   return 0;
 }
 
-int wm_mouse_down(int x, int y) {
+void wm_tick(void) {
+  int i;
+  for (i = 0; i < WM_MAX_WINDOWS; i++) {
+    if (g_win[i].used && !g_win[i].minimized && g_win[i].tick) {
+      g_win[i].tick(&g_win[i]);
+    }
+  }
+}
+
+int wm_mouse_down(int x, int y, int double_click) {
   wm_window_t *win = window_at(x, y);
   wm_window_t *prev_top;
   int by;
@@ -411,6 +421,10 @@ int wm_mouse_down(int x, int y) {
     return 1;
   }
   if (y < win->y + WM_TITLE_H) {
+    if (double_click) {
+      wm_toggle_maximize(win);
+      return 1;
+    }
     if (!win->maximized) {
       g_cap = CAP_MOVE;
       g_cap_win = win;

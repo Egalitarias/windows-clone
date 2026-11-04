@@ -9,10 +9,11 @@ system, shell and apps. No code or assets from Microsoft Windows or any other OS
 Boots under QEMU/UEFI. Working today: UEFI loader, higher-half kernel, physical memory
 manager, paging, heap, GDT/IDT, PIC and timer, preemptive scheduler with stack guards,
 a framebuffer graphics layer (pixels, rectangles, gradients, 8x8 text, clip rectangles),
-polled PS/2 keyboard and mouse input, and a window manager with a desktop shell:
+interrupt-driven PS/2 keyboard and mouse (IRQ layer, 1 kHz PIT timer, RTC clock, idle via
+`hlt`), and a window manager with a desktop shell:
 overlapping windows with z-order and focus, move, resize, minimize, maximize and close,
-a taskbar with one button per window, a Start menu, desktop icons, and dirty-rectangle
-repainting. Three demo apps use it: Notes (multi-instance text), Paint and About.
+a taskbar with one button per window and a real-time clock, a Start menu, desktop icons
+(double-click to launch), and dirty-rectangle repainting. Three demo apps use it: Notes (multi-instance text), Paint and About.
 
 ![Demo desktop drawn by the kernel](docs/screenshots/framebuffer-desktop.png)
 
@@ -20,7 +21,7 @@ repainting. Three demo apps use it: Notes (multi-instance text), Paint and About
 
 1. Build and boot on Windows 11 (done, see `INSTALL.md`)
 2. UEFI GOP framebuffer and text drawing (done); on-screen text console still to do
-3. Keyboard and mouse input (PS/2 polling done; interrupt-driven PS/2 and USB still to do)
+3. Keyboard and mouse input (PS/2 interrupt-driven, done; USB still to do), timer and clock (done)
 4. Syscalls and user mode (see `docs/`), process loader
 5. Storage driver (AHCI/NVMe) and filesystem (FAT32 first)
 6. Windowing system (done: window manager, see `docs/WINDOW_MANAGER.md`); compositor and double buffering still to do

@@ -3,8 +3,9 @@
 
 #include "console.h"
 
-// Polled PS/2 keyboard and mouse driver (i8042 controller). Interrupts from
-// the controller are left disabled; call ps2_poll() from a loop.
+// Interrupt-driven PS/2 keyboard and mouse driver (i8042 controller). IRQ1 and
+// IRQ12 push raw bytes into a ring buffer; ps2_poll() decodes them in normal
+// context. Call irq_init() first, and enable interrupts (sti) afterwards.
 
 #define PS2_HAS_KEYBOARD 0x1
 #define PS2_HAS_MOUSE    0x2
@@ -33,8 +34,8 @@ typedef struct {
   unsigned int buttons;
 } ps2_event_t;
 
-// Initialise the controller and devices. Returns PS2_HAS_* bits for the
-// devices that answered.
+// Initialise the controller and devices and hook IRQ1 / IRQ12. Returns
+// PS2_HAS_* bits for the devices that answered.
 int ps2_init(void);
 
 // Fetch at most one decoded event. Returns 1 and fills `ev` if one is ready,

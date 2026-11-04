@@ -39,12 +39,14 @@ relocations, so function pointers inside static initialisers are not valid.
 
 Left click on a window raises it and focuses it. Title bar drags move; the dotted
 bottom-right corner resizes; the three title buttons minimize, maximize and close.
-Taskbar buttons restore, focus or minimize. `Esc` closes the Start menu. Desktop icons
-launch on a single click (no timer yet for double-click).
+Double-clicking a title bar toggles maximize. Taskbar buttons restore, focus or minimize.
+`Esc` closes the Start menu. Desktop icons: click selects, double click launches.
 
 ## Known limitations
 
 - No double buffering, so fast repaints can flicker on real hardware.
-- Polled input with interrupts off; busy loop.
+- Input and timing are interrupt-driven (see `INTERRUPTS.md`), but the shell is a single
+  loop on its own stack, not a scheduled task.
 - Fixed pool of 16 windows; Paint is single instance, Notes allows 4.
 - No Alt+Tab, window snapping, or per-window keyboard shortcuts.
+- Windows can run a once-a-second `tick` callback; there is no finer timer API yet.

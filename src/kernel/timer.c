@@ -81,6 +81,10 @@ uint64_t timer_get_ticks(void) {
   return g_ticks;
 }
 
+uint64_t timer_get_ms(void) {
+  return (g_ticks * 1000ULL) / TIMER_TARGET_FREQUENCY;
+}
+
 void timer_tick(void) {
   g_ticks++;
 }

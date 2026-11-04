@@ -22,6 +22,9 @@
 
 void timer_init(void);
 uint64_t timer_get_ticks(void);
+
+// Milliseconds since timer_init() (the PIT runs at TIMER_TARGET_FREQUENCY Hz).
+uint64_t timer_get_ms(void);
 void timer_tick(void);
 void timer_unmask_irq0(void);
 void timer_mask_irq0(void);
