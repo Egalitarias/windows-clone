@@ -32,8 +32,7 @@ scripts/run-qemu-windows.sh
 
 ## License
 
-Source-available, not open source: read and evaluate for personal, non-commercial
-purposes only. See `LICENSE`.
+MIT. See `LICENSE`.
 
 ## Week 1: Concrete Bootstrap Plan
 
