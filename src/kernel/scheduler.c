@@ -38,6 +38,7 @@ static void (*g_idle_callback)(void) = 0;
 static unsigned int g_current_index = SCHEDULER_INVALID_INDEX;
 static int g_scheduler_started = 0;
 static volatile int g_timer_irq_active = 0;
+static volatile unsigned int g_preempt_disabled = 0;   // >0: the tick must not switch tasks
 static volatile uint64_t g_timer_preemption_count = 0;
 static volatile uint64_t g_context_switch_count = 0;
 static volatile uint64_t g_irq_reentry_drop_count = 0;
@@ -445,6 +446,16 @@ int scheduler_add_task_with_priority(const char *name, SCHEDULER_TASK_FN fn, voi
   return result;
 }
 
+void scheduler_preempt_disable(void) {
+  g_preempt_disabled++;
+}
+
+void scheduler_preempt_enable(void) {
+  if (g_preempt_disabled > 0) {
+    g_preempt_disabled--;
+  }
+}
+
 TCB *scheduler_current_tcb(void) {
   if (!g_scheduler_started || g_current_index >= g_task_count) {
     return 0;
@@ -527,6 +538,12 @@ void *scheduler_on_timer_tick(void *interrupt_stack_pointer) {
 
   if (g_timer_irq_active) {
     g_irq_reentry_drop_count++;
+    return selected_interrupt_stack_pointer;
+  }
+
+  // A task is inside a non-reentrant kernel section (e.g. the FAT driver).
+  // Keep running it; the next tick after it leaves will switch.
+  if (g_preempt_disabled > 0) {
     return selected_interrupt_stack_pointer;
   }
 
@@ -669,10 +686,18 @@ void scheduler_task_entry(void) {
     console_write_string("\r\n");
 
     if (g_completed_tasks >= g_task_count) {
+      void (*idle_callback)(void) = g_idle_callback;
+
       scheduler_print_summary();
       console_write_string("Scheduler idle\r\n");
-      if (g_idle_callback != 0) {
-        g_idle_callback();
+      // One-shot. The callback may add tasks (the desktop does); if it did, this
+      // finished task just waits here for the next tick to switch to them.
+      g_idle_callback = 0;
+      if (idle_callback != 0) {
+        idle_callback();
+      }
+      if (scheduler_has_runnable_tasks()) {
+        scheduler_wait_for_reschedule();
       }
       scheduler_halt_forever();
     }

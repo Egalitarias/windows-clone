@@ -1,4 +1,5 @@
 #include "desktop.h"
+#include "scheduler.h"
 #include "apps.h"
 #include "fb.h"
 #include "fs.h"
@@ -408,6 +409,12 @@ void desktop_pump(void) {
   repaint_dirty();
 }
 
+static volatile uint64_t g_desktop_loops = 0;
+
+uint64_t desktop_loop_count(void) {
+  return g_desktop_loops;
+}
+
 static __attribute__((noreturn)) void desktop_run(void) {
   ps2_event_t ev;
   int moved = 0;
@@ -418,11 +425,10 @@ static __attribute__((noreturn)) void desktop_run(void) {
   g_mouse_x = (int)fb_width() / 2;
   g_mouse_y = (int)fb_height() / 2;
 
-  // Interrupts: take over vector 32 from the scheduler's tick handler (the
-  // scheduler has finished), mask every line, then enable only what we use.
+  // Interrupts: mask every line, then enable only what we use. The timer stays
+  // on vector 32 with the scheduler's tick handler, which also advances the
+  // clock (timer_tick) and lets other tasks (user programs) run beside us.
   irq_init();
-  idt_set_handler(32, (void *)irq_stub_0);
-  irq_register(0, timer_tick);
   irq_unmask(0);
   ps2_init();
   update_clock();
@@ -449,6 +455,7 @@ static __attribute__((noreturn)) void desktop_run(void) {
   app_files_open();
 
   for (;;) {
+    g_desktop_loops++;
     while (ps2_poll(&ev)) {
       if (ev.type == PS2_EVENT_KEY) {
         if (ev.pressed && ev.ch == 27) {
@@ -517,16 +524,16 @@ static __attribute__((noreturn)) void desktop_run(void) {
 
 // ---- entry from the scheduler ----------------------------------------------
 
-// The scheduler idle callback runs on a small task stack, so the desktop gets
-// its own stack. Interrupts stay off until desktop_run has set up the IRQ layer.
+// The desktop is an ordinary scheduler task. Task stacks are small (4 KB), so the
+// task switches to a private 64 KB stack before running the desktop; the
+// scheduler saves and restores interrupt frames wherever the stack lives.
 static uint8_t g_desktop_stack[64 * 1024] __attribute__((aligned(16)));
 
-void desktop_draw_demo(void) {
+static int desktop_task(void *arg) {
   uintptr_t top;
 
-  if (!fb_available()) {
-    return;
-  }
+  (void)arg;
+  // Interrupts stay off until desktop_run has set up the IRQ layer.
   __asm__ volatile("cli");
   top = (uintptr_t)(g_desktop_stack + sizeof(g_desktop_stack));
   __asm__ volatile(
@@ -537,4 +544,12 @@ void desktop_draw_demo(void) {
       : "r"(top), "r"(desktop_run)
       : "memory");
   __builtin_unreachable();
+}
+
+// Scheduler idle callback: start the desktop as a task (no-op without a framebuffer).
+void desktop_start(void) {
+  if (!fb_available()) {
+    return;
+  }
+  scheduler_add_task("desktop", desktop_task, 0);
 }

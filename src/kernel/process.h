@@ -77,6 +77,7 @@ int process_handle_user_fault(uint64_t vector, uint64_t error_code, uint64_t rip
 #ifdef KERNEL_USER_SELFTEST
 void process_selftest(void);             // USER_SELFTEST=3: load and run /APPS/HELLO.BIN twice, then return
 void process_scheduler_selftest(void);   // USER_SELFTEST=4: add a supervisor task that spawns programs
+void process_desktop_selftest(void);     // USER_SELFTEST=5: same, with the desktop running as a task
 #endif
 
 #endif // KERNEL_PROCESS_H

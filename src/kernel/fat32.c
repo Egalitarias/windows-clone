@@ -1,4 +1,14 @@
 #include "fat32.h"
+#include "scheduler.h"
+static uint64_t fat_free_bytes_impl(fat_volume_t *v);
+static int fat_mount_impl(int dev, fat_volume_t *v);
+static void fat_iter_open_impl(fat_volume_t *v, uint32_t dir_cluster, fat_iter_t *it);
+static int fat_iter_next_impl(fat_iter_t *it, fat_dirent_t *out);
+static int fat_lookup_impl(fat_volume_t *v, uint32_t dir_cluster, const char *name, fat_dirent_t *out);
+static int fat_read_file_impl(fat_volume_t *v, const fat_dirent_t *ent, void *buf, uint32_t max, uint32_t *out_len);
+static int fat_write_file_impl(fat_volume_t *v, uint32_t dir_cluster, const char *name, const void *data, uint32_t len);
+static int fat_mkdir_impl(fat_volume_t *v, uint32_t dir_cluster, const char *name, uint32_t *new_cluster);
+static int fat_delete_impl(fat_volume_t *v, const fat_dirent_t *ent);
 #include "block.h"
 #include "rtc.h"
 #include "string.h"
@@ -135,7 +145,7 @@ static void free_chain(fat_volume_t *v, uint32_t cluster) {
   }
 }
 
-uint64_t fat_free_bytes(fat_volume_t *v) {
+static uint64_t fat_free_bytes_impl(fat_volume_t *v) {
   uint32_t c, value;
   uint64_t free_clusters = 0;
   for (c = 2; c < v->cluster_count + 2u; c++) {
@@ -148,7 +158,7 @@ uint64_t fat_free_bytes(fat_volume_t *v) {
 
 // ---- Mounting --------------------------------------------------------------
 
-int fat_mount(int dev, fat_volume_t *v) {
+static int fat_mount_impl(int dev, fat_volume_t *v) {
   uint8_t sec[512];
   uint32_t bps, spc, total, root_entries, fat16, root_dir_sectors;
   int i, label_at;
@@ -234,7 +244,7 @@ int fat_mount(int dev, fat_volume_t *v) {
 
 // ---- Directory iteration ---------------------------------------------------
 
-void fat_iter_open(fat_volume_t *v, uint32_t dir_cluster, fat_iter_t *it) {
+static void fat_iter_open_impl(fat_volume_t *v, uint32_t dir_cluster, fat_iter_t *it) {
   it->v = v;
   it->dir_cluster = dir_cluster;
   it->cluster = dir_cluster;
@@ -321,7 +331,7 @@ static void lfn_collect(const uint8_t *e, char *name, uint32_t *length) {
   }
 }
 
-int fat_iter_next(fat_iter_t *it, fat_dirent_t *out) {
+static int fat_iter_next_impl(fat_iter_t *it, fat_dirent_t *out) {
   uint8_t e[32];
   uint32_t abs_index;
   char lfn[FAT_NAME_MAX];
@@ -411,7 +421,7 @@ int fat_iter_next(fat_iter_t *it, fat_dirent_t *out) {
   return 0;
 }
 
-int fat_lookup(fat_volume_t *v, uint32_t dir_cluster, const char *name, fat_dirent_t *out) {
+static int fat_lookup_impl(fat_volume_t *v, uint32_t dir_cluster, const char *name, fat_dirent_t *out) {
   fat_iter_t it;
   fat_iter_open(v, dir_cluster, &it);
   while (fat_iter_next(&it, out)) {
@@ -424,7 +434,7 @@ int fat_lookup(fat_volume_t *v, uint32_t dir_cluster, const char *name, fat_dire
 
 // ---- Reading files ---------------------------------------------------------
 
-int fat_read_file(fat_volume_t *v, const fat_dirent_t *ent, void *buf, uint32_t max, uint32_t *out_len) {
+static int fat_read_file_impl(fat_volume_t *v, const fat_dirent_t *ent, void *buf, uint32_t max, uint32_t *out_len) {
   uint8_t *dst = (uint8_t *)buf;
   uint32_t remaining = ent->size < max ? ent->size : max;
   uint32_t cluster = ent->first_cluster;
@@ -803,7 +813,7 @@ static int create_record(fat_volume_t *v, uint32_t dir_cluster, const char *name
 
 // ---- Writing files ---------------------------------------------------------
 
-int fat_write_file(fat_volume_t *v, uint32_t dir_cluster, const char *name,
+static int fat_write_file_impl(fat_volume_t *v, uint32_t dir_cluster, const char *name,
                    const void *data, uint32_t len) {
   fat_dirent_t ent;
   const uint8_t *src = (const uint8_t *)data;
@@ -868,7 +878,7 @@ int fat_write_file(fat_volume_t *v, uint32_t dir_cluster, const char *name,
   return update_record(v, &ent);
 }
 
-int fat_mkdir(fat_volume_t *v, uint32_t dir_cluster, const char *name, uint32_t *new_cluster) {
+static int fat_mkdir_impl(fat_volume_t *v, uint32_t dir_cluster, const char *name, uint32_t *new_cluster) {
   fat_dirent_t existing, ent;
   uint32_t c;
   uint8_t sec[512];
@@ -914,7 +924,7 @@ int fat_mkdir(fat_volume_t *v, uint32_t dir_cluster, const char *name, uint32_t 
   return 1;
 }
 
-int fat_delete(fat_volume_t *v, const fat_dirent_t *ent) {
+static int fat_delete_impl(fat_volume_t *v, const fat_dirent_t *ent) {
   uint32_t i;
 
   if (ent->attr & FAT_ATTR_DIR) {
@@ -940,4 +950,88 @@ int fat_delete(fat_volume_t *v, const fat_dirent_t *ent) {
   }
   free_chain(v, ent->first_cluster);
   return 1;
+}
+
+// ---- Public entry points -----------------------------------------------------
+// The driver keeps per-volume caches and is not reentrant, but the scheduler can
+// preempt a task between any two instructions. Each public call therefore runs
+// with preemption off, which makes every call atomic with respect to other tasks.
+// (Interrupts stay enabled; only task switches are held back.)
+
+uint64_t fat_free_bytes(fat_volume_t *v) {
+  uint64_t result;
+
+  scheduler_preempt_disable();
+  result = fat_free_bytes_impl(v);
+  scheduler_preempt_enable();
+  return result;
+}
+
+int fat_mount(int dev, fat_volume_t *v) {
+  int result;
+
+  scheduler_preempt_disable();
+  result = fat_mount_impl(dev, v);
+  scheduler_preempt_enable();
+  return result;
+}
+
+void fat_iter_open(fat_volume_t *v, uint32_t dir_cluster, fat_iter_t *it) {
+  scheduler_preempt_disable();
+  fat_iter_open_impl(v, dir_cluster, it);
+  scheduler_preempt_enable();
+}
+
+int fat_iter_next(fat_iter_t *it, fat_dirent_t *out) {
+  int result;
+
+  scheduler_preempt_disable();
+  result = fat_iter_next_impl(it, out);
+  scheduler_preempt_enable();
+  return result;
+}
+
+int fat_lookup(fat_volume_t *v, uint32_t dir_cluster, const char *name, fat_dirent_t *out) {
+  int result;
+
+  scheduler_preempt_disable();
+  result = fat_lookup_impl(v, dir_cluster, name, out);
+  scheduler_preempt_enable();
+  return result;
+}
+
+int fat_read_file(fat_volume_t *v, const fat_dirent_t *ent, void *buf, uint32_t max, uint32_t *out_len) {
+  int result;
+
+  scheduler_preempt_disable();
+  result = fat_read_file_impl(v, ent, buf, max, out_len);
+  scheduler_preempt_enable();
+  return result;
+}
+
+int fat_write_file(fat_volume_t *v, uint32_t dir_cluster, const char *name, const void *data, uint32_t len) {
+  int result;
+
+  scheduler_preempt_disable();
+  result = fat_write_file_impl(v, dir_cluster, name, data, len);
+  scheduler_preempt_enable();
+  return result;
+}
+
+int fat_mkdir(fat_volume_t *v, uint32_t dir_cluster, const char *name, uint32_t *new_cluster) {
+  int result;
+
+  scheduler_preempt_disable();
+  result = fat_mkdir_impl(v, dir_cluster, name, new_cluster);
+  scheduler_preempt_enable();
+  return result;
+}
+
+int fat_delete(fat_volume_t *v, const fat_dirent_t *ent) {
+  int result;
+
+  scheduler_preempt_disable();
+  result = fat_delete_impl(v, ent);
+  scheduler_preempt_enable();
+  return result;
 }

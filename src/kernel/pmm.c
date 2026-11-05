@@ -1,4 +1,5 @@
 #include "pmm.h"
+#include "irqlock.h"
 
 // One bit per 4 KB page frame.  0 = free, 1 = used.
 // 32 KB covers up to 1 GB of physical address space.
@@ -61,7 +62,7 @@ void pmm_init(const void *memory_map, uint64_t map_size,
     }
 }
 
-uint64_t pmm_alloc_page(void)
+static uint64_t pmm_alloc_page_unlocked(void)
 {
     uint64_t i;
     for (i = 1; i < PMM_MAX_PAGES; ++i) {
@@ -74,7 +75,7 @@ uint64_t pmm_alloc_page(void)
     return 0;
 }
 
-uint64_t pmm_alloc_pages(uint64_t n)
+static uint64_t pmm_alloc_pages_unlocked(uint64_t n)
 {
     uint64_t start = 1;
     uint64_t run   = 0;
@@ -102,7 +103,7 @@ uint64_t pmm_alloc_pages(uint64_t n)
     return 0;
 }
 
-void pmm_free_page(uint64_t phys_addr)
+static void pmm_free_page_unlocked(uint64_t phys_addr)
 {
     uint64_t page_frame = phys_addr / PAGE_SIZE;
     if (page_frame == 0 || page_frame >= PMM_MAX_PAGES) return;
@@ -115,4 +116,26 @@ void pmm_free_page(uint64_t phys_addr)
 uint64_t pmm_available_pages(void)
 {
     return pmm_free_count;
+}
+
+// The scheduler can preempt at any instruction, so the allocator must not be
+// interrupted halfway through updating its bitmap.
+uint64_t pmm_alloc_page(void) {
+  uint64_t flags = irq_save();
+  uint64_t result = pmm_alloc_page_unlocked();
+  irq_restore(flags);
+  return result;
+}
+
+uint64_t pmm_alloc_pages(uint64_t n) {
+  uint64_t flags = irq_save();
+  uint64_t result = pmm_alloc_pages_unlocked(n);
+  irq_restore(flags);
+  return result;
+}
+
+void pmm_free_page(uint64_t phys_addr) {
+  uint64_t flags = irq_save();
+  pmm_free_page_unlocked(phys_addr);
+  irq_restore(flags);
 }

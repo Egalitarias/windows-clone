@@ -1,4 +1,5 @@
 #include "heap.h"
+#include "irqlock.h"
 #include "pmm.h"
 #include "paging.h"
 
@@ -50,7 +51,7 @@ void heap_init(void)
     g_heap_start->next  = 0;
 }
 
-void *kmalloc(uint64_t size)
+static void *kmalloc_unlocked(uint64_t size)
 {
     if (g_heap_start == 0 || size == 0) return 0;
 
@@ -80,7 +81,7 @@ void *kmalloc(uint64_t size)
     return 0;
 }
 
-void kfree(void *ptr)
+static void kfree_unlocked(void *ptr)
 {
     if (ptr == 0) return;
 
@@ -101,4 +102,18 @@ void kfree(void *ptr)
 uint64_t heap_used_bytes(void)
 {
     return g_used_bytes;
+}
+
+// Allocation can be preempted by the scheduler tick, so keep each call atomic.
+void *kmalloc(uint64_t size) {
+  uint64_t flags = irq_save();
+  void *result = kmalloc_unlocked(size);
+  irq_restore(flags);
+  return result;
+}
+
+void kfree(void *ptr) {
+  uint64_t flags = irq_save();
+  kfree_unlocked(ptr);
+  irq_restore(flags);
 }

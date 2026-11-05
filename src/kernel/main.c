@@ -175,7 +175,7 @@ static __attribute__((noreturn)) void kernel_runtime(const KERNEL_BOOT_INFO *boo
 
 #if defined(KERNEL_USER_SELFTEST) && KERNEL_USER_SELFTEST == 3
   process_selftest();
-#elif defined(KERNEL_USER_SELFTEST) && KERNEL_USER_SELFTEST != 4
+#elif defined(KERNEL_USER_SELFTEST) && (KERNEL_USER_SELFTEST == 1 || KERNEL_USER_SELFTEST == 2)
   usermode_selftest();
 #endif
 
@@ -218,9 +218,11 @@ static __attribute__((noreturn)) void kernel_runtime(const KERNEL_BOOT_INFO *boo
     DemoTaskState task_b = {"task-b", 0, 0};
 
     scheduler_init();
-    scheduler_set_idle_callback(desktop_draw_demo);
+    scheduler_set_idle_callback(desktop_start);
 #if defined(KERNEL_USER_SELFTEST) && KERNEL_USER_SELFTEST == 4
     process_scheduler_selftest();
+#elif defined(KERNEL_USER_SELFTEST) && KERNEL_USER_SELFTEST == 5
+    process_desktop_selftest();
 #endif
     scheduler_add_task("task-a", demo_task, &task_a);
     scheduler_add_task("task-b", demo_task, &task_b);

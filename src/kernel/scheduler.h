@@ -13,7 +13,14 @@ TCB *scheduler_current_tcb(void);
 // Nonzero once scheduler_run() has started dispatching tasks (timer preemption is live).
 int scheduler_is_running(void);
 
-// Called once, after all tasks complete and before the scheduler halts.
+// While the count is above zero the timer tick still runs but does not switch
+// tasks. Used around short non-reentrant sections (the FAT driver). Calls nest.
+// Do not block or wait for another task while holding it.
+void scheduler_preempt_disable(void);
+void scheduler_preempt_enable(void);
+
+// Called once, after all tasks complete. It may add new tasks (the desktop does);
+// if none are runnable afterwards the scheduler halts.
 void scheduler_set_idle_callback(void (*callback)(void));
 int scheduler_add_task(const char *name, SCHEDULER_TASK_FN fn, void *arg);
 int scheduler_add_task_with_priority(const char *name, SCHEDULER_TASK_FN fn, void *arg, uint32_t priority);

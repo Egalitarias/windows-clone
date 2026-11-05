@@ -8,6 +8,7 @@
 #include "string.h"
 #include "syscall.h"
 #include "usermode.h"
+#include "desktop.h"
 
 static process_t *g_current = 0;
 static volatile int g_busy = 0;     // a process owns the (single) user address space
@@ -444,5 +445,79 @@ static int supervisor_task(void *arg) {
 void process_scheduler_selftest(void) {
   fs_init();   // the desktop normally mounts the volumes; this test runs without it
   scheduler_add_task("supervisor", supervisor_task, 0);
+}
+#endif
+
+#if defined(KERNEL_USER_SELFTEST) && KERNEL_USER_SELFTEST == 5
+// USER_SELFTEST=5: the desktop is a normal task, so user programs must be able
+// to run, be preempted and crash while it keeps running.
+static int desk_expect(int ok, const char *what) {
+  console_printf("[DESK]  %s %s\r\n", ok ? "ok  " : "FAIL", what);
+  return ok ? 0 : 1;
+}
+
+static int desktop_supervisor_task(void *arg) {
+  int failures = 0;
+  uint64_t waited = 0;
+  uint64_t before;
+  uint64_t after;
+  uint64_t code = 0;
+  int h;
+  int i;
+
+  (void)arg;
+  console_write_string("[DESK] waiting for the desktop task to come up\r\n");
+  while (desktop_loop_count() < 3 && waited < 20000) {
+    wait_one_tick();
+    ++waited;
+  }
+  failures += desk_expect(desktop_loop_count() >= 3, "desktop task is running its main loop");
+
+  // A busy program: the desktop must keep getting turns while it runs in ring 3.
+  before = desktop_loop_count();
+  h = process_spawn("/APPS/COUNT.BIN");
+  failures += desk_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 9, "count ran to completion");
+  after = desktop_loop_count();
+  console_printf("[DESK] desktop passes while count ran: %llu\r\n", after - before);
+  failures += desk_expect(after - before >= 10, "desktop kept running while a program was busy");
+
+  // A crashing program must not take the desktop with it.
+  h = process_spawn("/APPS/CRASH.BIN");
+  failures += desk_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == PROCESS_EXIT_FAULT_BASE + 14,
+                          "crash was contained");
+  before = desktop_loop_count();
+  for (i = 0; i < 100; ++i) {
+    wait_one_tick();
+  }
+  after = desktop_loop_count();
+  failures += desk_expect(after > before, "desktop still alive after the crash");
+
+  // And many launches in a row, with the desktop sharing the CPU the whole time.
+  for (i = 0; i < 10; ++i) {
+    h = process_spawn("/APPS/HELLO.BIN");
+    if (h < 0 || process_wait(h, &code) != PROCESS_OK || code != 7) {
+      break;
+    }
+  }
+  failures += desk_expect(i == 10, "ten more launches ran");
+  before = desktop_loop_count();
+  for (i = 0; i < 100; ++i) {
+    wait_one_tick();
+  }
+  failures += desk_expect(desktop_loop_count() > before, "desktop still alive at the end");
+
+  if (failures == 0) {
+    console_write_string("[DESK] PASS: desktop is a regular task and coexists with user programs\r\n");
+  } else {
+    console_printf("[DESK] FAIL: %d check(s) failed\r\n", failures);
+  }
+  return 0;
+}
+
+// Start the desktop right away (instead of from the idle callback, which only
+// fires once every task has finished) and add the supervisor.
+void process_desktop_selftest(void) {
+  desktop_start();
+  scheduler_add_task("desk-supervisor", desktop_supervisor_task, 0);
 }
 #endif
