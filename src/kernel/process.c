@@ -289,9 +289,23 @@ int process_handle_user_fault(uint64_t vector, uint64_t error_code, uint64_t rip
 
 #define SPAWN_MAX 8
 
+#define OUT_RING 4096U
+#define IN_RING 256U
+
+// Per-program console: what the program wrote, and what was typed for it.
+typedef struct {
+  char out[OUT_RING];
+  volatile uint64_t out_total;
+  char in[IN_RING];
+  volatile uint32_t in_head;      // next byte to read
+  volatile uint32_t in_tail;      // next free slot
+  volatile int in_eof;
+} proc_io_t;
+
 typedef struct {
   int used;
   volatile int done;
+  proc_io_t io;
   int error;
   uint64_t exit_code;
   char path[64];
@@ -324,6 +338,7 @@ static int spawn_task(void *arg) {
     return 0;
   }
 
+  p.io = &s->io;
   s->exit_code = process_run(&p);
   {
     TCB *self = scheduler_current_tcb();
@@ -362,6 +377,10 @@ int process_spawn(const char *path) {
     str_copy(s->name + n, path, sizeof(s->name) - n);
     str_copy(s->path, path, sizeof(s->path));
     s->done = 0;
+    s->io.out_total = 0;
+    s->io.in_head = 0;
+    s->io.in_tail = 0;
+    s->io.in_eof = 0;
     s->error = PROCESS_OK;
     s->exit_code = 0;
     if (!scheduler_add_task(s->name, spawn_task, s)) {
@@ -372,82 +391,107 @@ int process_spawn(const char *path) {
   return handle;
 }
 
-// ---- Program output ----------------------------------------------------------
-// What user programs write(2) is also kept in a ring buffer so the desktop can show
-// it. Readers keep their own cursor (total bytes seen); torn reads are harmless.
+// ---- Program output and input ------------------------------------------------
+// Each spawned program has its own output ring and input queue (proc_io_t), so
+// several programs can run side by side, each with its own GUI window. Readers keep
+// their own cursor (total bytes seen); torn reads are harmless. A program that was
+// not spawned (self-tests) has no console: its output is dropped, reads see EOF.
 
-#define OUT_RING 4096U
-static char g_out_ring[OUT_RING];
-static volatile uint64_t g_out_total = 0;
+static proc_io_t *current_io(void) {
+  process_t *p = current_process();
+
+  return p != 0 ? (proc_io_t *)p->io : 0;
+}
+
+static proc_io_t *handle_io(int handle) {
+  if (handle < 0 || handle >= SPAWN_MAX || !g_spawns[handle].used) {
+    return 0;
+  }
+  return &g_spawns[handle].io;
+}
 
 void process_output_write(const char *data, uint64_t len) {
+  proc_io_t *io = current_io();
   uint64_t i;
+
+  if (io == 0) {
+    return;
+  }
   for (i = 0; i < len; ++i) {
-    g_out_ring[g_out_total % OUT_RING] = data[i];
-    g_out_total = g_out_total + 1;
+    io->out[io->out_total % OUT_RING] = data[i];
+    io->out_total = io->out_total + 1;
   }
 }
 
-uint64_t process_output_read(uint64_t *cursor, char *buf, uint64_t max) {
-  uint64_t total = g_out_total;
-  uint64_t n = 0;
+uint64_t process_output_read(int handle, uint64_t *cursor, char *buf, uint64_t max) {
+  proc_io_t *io = handle_io(handle);
+  uint64_t total, n = 0;
 
+  if (io == 0) {
+    return 0;
+  }
+  total = io->out_total;
   if (total - *cursor > OUT_RING) {
     *cursor = total - OUT_RING;       // fell behind: skip what was overwritten
   }
   while (*cursor < total && n < max) {
-    buf[n++] = g_out_ring[*cursor % OUT_RING];
+    buf[n++] = io->out[*cursor % OUT_RING];
     *cursor = *cursor + 1;
   }
   return n;
 }
 
-// ---- Program input -----------------------------------------------------------
-// Bytes typed for the running program (the GUI does line editing and pushes whole
-// lines). SYS_READ blocks until something is here. `eof` makes reads return 0.
+void process_input_push(int handle, char c) {
+  proc_io_t *io = handle_io(handle);
+  uint64_t f;
 
-#define IN_RING 256U
-static char g_in_ring[IN_RING];
-static volatile uint32_t g_in_head = 0;     // next byte to read
-static volatile uint32_t g_in_tail = 0;     // next free slot
-static volatile int g_in_eof = 0;
-
-void process_input_reset(void) {
-  uint64_t f = irq_save();
-  g_in_head = 0;
-  g_in_tail = 0;
-  g_in_eof = 0;
-  irq_restore(f);
-}
-
-void process_input_push(char c) {
-  uint64_t f = irq_save();
-  if (g_in_tail - g_in_head < IN_RING) {
-    g_in_ring[g_in_tail % IN_RING] = c;
-    g_in_tail = g_in_tail + 1;
+  if (io == 0) {
+    return;
+  }
+  f = irq_save();
+  if (io->in_tail - io->in_head < IN_RING) {
+    io->in[io->in_tail % IN_RING] = c;
+    io->in_tail = io->in_tail + 1;
   }
   irq_restore(f);
   scheduler_wake_all(TASK_WAIT_INPUT);
 }
 
-void process_input_close(void) {
-  g_in_eof = 1;
+void process_input_close(int handle) {
+  proc_io_t *io = handle_io(handle);
+
+  if (io == 0) {
+    return;
+  }
+  io->in_eof = 1;
   scheduler_wake_all(TASK_WAIT_INPUT);
 }
 
 uint64_t process_input_read(char *buf, uint64_t max) {
+  proc_io_t *io = current_io();
   uint64_t n = 0;
-  uint64_t f = irq_save();
-  while (g_in_head != g_in_tail && n < max) {
-    buf[n++] = g_in_ring[g_in_head % IN_RING];
-    g_in_head = g_in_head + 1;
+  uint64_t f;
+
+  if (io == 0) {
+    return 0;
+  }
+  f = irq_save();
+  while (io->in_head != io->in_tail && n < max) {
+    buf[n++] = io->in[io->in_head % IN_RING];
+    io->in_head = io->in_head + 1;
   }
   irq_restore(f);
   return n;
 }
 
 int process_input_eof(void) {
-  return g_in_eof;
+  proc_io_t *io = current_io();
+
+  return io == 0 || io->in_eof;
+}
+
+int process_finished(int handle) {
+  return handle >= 0 && handle < SPAWN_MAX && g_spawns[handle].used && g_spawns[handle].done;
 }
 
 int process_poll(int handle, uint64_t *exit_code) {

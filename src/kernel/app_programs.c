@@ -5,7 +5,7 @@
 #include "wm.h"
 
 // Programs: launches user-mode programs from /APPS and shows what they print.
-// One program runs at a time (until per-process address spaces exist).
+// Every Programs window runs its own program with its own output and input.
 
 #define PROG_COUNT   5
 #define BTN_W        96
@@ -14,6 +14,7 @@
 #define STATUS_H     16
 #define OUT_MAX      2048
 #define ROW_H        10
+#define MAX_WINS     4
 
 // The kernel is loaded without relocations, so a table of string pointers in
 // static data is not valid (and the compiler happily builds one out of a switch
@@ -24,24 +25,30 @@ static const char *prog_name(int i) {
   return kProgNames[i];
 }
 
-static wm_window_t *g_win = 0;
-static int g_handle = -1;           // process_spawn handle, -1 when idle
-static uint64_t g_cursor = 0;       // position in the program output stream
-static char g_out[OUT_MAX + 1];
-static int g_out_len = 0;
-static char g_status[64];
-static int g_btn_hot = -1;
-static char g_line[128];            // line being typed for the program
-static int g_line_len = 0;
+typedef struct {
+  int used;
+  wm_window_t *win;
+  int handle;                 // process_spawn handle, -1 when idle
+  uint64_t cursor;            // position in the program output stream
+  char out[OUT_MAX + 1];
+  int out_len;
+  char status[64];
+  int btn_hot;
+  char line[128];             // line being typed for the program
+  int line_len;
+} prog_t;
 
-static void set_status(const char *a, const char *b) {
-  size_t n = str_copy(g_status, a, sizeof(g_status));
+static prog_t g_progs[MAX_WINS];
+static char g_view[OUT_MAX + 132];
+
+static void set_status(prog_t *pr, const char *a, const char *b) {
+  size_t n = str_copy(pr->status, a, sizeof(pr->status));
   if (b) {
-    str_copy(g_status + n, b, sizeof(g_status) - n);
+    str_copy(pr->status + n, b, sizeof(pr->status) - n);
   }
 }
 
-static void out_append(const char *s, int n) {
+static void out_append(prog_t *pr, const char *s, int n) {
   int i;
   for (i = 0; i < n; ++i) {
     char c = s[i];
@@ -51,38 +58,36 @@ static void out_append(const char *s, int n) {
     if (c != '\n' && (c < 0x20 || c > 0x7E)) {
       c = '?';
     }
-    if (g_out_len >= OUT_MAX) {              // drop the oldest half
+    if (pr->out_len >= OUT_MAX) {              // drop the oldest half
       int keep = OUT_MAX / 2, k;
       for (k = 0; k < keep; ++k) {
-        g_out[k] = g_out[g_out_len - keep + k];
+        pr->out[k] = pr->out[pr->out_len - keep + k];
       }
-      g_out_len = keep;
+      pr->out_len = keep;
     }
-    g_out[g_out_len++] = c;
+    pr->out[pr->out_len++] = c;
   }
-  g_out[g_out_len] = 0;
+  pr->out[pr->out_len] = 0;
 }
 
-static void redraw(void) {
-  if (g_win) {
-    wm_invalidate_window(g_win);
+static void redraw(prog_t *pr) {
+  if (pr->win) {
+    wm_invalidate_window(pr->win);
   }
 }
-
-static char g_view[OUT_MAX + 132];
 
 static void program_paint(wm_window_t *win, int cx, int cy, int cw, int ch) {
   char *view = g_view;
   int vlen = 0;
   int i, cols, rows, total_rows = 0, skip, row = 0, col = 0, area_y, area_h;
-  (void)win;
+  prog_t *pr = (prog_t *)win->data;
 
-  for (i = 0; i < g_out_len; ++i) {
-    view[vlen++] = g_out[i];
+  for (i = 0; i < pr->out_len; ++i) {
+    view[vlen++] = pr->out[i];
   }
-  if (g_handle >= 0) {                       // the line being typed, with a cursor
-    for (i = 0; i < g_line_len; ++i) {
-      view[vlen++] = g_line[i];
+  if (pr->handle >= 0) {                       // the line being typed, with a cursor
+    for (i = 0; i < pr->line_len; ++i) {
+      view[vlen++] = pr->line[i];
     }
     view[vlen++] = '_';
   }
@@ -94,7 +99,7 @@ static void program_paint(wm_window_t *win, int cx, int cy, int cw, int ch) {
     char label[16];
     size_t n = str_copy(label, prog_name(i), sizeof(label));
     str_copy(label + n, ".BIN", sizeof(label) - n);
-    fb_fill_rect(bx, cy + BTN_Y, BTN_W, BTN_H, i == g_btn_hot ? FB_RGB(70, 140, 245) : FB_RGB(40, 110, 220));
+    fb_fill_rect(bx, cy + BTN_Y, BTN_W, BTN_H, i == pr->btn_hot ? FB_RGB(70, 140, 245) : FB_RGB(40, 110, 220));
     fb_draw_text(bx + (BTN_W - fb_text_width(label, 1)) / 2, cy + BTN_Y + 7, label, FB_RGB(255, 255, 255), 1);
   }
 
@@ -135,43 +140,38 @@ static void program_paint(wm_window_t *win, int cx, int cy, int cw, int ch) {
   }
 
   fb_fill_rect(cx, cy + ch - STATUS_H, cw, STATUS_H, FB_RGB(228, 230, 238));
-  fb_draw_text(cx + 6, cy + ch - STATUS_H + 4, g_status[0] ? g_status : "Click a program to run it",
+  fb_draw_text(cx + 6, cy + ch - STATUS_H + 4, pr->status[0] ? pr->status : "Click a program to run it",
                FB_RGB(70, 75, 95), 1);
 }
 
-// Start a program. Returns 1 if it was started.
-static int start_program(const char *path) {
+// Start a program in this window. Returns 1 if it was started.
+static int start_program(prog_t *pr, const char *path) {
   int h;
 
-  if (g_handle >= 0) {
-    set_status("Another program is still running", 0);
-    redraw();
+  if (pr->handle >= 0) {
+    set_status(pr, "Another program is still running", 0);
+    redraw(pr);
     return 0;
   }
   h = process_spawn(path);
   if (h < 0) {
-    set_status("Could not start ", path);
-    redraw();
+    set_status(pr, "Could not start ", path);
+    redraw(pr);
     return 0;
   }
-  g_handle = h;
-  g_out_len = 0;
-  g_out[0] = 0;
-  g_line_len = 0;
-  process_input_reset();
-  {
-    char tmp[256];                             // skip output from before this launch
-    while (process_output_read(&g_cursor, tmp, sizeof(tmp)) > 0) {
-    }
-  }
-  set_status("Running ", path);
-  redraw();
+  pr->handle = h;
+  pr->cursor = 0;
+  pr->out_len = 0;
+  pr->out[0] = 0;
+  pr->line_len = 0;
+  set_status(pr, "Running ", path);
+  redraw(pr);
   return 1;
 }
 
 static void program_mouse(wm_window_t *win, int lx, int ly, int event) {
+  prog_t *pr = (prog_t *)win->data;
   int i, hot = -1;
-  (void)win;
 
   for (i = 0; i < PROG_COUNT; ++i) {
     int bx = 6 + i * (BTN_W + 6);
@@ -184,110 +184,175 @@ static void program_mouse(wm_window_t *win, int lx, int ly, int event) {
     size_t n = str_copy(path, "/APPS/", sizeof(path));
     n += str_copy(path + n, prog_name(hot), sizeof(path) - n);
     str_copy(path + n, ".BIN", sizeof(path) - n);
-    start_program(path);
+    start_program(pr, path);
   }
-  if (hot != g_btn_hot) {
-    g_btn_hot = hot;
-    redraw();
+  if (hot != pr->btn_hot) {
+    pr->btn_hot = hot;
+    redraw(pr);
   }
 }
 
 // Keyboard: cooked line mode. Characters are echoed and edited here; a whole line
 // is handed to the program when Enter is pressed. Ctrl+D ends the input.
 static void program_key(wm_window_t *win, char ch) {
-  (void)win;
-  if (g_handle < 0) {
+  prog_t *pr = (prog_t *)win->data;
+
+  if (pr->handle < 0) {
     return;
   }
   if (ch == 0x04) {
-    process_input_close();
-    set_status("End of input sent", 0);
+    process_input_close(pr->handle);
+    set_status(pr, "End of input sent", 0);
   } else if (ch == '\n') {
     int i;
-    for (i = 0; i < g_line_len; ++i) {
-      process_input_push(g_line[i]);
+    for (i = 0; i < pr->line_len; ++i) {
+      process_input_push(pr->handle, pr->line[i]);
     }
-    process_input_push('\n');
-    out_append(g_line, g_line_len);
-    out_append("\n", 1);
-    g_line_len = 0;
+    process_input_push(pr->handle, '\n');
+    out_append(pr, pr->line, pr->line_len);
+    out_append(pr, "\n", 1);
+    pr->line_len = 0;
   } else if (ch == '\b') {
-    if (g_line_len > 0) {
-      g_line_len--;
+    if (pr->line_len > 0) {
+      pr->line_len--;
     }
-  } else if (ch >= 0x20 && ch <= 0x7E && g_line_len < (int)sizeof(g_line) - 2) {
-    g_line[g_line_len++] = ch;
+  } else if (ch >= 0x20 && ch <= 0x7E && pr->line_len < (int)sizeof(pr->line) - 2) {
+    pr->line[pr->line_len++] = ch;
   } else {
     return;
   }
-  redraw();
+  redraw(pr);
 }
 
+// The window is going away. A program still running keeps its slot until app_programs_poll
+// sees it finish (that releases the spawn handle); it just sees end of input.
 static void program_closing(wm_window_t *win) {
-  (void)win;
-  g_win = 0;
-  process_input_close();                    // a program waiting for input sees end of input
+  prog_t *pr = (prog_t *)win->data;
+
+  pr->win = 0;
+  if (pr->handle >= 0) {
+    process_input_close(pr->handle);
+  } else {
+    pr->used = 0;
+  }
 }
 
+static prog_t *new_window(void) {
+  int i;
+
+  for (i = 0; i < MAX_WINS; ++i) {
+    prog_t *pr = &g_progs[i];
+    if (!pr->used) {
+      pr->used = 1;
+      pr->handle = -1;
+      pr->cursor = 0;
+      pr->out_len = 0;
+      pr->out[0] = 0;
+      pr->status[0] = 0;
+      pr->btn_hot = -1;
+      pr->line_len = 0;
+      pr->win = wm_create("Programs", 150 + 24 * i, 70 + 24 * i, 560, 300);
+      if (!pr->win) {
+        pr->used = 0;
+        return 0;
+      }
+      pr->win->data = pr;
+      pr->win->paint = program_paint;
+      pr->win->mouse = program_mouse;
+      pr->win->closing = program_closing;
+      pr->win->key = program_key;
+      pr->win->min_w = 3 * (BTN_W + 6) + 12;
+      pr->win->min_h = 140;
+      return pr;
+    }
+  }
+  return 0;
+}
+
+// Start menu: raise an open Programs window, or open the first one.
 void app_programs_open(void) {
-  if (g_win) {
-    wm_raise(g_win);
-    wm_invalidate_window(g_win);
-    return;
+  int i;
+
+  for (i = 0; i < MAX_WINS; ++i) {
+    if (g_progs[i].used && g_progs[i].win) {
+      wm_raise(g_progs[i].win);
+      wm_invalidate_window(g_progs[i].win);
+      return;
+    }
   }
-  g_win = wm_create("Programs", 150, 70, 560, 300);
-  if (!g_win) {
-    return;
-  }
-  g_win->paint = program_paint;
-  g_win->mouse = program_mouse;
-  g_win->closing = program_closing;
-  g_win->key = program_key;
-  g_win->min_w = 3 * (BTN_W + 6) + 12;
-  g_win->min_h = 140;
+  new_window();
 }
 
+// Run `path` in an idle Programs window, or in a new one if all are busy.
 void app_programs_run(const char *path) {
-  app_programs_open();
-  if (g_win) {
-    start_program(path);
+  prog_t *pr = 0;
+  int i;
+
+  for (i = 0; i < MAX_WINS && !pr; ++i) {
+    if (g_progs[i].used && g_progs[i].win && g_progs[i].handle < 0) {
+      pr = &g_progs[i];
+    }
+  }
+  if (!pr) {
+    pr = new_window();
+  }
+  if (pr) {
+    wm_raise(pr->win);
+    start_program(pr, path);
   }
 }
 
-// Called by the desktop loop: move new program output into the window and notice
-// when the program has finished.
-void app_programs_poll(void) {
+static void poll_one(prog_t *pr) {
   char tmp[128];
   uint64_t n, code = 0;
   int changed = 0;
-  int rc;
+  int rc = 1;
+  int finished;
 
-  if (g_handle < 0) {
+  if (pr->handle < 0) {
     return;
   }
-  while ((n = process_output_read(&g_cursor, tmp, sizeof(tmp))) > 0) {
-    out_append(tmp, (int)n);
+  // Look at "finished" before draining: a program stops writing before it is marked
+  // done, so a drain after seeing done is complete (process_poll frees the console).
+  finished = process_finished(pr->handle);
+  while ((n = process_output_read(pr->handle, &pr->cursor, tmp, sizeof(tmp))) > 0) {
+    out_append(pr, tmp, (int)n);
     changed = 1;
   }
-  rc = process_poll(g_handle, &code);
+  if (finished) {
+    rc = process_poll(pr->handle, &code);
+  }
   if (rc != 1) {
     char num[24];
-    g_handle = -1;
-    while ((n = process_output_read(&g_cursor, tmp, sizeof(tmp))) > 0) {
-      out_append(tmp, (int)n);
-    }
+    pr->handle = -1;
     if (rc != PROCESS_OK) {
-      set_status("Program not found", 0);
+      set_status(pr, "Program not found", 0);
     } else if (code >= PROCESS_EXIT_FAULT_BASE) {
       u32_to_str((uint32_t)(code - PROCESS_EXIT_FAULT_BASE), num);
-      set_status("Crashed: CPU exception ", num);
+      set_status(pr, "Crashed: CPU exception ", num);
     } else {
       u32_to_str((uint32_t)code, num);
-      set_status("Finished, exit code ", num);
+      set_status(pr, "Finished, exit code ", num);
     }
     changed = 1;
+    if (!pr->win) {
+      pr->used = 0;                          // window was closed while it ran
+      return;
+    }
   }
   if (changed) {
-    redraw();
+    redraw(pr);
+  }
+}
+
+// Called by the desktop loop: move new program output into each window and notice
+// when a program has finished.
+void app_programs_poll(void) {
+  int i;
+
+  for (i = 0; i < MAX_WINS; ++i) {
+    if (g_progs[i].used) {
+      poll_one(&g_progs[i]);
+    }
   }
 }

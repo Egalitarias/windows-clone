@@ -46,6 +46,7 @@ typedef struct {
   uint64_t cr3;               // physical address of the process's PML4 (its own address space)
   uint64_t saved_rsp;         // kernel context to return to when the program exits
   uint64_t exit_code;
+  void *io;                   // the program's console (set by process_spawn), or 0
   int running;                // inside process_run (user code or one of its syscalls)
 } process_t;
 
@@ -74,17 +75,20 @@ int process_wait(int handle, uint64_t *exit_code);
 // otherwise behaves like process_wait (stores the exit code, releases the handle).
 int process_poll(int handle, uint64_t *exit_code);
 
-// Everything user programs write to stdout/stderr, also captured for the GUI.
-// process_output_read copies new bytes after *cursor (a running total, start at 0).
-void process_output_write(const char *data, uint64_t len);
-uint64_t process_output_read(uint64_t *cursor, char *buf, uint64_t max);
+// Non-blocking: 1 once the spawned program has finished (its console is still
+// readable until process_poll releases the handle).
+int process_finished(int handle);
 
-// Keyboard input for the running program. The GUI pushes characters (whole lines);
-// SYS_READ drains them. process_input_close() marks end of input: once the buffer
-// is empty reads return 0. process_input_reset() starts a fresh stream.
-void process_input_reset(void);
-void process_input_push(char c);
-void process_input_close(void);
+// Each spawned program has its own console, addressed by its spawn handle (valid
+// until process_poll/process_wait releases it). Output: everything the program
+// writes to stdout/stderr; process_output_read copies new bytes after *cursor (a
+// running total, start at 0). Input: the GUI pushes characters (whole lines);
+// SYS_READ drains them. process_input_close() marks end of input: once the queue is
+// empty reads return 0. The syscall-side calls below act on the calling program.
+void process_output_write(const char *data, uint64_t len);
+uint64_t process_output_read(int handle, uint64_t *cursor, char *buf, uint64_t max);
+void process_input_push(int handle, char c);
+void process_input_close(int handle);
 uint64_t process_input_read(char *buf, uint64_t max);   // never blocks; returns bytes copied
 int process_input_eof(void);
 
