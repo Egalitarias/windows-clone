@@ -109,11 +109,16 @@ static int64_t sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
   for (;;) {
     n = process_input_read((char *)(uintptr_t)buf, len);
     if (n > 0) {
+      scheduler_wait_end();
       return (int64_t)n;
     }
     if (process_input_eof() || !scheduler_is_running()) {
+      scheduler_wait_end();
       return 0;
     }
+    // Leave the run queue until input arrives (process_input_push wakes us).
+    // Interrupts are off, so nothing can push between the check and the block.
+    scheduler_block_current(TASK_WAIT_INPUT, 0);
     __asm__ volatile("sti; hlt; cli" : : : "memory");
   }
 }
@@ -132,7 +137,13 @@ static int64_t sys_sleep(uint64_t ms) {
   for (;;) {
     now = timer_get_ms();
     if (now - start >= ms) {
+      scheduler_wait_end();
       return (int64_t)(now - start);
+    }
+    // Leave the run queue; the timer tick wakes us at the deadline. Without a
+    // running scheduler this is a plain halt until the tick advances.
+    if (scheduler_is_running()) {
+      scheduler_block_current(TASK_WAIT_SLEEP, start + ms);
     }
     __asm__ volatile("sti; hlt; cli" : : : "memory");
   }

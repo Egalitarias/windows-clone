@@ -427,10 +427,12 @@ void process_input_push(char c) {
     g_in_tail = g_in_tail + 1;
   }
   irq_restore(f);
+  scheduler_wake_all(TASK_WAIT_INPUT);
 }
 
 void process_input_close(void) {
   g_in_eof = 1;
+  scheduler_wake_all(TASK_WAIT_INPUT);
 }
 
 uint64_t process_input_read(char *buf, uint64_t max) {

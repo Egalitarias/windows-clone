@@ -2,6 +2,8 @@
 #include "stack_guard.h"
 #include "paging.h"
 #include "gdt.h"
+#include "irqlock.h"
+#include "timer.h"
 
 #define SCHEDULER_MAX_TASKS 8U
 #define SCHEDULER_PRIORITY_LEVELS 256U
@@ -504,7 +506,60 @@ int scheduler_task_unblock(TCB *task) {
   }
 
   task->state = TASK_STATE_READY;
+  task->wait_kind = TASK_WAIT_NONE;
   return scheduler_enqueue_ready_task(index);
+}
+
+void scheduler_block_current(uint32_t kind, uint64_t wake_ms) {
+  uint64_t flags = irq_save();
+  TCB *self = scheduler_current_tcb();
+
+  if (self != 0 && self->state != TASK_STATE_TERMINATED) {
+    self->wait_kind = kind;
+    self->wake_ms = wake_ms;
+    self->state = TASK_STATE_BLOCKED;
+  }
+  irq_restore(flags);
+}
+
+// The wait is over. If a wake-up already made the task READY (queued), leave it:
+// the next tick just requeues it. If it is still BLOCKED because nothing else was
+// runnable, it is running now, so mark it so.
+void scheduler_wait_end(void) {
+  uint64_t flags = irq_save();
+  TCB *self = scheduler_current_tcb();
+
+  if (self != 0 && self->state == TASK_STATE_BLOCKED) {
+    self->state = TASK_STATE_RUNNING;
+    self->wait_kind = TASK_WAIT_NONE;
+  }
+  irq_restore(flags);
+}
+
+void scheduler_wake_all(uint32_t kind) {
+  uint64_t flags = irq_save();
+  unsigned int i;
+
+  for (i = 0; i < g_task_count; ++i) {
+    TCB *t = g_tasks[i].tcb;
+    if (t != 0 && t->state == TASK_STATE_BLOCKED && t->wait_kind == kind) {
+      scheduler_task_unblock(t);
+    }
+  }
+  irq_restore(flags);
+}
+
+static void scheduler_wake_sleepers(void) {
+  uint64_t now = timer_get_ms();
+  unsigned int i;
+
+  for (i = 0; i < g_task_count; ++i) {
+    TCB *t = g_tasks[i].tcb;
+    if (t != 0 && t->state == TASK_STATE_BLOCKED && t->wait_kind == TASK_WAIT_SLEEP &&
+        now >= t->wake_ms) {
+      scheduler_task_unblock(t);
+    }
+  }
 }
 
 int scheduler_task_terminate(TCB *task) {
@@ -549,6 +604,8 @@ void *scheduler_on_timer_tick(void *interrupt_stack_pointer) {
     return selected_interrupt_stack_pointer;
   }
 
+  scheduler_wake_sleepers();
+
   // A task is inside a non-reentrant kernel section (e.g. the FAT driver).
   // Keep running it; the next tick after it leaves will switch.
   if (g_preempt_disabled > 0) {
@@ -570,9 +627,12 @@ void *scheduler_on_timer_tick(void *interrupt_stack_pointer) {
     scheduler_snapshot_context(current_task->tcb, (uint64_t *)interrupt_stack_pointer);
     current_task->tcb->state = TASK_STATE_READY;
     scheduler_enqueue_ready_task(g_current_index);
-  } else if (current_task->tcb->state != TASK_STATE_BLOCKED &&
-             current_task->tcb->state != TASK_STATE_TERMINATED &&
-             current_task->tcb->state != TASK_STATE_READY) {
+  } else if (current_task->tcb->state == TASK_STATE_BLOCKED ||
+             current_task->tcb->state == TASK_STATE_READY) {
+    // Blocked in a syscall wait, or woken since: save where it stopped so it
+    // resumes there. A blocked task is not queued; a woken one already is.
+    scheduler_snapshot_context(current_task->tcb, (uint64_t *)interrupt_stack_pointer);
+  } else if (current_task->tcb->state != TASK_STATE_TERMINATED) {
     g_invalid_state_count++;
     goto on_timer_tick_done;
   }

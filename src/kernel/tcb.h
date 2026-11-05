@@ -41,7 +41,15 @@ typedef struct {
   // Per-process state, loaded by the scheduler whenever this task is switched in.
   uint64_t cr3;             // PML4 of the task's address space; 0 = the kernel's tables
   uint64_t kernel_rsp0;     // kernel stack for ring-3 entries (TSS.rsp0); 0 = leave unchanged
+
+  // Why a BLOCKED task is blocked (TASK_WAIT_*), and for sleepers when to wake it.
+  uint32_t wait_kind;
+  uint64_t wake_ms;
 } TCB;
+
+#define TASK_WAIT_NONE  0U
+#define TASK_WAIT_SLEEP 1U   // wakes when timer_get_ms() reaches wake_ms
+#define TASK_WAIT_INPUT 2U   // wakes when scheduler_wake_all(TASK_WAIT_INPUT) is called
 
 #define TCB_MAX_TASKS 256
 #define TCB_DEFAULT_STACK_SIZE 4096
