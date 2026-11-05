@@ -37,6 +37,10 @@ typedef struct {
   void *user_stack_base;    // Base of user-mode stack (user VA space)
   void *user_entry_point;   // Entry point for user process
   uint32_t exit_code;       // Exit code when task terminates
+
+  // Per-process state, loaded by the scheduler whenever this task is switched in.
+  uint64_t cr3;             // PML4 of the task's address space; 0 = the kernel's tables
+  uint64_t kernel_rsp0;     // kernel stack for ring-3 entries (TSS.rsp0); 0 = leave unchanged
 } TCB;
 
 #define TCB_MAX_TASKS 256

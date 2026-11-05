@@ -11,25 +11,35 @@
 #include "irqlock.h"
 #include "desktop.h"
 
-static process_t *g_current = 0;
-static volatile int g_busy = 0;     // a process owns the (single) user address space
+// The process running on the current task. Under the scheduler it hangs off the
+// task's TCB (address_space field), so concurrent processes each find their own;
+// g_fallback covers the unscheduled self-test.
+static process_t *g_fallback = 0;
 static uint64_t g_next_pid = 1;
+static volatile int g_live = 0;
+static volatile int g_live_max = 0;
 
-// Atomically claim the user address space. Tasks are preempted by the timer at
-// any point, so a plain check-then-set would let two loaders in at once.
-static int claim_address_space(void) {
-  uint64_t flags;
-  int got = 0;
+static process_t *current_process(void) {
+  TCB *self = scheduler_current_tcb();
 
-  __asm__ volatile("pushfq; popq %0; cli" : "=r"(flags) : : "memory");
-  if (!g_busy) {
-    g_busy = 1;
-    got = 1;
+  if (self != 0 && self->address_space != 0) {
+    return (process_t *)self->address_space;
   }
-  if ((flags & 0x200ULL) != 0) {
-    __asm__ volatile("sti" : : : "memory");
-  }
-  return got;
+  return g_fallback;
+}
+
+uint64_t process_current_pid(void) {
+  process_t *p = current_process();
+
+  return p != 0 ? p->pid : 0;
+}
+
+int process_live_count(void) {
+  return g_live;
+}
+
+int process_live_max(void) {
+  return g_live_max;
 }
 
 // Resolve "/DIR/NAME" on one volume, one component at a time.
@@ -93,6 +103,25 @@ static void free_pages(uint64_t phys, uint64_t pages) {
   }
 }
 
+static void create_cleanup(process_t *p) {
+  if (p->cr3 != 0) {
+    paging_destroy_address_space(p->cr3);
+  }
+  if (p->kstack_alloc != 0) {
+    kfree(p->kstack_alloc);
+  }
+  if (p->stack_phys != 0) {
+    free_pages(p->stack_phys, PROCESS_STACK_PAGES);
+  }
+  if (p->image_phys != 0) {
+    free_pages(p->image_phys, p->image_pages);
+  }
+  p->cr3 = 0;
+  p->kstack_alloc = 0;
+  p->stack_phys = 0;
+  p->image_phys = 0;
+}
+
 int process_create(const char *path, process_t *p) {
   fat_volume_t *vol = 0;
   fat_dirent_t ent;
@@ -101,21 +130,15 @@ int process_create(const char *path, process_t *p) {
   uint64_t stack_virt = PROCESS_STACK_TOP - (uint64_t)PROCESS_STACK_PAGES * 4096ULL;
   uint8_t *kstack;
 
-  if (!claim_address_space()) {
-    return PROCESS_ERR_BUSY;  // same virtual addresses for everyone until phase 2
-  }
   memset(p, 0, sizeof(*p));
 
   if (!find_file(path, &vol, &ent)) {
-    g_busy = 0;
     return PROCESS_ERR_NOFILE;
   }
   if (ent.size == 0) {
-    g_busy = 0;
     return PROCESS_ERR_EMPTY;
   }
   if (ent.size > PROCESS_MAX_IMAGE) {
-    g_busy = 0;
     return PROCESS_ERR_TOOBIG;
   }
   image_bytes = ent.size;
@@ -123,30 +146,19 @@ int process_create(const char *path, process_t *p) {
 
   p->image_phys = pmm_alloc_pages(p->image_pages);
   if (p->image_phys == 0) {
-    g_busy = 0;
     return PROCESS_ERR_NOMEM;
   }
   p->stack_phys = pmm_alloc_pages(PROCESS_STACK_PAGES);
-  if (p->stack_phys == 0) {
-    free_pages(p->image_phys, p->image_pages);
-    g_busy = 0;
-    return PROCESS_ERR_NOMEM;
-  }
   p->kstack_alloc = kmalloc(PROCESS_KSTACK_SIZE + 16U);
-  if (p->kstack_alloc == 0) {
-    free_pages(p->stack_phys, PROCESS_STACK_PAGES);
-    free_pages(p->image_phys, p->image_pages);
-    g_busy = 0;
+  if (p->stack_phys == 0 || p->kstack_alloc == 0) {
+    create_cleanup(p);
     return PROCESS_ERR_NOMEM;
   }
 
   // The kernel fills the pages through the identity map, so make sure it exists.
   if (!paging_map_range(p->image_phys, p->image_pages * 4096ULL) ||
       !paging_map_range(p->stack_phys, (uint64_t)PROCESS_STACK_PAGES * 4096ULL)) {
-    kfree(p->kstack_alloc);
-    free_pages(p->stack_phys, PROCESS_STACK_PAGES);
-    free_pages(p->image_phys, p->image_pages);
-    g_busy = 0;
+    create_cleanup(p);
     return PROCESS_ERR_NOMEM;
   }
   zero_pages(p->image_phys, p->image_pages);
@@ -154,21 +166,17 @@ int process_create(const char *path, process_t *p) {
 
   if (!fat_read_file(vol, &ent, (void *)(uintptr_t)p->image_phys, (uint32_t)image_bytes, &got) ||
       got != image_bytes) {
-    kfree(p->kstack_alloc);
-    free_pages(p->stack_phys, PROCESS_STACK_PAGES);
-    free_pages(p->image_phys, p->image_pages);
-    g_busy = 0;
+    create_cleanup(p);
     return PROCESS_ERR_READ;
   }
 
-  if (!paging_map_user(PROCESS_LOAD_BASE, p->image_phys, p->image_pages * 4096ULL, 1) ||
-      !paging_map_user(stack_virt, p->stack_phys, (uint64_t)PROCESS_STACK_PAGES * 4096ULL, 1)) {
-    paging_unmap_user(PROCESS_LOAD_BASE, p->image_pages * 4096ULL);
-    paging_unmap_user(stack_virt, (uint64_t)PROCESS_STACK_PAGES * 4096ULL);
-    kfree(p->kstack_alloc);
-    free_pages(p->stack_phys, PROCESS_STACK_PAGES);
-    free_pages(p->image_phys, p->image_pages);
-    g_busy = 0;
+  // A private address space: it shares the kernel's mappings and maps the image
+  // and stack at the same virtual addresses every process uses.
+  p->cr3 = paging_create_address_space();
+  if (p->cr3 == 0 ||
+      !paging_map_user_in(p->cr3, PROCESS_LOAD_BASE, p->image_phys, p->image_pages * 4096ULL, 1) ||
+      !paging_map_user_in(p->cr3, stack_virt, p->stack_phys, (uint64_t)PROCESS_STACK_PAGES * 4096ULL, 1)) {
+    create_cleanup(p);
     return PROCESS_ERR_NOMEM;
   }
 
@@ -181,14 +189,21 @@ int process_create(const char *path, process_t *p) {
     p->pid = (self != 0) ? (uint64_t)self->task_id : g_next_pid++;
   }
   p->loaded = 1;
-  g_current = p;
+  {
+    uint64_t flags = irq_save();
+    g_live++;
+    if (g_live > g_live_max) {
+      g_live_max = g_live;
+    }
+    irq_restore(flags);
+  }
   return PROCESS_OK;
 }
 
 // Called by the exit syscall on the process's kernel stack: jump back into
 // process_run's caller. Never returns.
 static void process_exit_handler(uint64_t code) {
-  process_t *p = g_current;
+  process_t *p = current_process();
 
   p->exit_code = code;
   user_return(p->saved_rsp, code);
@@ -196,13 +211,31 @@ static void process_exit_handler(uint64_t code) {
 
 uint64_t process_run(process_t *p) {
   uint64_t code;
+  uint64_t flags;
+  TCB *self;
 
   if (p == 0 || !p->loaded) {
     return (uint64_t)-1;
   }
-  gdt_set_kernel_stack(p->kstack_top);
   syscall_set_current_pid(p->pid);
   syscall_set_exit_handler(process_exit_handler);
+
+  // Make this task a process: from now on the scheduler loads its address space
+  // and kernel stack whenever the task is switched in. Do the same right now for
+  // the running CPU. Interrupts are off so no switch can fall in between.
+  flags = irq_save();
+  self = scheduler_current_tcb();
+  if (self != 0) {
+    self->address_space = p;
+    self->cr3 = p->cr3;
+    self->kernel_rsp0 = p->kstack_top;
+  } else {
+    g_fallback = p;
+  }
+  paging_activate(p->cr3);
+  gdt_set_kernel_stack(p->kstack_top);
+  irq_restore(flags);
+
   // The program starts as if called: RSP is 8 mod 16 at function entry.
   p->running = 1;
   code = user_run(p->entry, PROCESS_STACK_TOP - 8ULL, &p->saved_rsp);
@@ -212,25 +245,35 @@ uint64_t process_run(process_t *p) {
 }
 
 void process_destroy(process_t *p) {
+  uint64_t flags;
+  TCB *self;
+
   if (p == 0 || !p->loaded) {
     return;
   }
-  paging_unmap_user(PROCESS_LOAD_BASE, p->image_pages * 4096ULL);
-  paging_unmap_user(PROCESS_STACK_TOP - (uint64_t)PROCESS_STACK_PAGES * 4096ULL,
-                    (uint64_t)PROCESS_STACK_PAGES * 4096ULL);
-  free_pages(p->image_phys, p->image_pages);
-  free_pages(p->stack_phys, PROCESS_STACK_PAGES);
-  kfree(p->kstack_alloc);
-  p->loaded = 0;
-  if (g_current == p) {
-    g_current = 0;
-    syscall_set_exit_handler(0);
+  // Leave the address space before freeing it, and make sure the scheduler does
+  // not switch back to it.
+  flags = irq_save();
+  self = scheduler_current_tcb();
+  if (self != 0 && self->address_space == p) {
+    self->address_space = 0;
+    self->cr3 = 0;
   }
-  g_busy = 0;
+  if (g_fallback == p) {
+    g_fallback = 0;
+  }
+  paging_activate(0);
+  irq_restore(flags);
+
+  create_cleanup(p);
+  p->loaded = 0;
+  flags = irq_save();
+  g_live--;
+  irq_restore(flags);
 }
 
 int process_handle_user_fault(uint64_t vector, uint64_t error_code, uint64_t rip, uint64_t fault_addr) {
-  process_t *p = g_current;
+  process_t *p = current_process();
 
   if (p == 0 || !p->running) {
     return 0;
@@ -615,5 +658,73 @@ static int desktop_supervisor_task(void *arg) {
 void process_desktop_selftest(void) {
   desktop_start();
   scheduler_add_task("desk-supervisor", desktop_supervisor_task, 0);
+}
+#endif
+
+#if defined(KERNEL_USER_SELFTEST) && KERNEL_USER_SELFTEST == 6
+// USER_SELFTEST=6: several processes loaded at once, each in its own address
+// space at the same virtual addresses, must not see each other's memory.
+static int iso_expect(int ok, const char *what) {
+  console_printf("[ISO]  %s %s\r\n", ok ? "ok  " : "FAIL", what);
+  return ok ? 0 : 1;
+}
+
+#define ISO_PROCS 4
+
+static int isolation_supervisor_task(void *arg) {
+  int handles[ISO_PROCS];
+  int failures = 0;
+  uint64_t code;
+  int i;
+  int started = 0;
+
+  (void)arg;
+  console_write_string("[ISO] spawning concurrent processes\r\n");
+  for (i = 0; i < ISO_PROCS; ++i) {
+    handles[i] = process_spawn("/APPS/ISO.BIN");
+    if (handles[i] >= 0) {
+      ++started;
+    }
+  }
+  failures += iso_expect(started == ISO_PROCS, "all spawned");
+  for (i = 0; i < ISO_PROCS; ++i) {
+    int ok = handles[i] >= 0 && process_wait(handles[i], &code) == PROCESS_OK && code == 0;
+    failures += iso_expect(ok, "process kept its own memory (exit 0)");
+  }
+  console_printf("[ISO] most processes loaded at once: %d\r\n", process_live_max());
+  failures += iso_expect(process_live_max() >= 3, "processes really ran concurrently");
+  failures += iso_expect(process_live_count() == 0, "all address spaces released");
+
+  // A crash must still be contained while others are alive, and loading again
+  // after everything was freed must work.
+  {
+    int h_crash = process_spawn("/APPS/CRASH.BIN");
+    int h_iso = process_spawn("/APPS/ISO.BIN");
+    failures += iso_expect(h_crash >= 0 && process_wait(h_crash, &code) == PROCESS_OK &&
+                               code == PROCESS_EXIT_FAULT_BASE + 14,
+                           "crash contained next to a live process");
+    failures += iso_expect(h_iso >= 0 && process_wait(h_iso, &code) == PROCESS_OK && code == 0,
+                           "neighbour of the crash was unaffected");
+  }
+  for (i = 0; i < 12; ++i) {
+    int h = process_spawn("/APPS/HELLO.BIN");
+    if (h < 0 || process_wait(h, &code) != PROCESS_OK || code != 7) {
+      break;
+    }
+  }
+  failures += iso_expect(i == 12, "twelve more launches (tables and pages recycled)");
+  failures += iso_expect(process_live_count() == 0, "nothing leaked at the end");
+
+  if (failures == 0) {
+    console_write_string("[ISO] PASS: processes have separate address spaces\r\n");
+  } else {
+    console_printf("[ISO] FAIL: %d check(s) failed\r\n", failures);
+  }
+  return 0;
+}
+
+void process_isolation_selftest(void) {
+  fs_init();
+  scheduler_add_task("iso-supervisor", isolation_supervisor_task, 0);
 }
 #endif

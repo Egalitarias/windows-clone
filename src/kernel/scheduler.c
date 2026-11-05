@@ -1,5 +1,7 @@
 #include "scheduler.h"
 #include "stack_guard.h"
+#include "paging.h"
+#include "gdt.h"
 
 #define SCHEDULER_MAX_TASKS 8U
 #define SCHEDULER_PRIORITY_LEVELS 256U
@@ -275,6 +277,12 @@ static void scheduler_activate_task(unsigned int index, int switched_tasks) {
 
   g_current_index = index;
   g_tasks[index].tcb->state = TASK_STATE_RUNNING;
+  // Every task runs in its own address space (kernel tasks: the kernel's tables)
+  // and, if it is a process, enters ring 0 on its own kernel stack.
+  paging_activate(g_tasks[index].tcb->cr3);
+  if (g_tasks[index].tcb->kernel_rsp0 != 0) {
+    gdt_set_kernel_stack(g_tasks[index].tcb->kernel_rsp0);
+  }
   if (switched_tasks) {
     g_tasks[index].tcb->context_switches++;
   }

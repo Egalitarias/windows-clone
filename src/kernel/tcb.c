@@ -87,6 +87,8 @@ static void tcb_free_slot(TCB *tcb) {
   tcb->state = TASK_STATE_TERMINATED;
   tcb->stack_size = 0;
   tcb->address_space = 0;
+  tcb->cr3 = 0;
+  tcb->kernel_rsp0 = 0;
   tcb->user_stack_base = 0;
   tcb->user_entry_point = 0;
   tcb->exit_code = 0;

@@ -415,13 +415,14 @@ $(USER_DIR)/%.bin: $(USER_DIR)/%.elf
 	$(KERNEL_OBJCOPY) -O binary $< $@
 
 # Each program is staged under an upper-case 8.3 name on the boot volume.
-user-apps: $(USER_DIR)/hello.bin $(USER_DIR)/count.bin $(USER_DIR)/crash.bin $(USER_DIR)/echo.bin $(USER_DIR)/tick.bin
+user-apps: $(USER_DIR)/hello.bin $(USER_DIR)/count.bin $(USER_DIR)/crash.bin $(USER_DIR)/echo.bin $(USER_DIR)/tick.bin $(USER_DIR)/iso.bin
 	@mkdir -p $(UEFI_DIR)/APPS
 	cp $(USER_DIR)/hello.bin $(UEFI_DIR)/APPS/HELLO.BIN
 	cp $(USER_DIR)/count.bin $(UEFI_DIR)/APPS/COUNT.BIN
 	cp $(USER_DIR)/crash.bin $(UEFI_DIR)/APPS/CRASH.BIN
 	cp $(USER_DIR)/echo.bin $(UEFI_DIR)/APPS/ECHO.BIN
 	cp $(USER_DIR)/tick.bin $(UEFI_DIR)/APPS/TICK.BIN
+	cp $(USER_DIR)/iso.bin $(UEFI_DIR)/APPS/ISO.BIN
 
 .PHONY: user-apps
 

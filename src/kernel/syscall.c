@@ -170,8 +170,10 @@ int64_t syscall_dispatch(uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3,
       return sys_sleep(a1);
     case SYS_READ:
       return sys_read(a1, a2, a3);
-    case SYS_GETPID:
-      return (int64_t)g_current_pid;
+    case SYS_GETPID: {
+      uint64_t pid = process_current_pid();
+      return (int64_t)(pid != 0 ? pid : g_current_pid);
+    }
     default:
       return SYSCALL_ENOSYS;
   }

@@ -11,8 +11,9 @@
 //   PROCESS_STACK_TOP - 16 KiB   stack (grows down); the page below is left
 //                                unmapped as a guard page
 //
-// Limitation until per-process address spaces exist (phase 2): every process uses
-// the same virtual addresses, so only one process can be loaded at a time.
+// Every process has its own address space (a private PML4 sharing the kernel's
+// mappings), so all of them use these same virtual addresses and any number can be
+// loaded at once; the scheduler switches CR3 with the task.
 
 #define PROCESS_LOAD_BASE    0x00007F0000001000ULL   // keep in sync with src/user/user.ld
 #define PROCESS_STACK_TOP    0x00007F0000100000ULL
@@ -22,7 +23,7 @@
 #define PROCESS_KSTACK_SIZE  16384U
 
 #define PROCESS_OK            0
-#define PROCESS_ERR_BUSY     (-1)   // another process is still loaded
+#define PROCESS_ERR_BUSY     (-1)   // unused now that each process has its own address space
 #define PROCESS_ERR_NOFILE   (-2)   // path not found on any volume
 #define PROCESS_ERR_TOOBIG   (-3)
 #define PROCESS_ERR_NOMEM    (-4)
@@ -42,6 +43,7 @@ typedef struct {
   uint64_t stack_phys;
   void *kstack_alloc;         // kmalloc'd block holding the kernel stack
   uint64_t kstack_top;
+  uint64_t cr3;               // physical address of the process's PML4 (its own address space)
   uint64_t saved_rsp;         // kernel context to return to when the program exits
   uint64_t exit_code;
   int running;                // inside process_run (user code or one of its syscalls)
@@ -86,6 +88,13 @@ void process_input_close(void);
 uint64_t process_input_read(char *buf, uint64_t max);   // never blocks; returns bytes copied
 int process_input_eof(void);
 
+// Pid of the process running on this task, or 0 if the task is not a process.
+uint64_t process_current_pid(void);
+
+// Number of processes loaded right now, and the most that were ever loaded at once.
+int process_live_count(void);
+int process_live_max(void);
+
 // Called for CPU exceptions that arrived from ring 3. If a process is running it
 // is terminated with PROCESS_EXIT_FAULT_BASE + vector and control returns to the
 // code that called process_run (this function does not return). Returns 0 if no
@@ -96,6 +105,7 @@ int process_handle_user_fault(uint64_t vector, uint64_t error_code, uint64_t rip
 void process_selftest(void);             // USER_SELFTEST=3: load and run /APPS/HELLO.BIN twice, then return
 void process_scheduler_selftest(void);   // USER_SELFTEST=4: add a supervisor task that spawns programs
 void process_desktop_selftest(void);     // USER_SELFTEST=5: same, with the desktop running as a task
+void process_isolation_selftest(void);   // USER_SELFTEST=6: concurrent processes in separate address spaces
 #endif
 
 #endif // KERNEL_PROCESS_H

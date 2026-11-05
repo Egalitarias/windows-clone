@@ -223,6 +223,8 @@ static __attribute__((noreturn)) void kernel_runtime(const KERNEL_BOOT_INFO *boo
     process_scheduler_selftest();
 #elif defined(KERNEL_USER_SELFTEST) && KERNEL_USER_SELFTEST == 5
     process_desktop_selftest();
+#elif defined(KERNEL_USER_SELFTEST) && KERNEL_USER_SELFTEST == 6
+    process_isolation_selftest();
 #endif
     scheduler_add_task("task-a", demo_task, &task_a);
     scheduler_add_task("task-b", demo_task, &task_b);

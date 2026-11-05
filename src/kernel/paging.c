@@ -299,6 +299,156 @@ int paging_map_user(uint64_t virt_start, uint64_t phys_start, uint64_t size, int
   return 1;
 }
 
+// ---- Per-process address spaces ----------------------------------------------
+// A process PML4 starts as a copy of the kernel PML4, so every process shares the
+// kernel mappings (identity map, higher half, MMIO) through the same lower-level
+// tables, and then owns private tables for its user slots. Those tables come from
+// the physical allocator (the kernel's own table pool cannot be freed), so a
+// process can be torn down completely.
+
+static uint64_t read_cr3(void) {
+  uint64_t value;
+
+  __asm__ volatile("mov %%cr3, %0" : "=r"(value));
+  return value & 0x000FFFFFFFFFF000ULL;
+}
+
+uint64_t paging_kernel_cr3(void) {
+  return (uint64_t)(uintptr_t)g_pml4;
+}
+
+void paging_activate(uint64_t cr3) {
+  if (g_pml4 == 0) {
+    return;
+  }
+  if (cr3 == 0) {
+    cr3 = (uint64_t)(uintptr_t)g_pml4;
+  }
+  if (read_cr3() != cr3) {
+    __asm__ volatile("mov %0, %%cr3" : : "r"(cr3) : "memory");
+  }
+}
+
+// One zeroed page-table page, reachable through the identity map.
+static uint64_t *alloc_user_table(void) {
+  uint64_t phys = pmm_alloc_page();
+  uint64_t i;
+  uint64_t *table;
+
+  if (phys == 0) {
+    return 0;
+  }
+  if (!map_range_virt(phys, phys, PAGE_SIZE_BYTES, PAGE_WRITE)) {
+    pmm_free_page(phys);
+    return 0;
+  }
+  table = (uint64_t *)(uintptr_t)phys;
+  for (i = 0; i < 512; ++i) {
+    table[i] = 0;
+  }
+  return table;
+}
+
+uint64_t paging_create_address_space(void) {
+  uint64_t *pml4;
+  uint64_t i;
+
+  if (g_pml4 == 0) {
+    return 0;
+  }
+  pml4 = alloc_user_table();
+  if (pml4 == 0) {
+    return 0;
+  }
+  for (i = 0; i < 512; ++i) {
+    pml4[i] = g_pml4[i];
+  }
+  return (uint64_t)(uintptr_t)pml4;
+}
+
+static uint64_t *user_table_next(uint64_t *parent, uint64_t index) {
+  uint64_t entry = parent[index];
+  uint64_t *child;
+
+  if ((entry & PAGE_PRESENT) != 0) {
+    return (uint64_t *)(uintptr_t)(entry & 0x000FFFFFFFFFF000ULL);
+  }
+  child = alloc_user_table();
+  if (child == 0) {
+    return 0;
+  }
+  parent[index] = (uint64_t)(uintptr_t)child | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
+  return child;
+}
+
+int paging_map_user_in(uint64_t cr3, uint64_t virt_start, uint64_t phys_start, uint64_t size, int writable) {
+  uint64_t *pml4 = (uint64_t *)(uintptr_t)cr3;
+  uint64_t flags = PAGE_USER | PAGE_PRESENT | (writable ? PAGE_WRITE : 0ULL);
+  uint64_t total = align_up(size, PAGE_SIZE_BYTES);
+  uint64_t offset;
+
+  if (cr3 == 0 || cr3 == (uint64_t)(uintptr_t)g_pml4 ||
+      virt_start != align_down(virt_start, PAGE_SIZE_BYTES) ||
+      phys_start != align_down(phys_start, PAGE_SIZE_BYTES) ||
+      virt_start >= USER_VA_LIMIT || total > USER_VA_LIMIT - virt_start) {
+    return 0;
+  }
+
+  for (offset = 0; offset < total; offset += PAGE_SIZE_BYTES) {
+    uint64_t virt = virt_start + offset;
+    uint64_t slot = page_index(virt, 39);
+    uint64_t *pdpt;
+    uint64_t *pd;
+    uint64_t *pt;
+
+    // A slot the kernel itself uses (the identity map) is shared by every
+    // address space; user pages must never be added to it.
+    if ((g_pml4[slot] & PAGE_PRESENT) != 0) {
+      return 0;
+    }
+    pdpt = user_table_next(pml4, slot);
+    pd = pdpt != 0 ? user_table_next(pdpt, page_index(virt, 30)) : 0;
+    pt = pd != 0 ? user_table_next(pd, page_index(virt, 21)) : 0;
+    if (pt == 0) {
+      return 0;
+    }
+    pt[page_index(virt, 12)] = (phys_start + offset) | flags;
+    if (read_cr3() == cr3) {
+      __asm__ volatile("invlpg (%0)" : : "r"((void *)(uintptr_t)virt) : "memory");
+    }
+  }
+  return 1;
+}
+
+// Free a page table and everything below it (leaf pages are not freed).
+static void free_table_tree(uint64_t *table, int level) {
+  uint64_t i;
+
+  if (level > 1) {
+    for (i = 0; i < 512; ++i) {
+      if ((table[i] & PAGE_PRESENT) != 0) {
+        free_table_tree((uint64_t *)(uintptr_t)(table[i] & 0x000FFFFFFFFFF000ULL), level - 1);
+      }
+    }
+  }
+  pmm_free_page((uint64_t)(uintptr_t)table);
+}
+
+void paging_destroy_address_space(uint64_t cr3) {
+  uint64_t *pml4 = (uint64_t *)(uintptr_t)cr3;
+  uint64_t i;
+
+  if (cr3 == 0 || cr3 == (uint64_t)(uintptr_t)g_pml4 || read_cr3() == cr3) {
+    return;                    // never the kernel's tables, never the active ones
+  }
+  for (i = 0; i < 512; ++i) {
+    if ((pml4[i] & PAGE_PRESENT) != 0 && pml4[i] != g_pml4[i]) {
+      free_table_tree((uint64_t *)(uintptr_t)(pml4[i] & 0x000FFFFFFFFFF000ULL), 3);
+    }
+  }
+  pmm_free_page(cr3);
+}
+
 int paging_user_range_ok(uint64_t virt, uint64_t len) {
   uint64_t addr;
   uint64_t end;
@@ -317,7 +467,7 @@ int paging_user_range_ok(uint64_t virt, uint64_t len) {
   end = virt + len;
   while (addr < end) {
     uint64_t entry;
-    uint64_t *table = g_pml4;
+    uint64_t *table = (uint64_t *)(uintptr_t)read_cr3();   // the active address space
     int level;
     // Walk PML4 -> PDPT -> PD -> PT; every level must be present and user-accessible.
     for (level = 39; level >= 12; level -= 9) {
