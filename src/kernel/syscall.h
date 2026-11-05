@@ -12,6 +12,10 @@
 #define SYS_GETPID  3   // getpid() -> pid
 #define SYS_READ    4   // read(fd, buf, len) -> bytes read; fd 0 is the keyboard, blocks until input (0 = end of input)
 
+#define SYS_SLEEP   5   // sleep(ms) -> ms actually slept (>= ms); other tasks run meanwhile
+
+#define SYSCALL_SLEEP_MAX_MS 3600000ULL   // one hour
+
 #define SYSCALL_EFAULT  (-14)
 #define SYSCALL_EBADF   (-9)
 #define SYSCALL_EINVAL  (-22)

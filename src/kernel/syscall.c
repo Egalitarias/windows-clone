@@ -2,6 +2,7 @@
 #include "gdt.h"
 #include "paging.h"
 #include "scheduler.h"
+#include "timer.h"
 #include "process.h"
 
 #define MSR_EFER   0xC0000080U
@@ -117,6 +118,26 @@ static int64_t sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
   }
 }
 
+static int64_t sys_sleep(uint64_t ms) {
+  uint64_t start;
+  uint64_t now;
+
+  if (ms > SYSCALL_SLEEP_MAX_MS) {
+    return SYSCALL_EINVAL;
+  }
+  start = timer_get_ms();
+  // Wait for the deadline with interrupts opened between checks, like SYS_YIELD:
+  // each tick may switch to another task, and the CPU halts when none is runnable.
+  // Without a running scheduler the tick still advances, so the loop ends too.
+  for (;;) {
+    now = timer_get_ms();
+    if (now - start >= ms) {
+      return (int64_t)(now - start);
+    }
+    __asm__ volatile("sti; hlt; cli" : : : "memory");
+  }
+}
+
 int64_t syscall_dispatch(uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3,
                          uint64_t a4, uint64_t a5) {
   (void)a3;
@@ -145,6 +166,8 @@ int64_t syscall_dispatch(uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3,
         __asm__ volatile("sti; hlt; cli" : : : "memory");
       }
       return 0;
+    case SYS_SLEEP:
+      return sys_sleep(a1);
     case SYS_READ:
       return sys_read(a1, a2, a3);
     case SYS_GETPID:

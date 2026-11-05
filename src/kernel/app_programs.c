@@ -7,7 +7,7 @@
 // Programs: launches user-mode programs from /APPS and shows what they print.
 // One program runs at a time (until per-process address spaces exist).
 
-#define PROG_COUNT   4
+#define PROG_COUNT   5
 #define BTN_W        96
 #define BTN_H        22
 #define BTN_Y        6
@@ -18,7 +18,7 @@
 // The kernel is loaded without relocations, so a table of string pointers in
 // static data is not valid (and the compiler happily builds one out of a switch
 // or if-chain). A 2D char array holds the characters themselves.
-static const char kProgNames[PROG_COUNT][6] = {"HELLO", "COUNT", "CRASH", "ECHO"};
+static const char kProgNames[PROG_COUNT][6] = {"HELLO", "COUNT", "CRASH", "ECHO", "TICK"};
 
 static const char *prog_name(int i) {
   return kProgNames[i];
@@ -235,7 +235,7 @@ void app_programs_open(void) {
     wm_invalidate_window(g_win);
     return;
   }
-  g_win = wm_create("Programs", 150, 70, 520, 300);
+  g_win = wm_create("Programs", 150, 70, 560, 300);
   if (!g_win) {
     return;
   }

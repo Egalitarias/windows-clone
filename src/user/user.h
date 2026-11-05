@@ -11,6 +11,7 @@
 #define SYS_YIELD   2
 #define SYS_GETPID  3
 #define SYS_READ    4
+#define SYS_SLEEP   5
 
 static inline long syscall3(long nr, long a1, long a2, long a3) {
   long result;
@@ -36,6 +37,9 @@ static inline long write(int fd, const void *buf, unsigned long len) {
 static inline long read(int fd, void *buf, unsigned long len) {
   return syscall3(SYS_READ, fd, (long)buf, (long)len);
 }
+
+// Sleep for at least `ms` milliseconds; returns the time actually slept.
+static inline long sleep_ms(unsigned long ms) { return syscall3(SYS_SLEEP, (long)ms, 0, 0); }
 
 static inline long yield(void) { return syscall3(SYS_YIELD, 0, 0, 0); }
 static inline long getpid(void) { return syscall3(SYS_GETPID, 0, 0, 0); }
