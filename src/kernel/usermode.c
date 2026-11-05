@@ -62,7 +62,7 @@ __asm__(
     "    popfq\n"
     "    ret\n");
 
-#if defined(KERNEL_USER_SELFTEST) && KERNEL_USER_SELFTEST != 3
+#if defined(KERNEL_USER_SELFTEST) && (KERNEL_USER_SELFTEST == 1 || KERNEL_USER_SELFTEST == 2)
 #include "console.h"
 #include "paging.h"
 #include "pmm.h"

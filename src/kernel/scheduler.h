@@ -8,6 +8,11 @@ typedef int (*SCHEDULER_TASK_FN)(void *arg);
 
 void scheduler_init(void);
 
+// The task executing right now, or NULL before the scheduler has started.
+TCB *scheduler_current_tcb(void);
+// Nonzero once scheduler_run() has started dispatching tasks (timer preemption is live).
+int scheduler_is_running(void);
+
 // Called once, after all tasks complete and before the scheduler halts.
 void scheduler_set_idle_callback(void (*callback)(void));
 int scheduler_add_task(const char *name, SCHEDULER_TASK_FN fn, void *arg);

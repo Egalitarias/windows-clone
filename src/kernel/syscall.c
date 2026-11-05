@@ -1,6 +1,7 @@
 #include "syscall.h"
 #include "gdt.h"
 #include "paging.h"
+#include "scheduler.h"
 
 #define MSR_EFER   0xC0000080U
 #define MSR_STAR   0xC0000081U
@@ -104,7 +105,14 @@ int64_t syscall_dispatch(uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3,
     case SYS_WRITE:
       return sys_write(a1, a2, a3);
     case SYS_YIELD:
-      return 0;  // scheduler integration comes with the process loader
+      // Give up the CPU until the next timer tick, which preempts to the next
+      // ready task. Interrupts are off inside a syscall, so open them for the
+      // wait; the kernel stack and the saved user state stay valid meanwhile.
+      // Without a running scheduler there is nobody to yield to (and no tick).
+      if (scheduler_is_running()) {
+        __asm__ volatile("sti; hlt; cli" : : : "memory");
+      }
+      return 0;
     case SYS_GETPID:
       return (int64_t)g_current_pid;
     default:

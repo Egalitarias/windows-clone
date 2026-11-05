@@ -341,11 +341,57 @@ void scheduler_init(void) {
   stack_guard_init();
 }
 
-int scheduler_add_task_with_priority(const char *name, SCHEDULER_TASK_FN fn, void *arg, uint32_t priority) {
+static void scheduler_clear_slot(unsigned int index) {
+  g_tasks[index].tcb = 0;
+  g_tasks[index].name = 0;
+  g_tasks[index].fn = 0;
+  g_tasks[index].arg = 0;
+  g_tasks[index].started = 0;
+  g_tasks[index].in_ready_queue = 0;
+  g_tasks[index].queue_next = SCHEDULER_INVALID_INDEX;
+}
+
+// Find a slot for a new task: a free one, else one held by a task that has
+// terminated and is no longer running (its stack and TCB are released), else a
+// new one at the end. Returns SCHEDULER_INVALID_INDEX when the table is full.
+// Must be called with interrupts disabled.
+static unsigned int scheduler_acquire_slot(void) {
+  unsigned int i;
+
+  for (i = 0; i < g_task_count; ++i) {
+    if (g_tasks[i].tcb == 0) {
+      return i;
+    }
+  }
+  for (i = 0; i < g_task_count; ++i) {
+    TCB *old = g_tasks[i].tcb;
+
+    // The current task may still be executing on its own stack even after it
+    // terminated (it waits there for the next tick), so it is never reclaimed.
+    if (old != 0 && old->state == TASK_STATE_TERMINATED && i != g_current_index) {
+      tcb_destroy(old);
+      scheduler_clear_slot(i);
+      if (g_completed_tasks > 0) {
+        g_completed_tasks--;
+      }
+      return i;
+    }
+  }
+  if (g_task_count < SCHEDULER_MAX_TASKS) {
+    return g_task_count;
+  }
+  return SCHEDULER_INVALID_INDEX;
+}
+
+static int scheduler_add_task_locked(const char *name, SCHEDULER_TASK_FN fn, void *arg, uint32_t priority) {
   TCB *tcb;
   unsigned int index;
 
-  if (fn == 0 || g_task_count >= SCHEDULER_MAX_TASKS) {
+  if (fn == 0) {
+    return 0;
+  }
+  index = scheduler_acquire_slot();
+  if (index == SCHEDULER_INVALID_INDEX) {
     return 0;
   }
 
@@ -362,7 +408,6 @@ int scheduler_add_task_with_priority(const char *name, SCHEDULER_TASK_FN fn, voi
 
   tcb->state = TASK_STATE_READY;
 
-  index = g_task_count;
   g_tasks[index].tcb = tcb;
   g_tasks[index].name = name;
   g_tasks[index].fn = fn;
@@ -370,22 +415,45 @@ int scheduler_add_task_with_priority(const char *name, SCHEDULER_TASK_FN fn, voi
   g_tasks[index].started = 0;
   g_tasks[index].in_ready_queue = 0;
   g_tasks[index].queue_next = SCHEDULER_INVALID_INDEX;
-  ++g_task_count;
+  if (index == g_task_count) {
+    ++g_task_count;
+  }
 
   if (!scheduler_enqueue_ready_task(index)) {
     tcb_destroy(tcb);
-    g_tasks[index].tcb = 0;
-    g_tasks[index].name = 0;
-    g_tasks[index].fn = 0;
-    g_tasks[index].arg = 0;
-    g_tasks[index].started = 0;
-    g_tasks[index].in_ready_queue = 0;
-    g_tasks[index].queue_next = SCHEDULER_INVALID_INDEX;
-    --g_task_count;
+    scheduler_clear_slot(index);
+    if (index + 1U == g_task_count) {
+      --g_task_count;
+    }
     return 0;
   }
 
   return 1;
+}
+
+// Tasks can be added while the scheduler is running (the timer tick walks the
+// same tables), so keep interrupts off for the whole update.
+int scheduler_add_task_with_priority(const char *name, SCHEDULER_TASK_FN fn, void *arg, uint32_t priority) {
+  uint64_t flags;
+  int result;
+
+  __asm__ volatile("pushfq; popq %0; cli" : "=r"(flags) : : "memory");
+  result = scheduler_add_task_locked(name, fn, arg, priority);
+  if ((flags & 0x200ULL) != 0) {
+    __asm__ volatile("sti" : : : "memory");
+  }
+  return result;
+}
+
+TCB *scheduler_current_tcb(void) {
+  if (!g_scheduler_started || g_current_index >= g_task_count) {
+    return 0;
+  }
+  return g_tasks[g_current_index].tcb;
+}
+
+int scheduler_is_running(void) {
+  return g_scheduler_started;
 }
 
 int scheduler_add_task(const char *name, SCHEDULER_TASK_FN fn, void *arg) {

@@ -1,4 +1,5 @@
 #include "idt.h"
+#include "process.h"
 
 #define IDT_ENTRY_COUNT 256U
 #define IDT_GATE_TYPE_INTERRUPT 0x8EU
@@ -100,6 +101,19 @@ static void idt_set_gate(unsigned int vector, void *handler, uint16_t selector) 
 }
 
 __attribute__((noreturn)) void exception_dispatch(uint64_t vector, uint64_t error_code, const uint64_t *frame) {
+  if (frame != 0) {
+    int err_pushed = (vector == 8 || (vector >= 10 && vector <= 14) || vector == 17 || vector == 30);
+    const uint64_t *cpu = err_pushed ? frame + 1 : frame;
+
+    // A fault in a user program must not take the machine down: kill the
+    // process and return to whoever ran it. Does not return if one was running.
+    if ((cpu[1] & 3ULL) == 3ULL) {
+      uint64_t cr2;
+      __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+      process_handle_user_fault(vector, error_code, cpu[0], cr2);
+    }
+  }
+
   console_write_string("\r\n*** EXCEPTION ***\r\n");
   console_printf("Vector: %llu\r\n", vector);
   console_printf("Error:  0x%llx\r\n", error_code);

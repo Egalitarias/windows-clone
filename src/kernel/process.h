@@ -29,6 +29,10 @@
 #define PROCESS_ERR_READ     (-5)
 #define PROCESS_ERR_EMPTY    (-6)
 
+// A program killed by a CPU exception in user mode reports this plus the vector
+// as its exit code (0x10E = page fault, 0x10D = general protection fault).
+#define PROCESS_EXIT_FAULT_BASE 0x100ULL
+
 typedef struct {
   int loaded;
   uint64_t pid;
@@ -40,6 +44,7 @@ typedef struct {
   uint64_t kstack_top;
   uint64_t saved_rsp;         // kernel context to return to when the program exits
   uint64_t exit_code;
+  int running;                // inside process_run (user code or one of its syscalls)
 } process_t;
 
 // Load the flat binary at `path` (like "/APPS/HELLO.BIN", searched on every
@@ -53,8 +58,25 @@ uint64_t process_run(process_t *p);
 // Unmap and free everything process_create allocated.
 void process_destroy(process_t *p);
 
+// Run a program as its own scheduler task. The task loads the file (waiting its
+// turn while another process is loaded), runs it, frees it and records the exit
+// code. Returns a handle for process_wait(), or a negative PROCESS_ERR_* code.
+// The program is preemptible: timer ticks interrupt it in ring 3 like any task.
+int process_spawn(const char *path);
+
+// Wait (from a scheduler task) until the spawned program has finished. Stores
+// the exit code and returns PROCESS_OK, or the load error if it never started.
+int process_wait(int handle, uint64_t *exit_code);
+
+// Called for CPU exceptions that arrived from ring 3. If a process is running it
+// is terminated with PROCESS_EXIT_FAULT_BASE + vector and control returns to the
+// code that called process_run (this function does not return). Returns 0 if no
+// process is running, so the caller can treat it as a kernel fault.
+int process_handle_user_fault(uint64_t vector, uint64_t error_code, uint64_t rip, uint64_t fault_addr);
+
 #ifdef KERNEL_USER_SELFTEST
-void process_selftest(void);   // load and run /APPS/HELLO.BIN twice, then return
+void process_selftest(void);             // USER_SELFTEST=3: load and run /APPS/HELLO.BIN twice, then return
+void process_scheduler_selftest(void);   // USER_SELFTEST=4: add a supervisor task that spawns programs
 #endif
 
 #endif // KERNEL_PROCESS_H

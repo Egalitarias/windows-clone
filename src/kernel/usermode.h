@@ -17,7 +17,7 @@ uint64_t user_run(uint64_t entry, uint64_t user_rsp, uint64_t *saved_rsp);
 // on the process's kernel stack (e.g. from the exit syscall). Never returns.
 __attribute__((noreturn)) void user_return(uint64_t saved_rsp, uint64_t code);
 
-#if defined(KERNEL_USER_SELFTEST) && KERNEL_USER_SELFTEST != 3
+#if defined(KERNEL_USER_SELFTEST) && (KERNEL_USER_SELFTEST == 1 || KERNEL_USER_SELFTEST == 2)
 // Map a one-page user program plus stack and enter it. The program executes
 // the privileged instruction `hlt`, so the expected result is a #GP exception
 // reported with CS=0x23 (ring 3).

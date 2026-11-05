@@ -404,15 +404,18 @@ $(USER_DIR)/%.o: src/user/%.c src/user/user.h
 	@mkdir -p $(USER_DIR)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_DIR)/hello.elf: $(USER_DIR)/hello.o $(USER_DIR)/crt0.o src/user/user.ld
-	$(KERNEL_LD) -T src/user/user.ld -o $@ $(USER_DIR)/hello.o $(USER_DIR)/crt0.o
+$(USER_DIR)/%.elf: $(USER_DIR)/%.o $(USER_DIR)/crt0.o src/user/user.ld
+	$(KERNEL_LD) -T src/user/user.ld -o $@ $< $(USER_DIR)/crt0.o
 
-$(USER_DIR)/hello.bin: $(USER_DIR)/hello.elf
+$(USER_DIR)/%.bin: $(USER_DIR)/%.elf
 	$(KERNEL_OBJCOPY) -O binary $< $@
 
-user-apps: $(USER_DIR)/hello.bin
+# Each program is staged under an upper-case 8.3 name on the boot volume.
+user-apps: $(USER_DIR)/hello.bin $(USER_DIR)/count.bin $(USER_DIR)/crash.bin
 	@mkdir -p $(UEFI_DIR)/APPS
 	cp $(USER_DIR)/hello.bin $(UEFI_DIR)/APPS/HELLO.BIN
+	cp $(USER_DIR)/count.bin $(UEFI_DIR)/APPS/COUNT.BIN
+	cp $(USER_DIR)/crash.bin $(UEFI_DIR)/APPS/CRASH.BIN
 
 .PHONY: user-apps
 
