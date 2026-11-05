@@ -41,7 +41,7 @@ Status: draft. Companion to `SYSCALL_DESIGN.md` (mechanism choice) and `USERSPAC
   - `sleep`
   - `read_key`
 
-### 4. Process loader
+### 4. Process loader - first slice DONE (scheduler integration still to do)
 
 - Define a flat binary or minimal ELF64 static format for user programs. A flat binary is simpler to start with.
 - Add a `process_create(path)` call that reads the file through `fs`, maps it, builds the stack, and creates a TCB with `address_space` set.
@@ -63,6 +63,8 @@ Status: draft. Companion to `SYSCALL_DESIGN.md` (mechanism choice) and `USERSPAC
 **Phase 1 status.** GDT reordered (user DS 0x1B, user CS 0x23, TSS 0x28), TSS loaded with `gdt_set_kernel_stack()`, `paging_map_user()` added, `user_enter()` in `usermode.c`, and the exception dump now shows RIP/CS/RSP. Verify with `make CC=clang USER_SELFTEST=1 uefi-loader` and boot: the user program runs `hlt` at CPL 3 and the kernel reports `Vector: 13`, `CS: 0x23 (ring 3)`. Known issue found on the way (not from this change): the `TESTS=1` build page-faults in the context-switch suite, so the GDT suite does not run there.
 
 **Phase 3 status.** `syscall.c` / `syscall_entry.S`: EFER.SCE, STAR (SYSRET base 0x10), LSTAR, SFMASK (clears IF/DF/TF). Single-CPU entry stub uses globals instead of `swapgs` (`g_kernel_rsp0` mirrors TSS.rsp0, kept in sync by `gdt_set_kernel_stack`). Syscalls: `exit`, `write` (fd 1/2 to console), `yield` (no-op until phase 4), `getpid` (placeholder), unknown -> -ENOSYS. User pointers are validated by `paging_user_range_ok()` (page-table walk, U/S at every level) and user VAs are capped at `USER_VA_LIMIT` so SYSRET never sees a non-canonical RCX. Verify: `make CC=clang USER_SELFTEST=1 uefi-loader` and boot; expect `PASS ... (exit 42)`. `USER_SELFTEST=2` runs the old `hlt` -> #GP test. Limits: syscalls run with interrupts off; no `swapgs`/SMP; a fault inside a syscall is not recovered; arg 6 (R9) is not forwarded.
+
+**Phase 4 status (first slice).** `src/user/` holds a tiny runtime (`user.h` wrappers, `crt0.c`, `user.ld`) and `hello.c`; `make user-apps` builds flat binaries and copies them to `out/uefi/APPS/`. `process.c`: `process_create(path)` finds the file on any volume, reads it into freshly allocated pages (zeroed, plus 4 extra pages for .bss/heap), maps image and a 16 KiB stack for ring 3 and allocates a kernel stack; `process_run()` runs it to completion (`user_run`/`user_return` save and restore the kernel context, so `exit` returns to the caller); `process_destroy()` unmaps and frees everything. Verify with `make CC=clang USER_SELFTEST=3 uefi-loader`: HELLO.BIN runs twice and the kernel carries on to the desktop. Also fixed: the syscall stub now preserves RDI/RSI/RDX/R8-R10 as the syscall ABI requires. Still to do: run processes as scheduled tasks (`yield`/`exit` through the scheduler, interrupts on during syscalls), real `getpid` from the TCB, launching from the desktop. Only one process can be loaded at a time until phase 2 gives each its own address space.
 
 ## Risks
 

@@ -20,6 +20,15 @@ syscall_entry:
     push %r11                        // user RFLAGS
     sub $8, %rsp                     // keep the stack 16-byte aligned for the call
 
+    // The syscall ABI preserves every register except RAX, RCX and R11, but the
+    // C call below may clobber the argument registers. Save and restore them.
+    push %rdi
+    push %rsi
+    push %rdx
+    push %r10
+    push %r8
+    push %r9
+
     // Shuffle into the SysV C ABI: dispatch(nr, a1, a2, a3, a4, a5).
     mov %r8, %r9
     mov %r10, %r8
@@ -29,6 +38,12 @@ syscall_entry:
     mov %rax, %rdi
     call syscall_dispatch            // result in RAX
 
+    pop %r9
+    pop %r8
+    pop %r10
+    pop %rdx
+    pop %rsi
+    pop %rdi
     add $8, %rsp
     pop %r11                         // user RFLAGS (restores IF)
     pop %rcx                         // user RIP

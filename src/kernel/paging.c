@@ -339,3 +339,16 @@ int paging_user_range_ok(uint64_t virt, uint64_t len) {
   }
   return 1;
 }
+
+void paging_unmap_user(uint64_t virt_start, uint64_t size) {
+  uint64_t addr = align_down(virt_start, PAGE_SIZE_BYTES);
+  uint64_t end = align_up(virt_start + size, PAGE_SIZE_BYTES);
+
+  if (virt_start >= USER_VA_LIMIT) {
+    return;
+  }
+  while (addr < end && addr < USER_VA_LIMIT) {
+    clear_page_virt(addr);
+    addr += PAGE_SIZE_BYTES;
+  }
+}

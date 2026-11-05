@@ -37,6 +37,10 @@ int paging_map_user(uint64_t virt_start, uint64_t phys_start, uint64_t size, int
 // above USER_VA_LIMIT.
 int paging_user_range_ok(uint64_t virt, uint64_t len);
 
+// Remove the mappings created by paging_map_user for [virt, virt+size). The
+// physical pages are not freed; intermediate page tables are kept.
+void paging_unmap_user(uint64_t virt_start, uint64_t size);
+
 void paging_unmap_identity_range(uint64_t phys_start, uint64_t size);
 
 #endif // KERNEL_PAGING_H

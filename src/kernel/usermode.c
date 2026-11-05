@@ -22,7 +22,47 @@ __attribute__((noreturn)) void user_enter(uint64_t entry, uint64_t user_rsp) {
   __builtin_unreachable();
 }
 
-#ifdef KERNEL_USER_SELFTEST
+// uint64_t user_run(uint64_t entry /*rdi*/, uint64_t user_rsp /*rsi*/, uint64_t *saved_rsp /*rdx*/)
+// Saves flags and callee-saved registers on the kernel stack, records RSP in
+// *saved_rsp, then iretq's into ring 3. user_return() unwinds that frame.
+__asm__(
+    ".text\n"
+    ".globl user_run\n"
+    "user_run:\n"
+    "    pushfq\n"
+    "    push %rbx\n"
+    "    push %rbp\n"
+    "    push %r12\n"
+    "    push %r13\n"
+    "    push %r14\n"
+    "    push %r15\n"
+    "    mov %rsp, (%rdx)\n"
+    "    mov $0x1B, %eax\n"
+    "    mov %ax, %ds\n"
+    "    mov %ax, %es\n"
+    "    push $0x1B\n"          // SS
+    "    push %rsi\n"           // user RSP
+    "    push $0x202\n"         // RFLAGS: IF=1
+    "    push $0x23\n"          // CS
+    "    push %rdi\n"           // RIP
+    "    iretq\n"
+    ".globl user_return\n"
+    "user_return:\n"
+    "    mov %rdi, %rsp\n"
+    "    mov %rsi, %rax\n"
+    "    mov $0x10, %ecx\n"
+    "    mov %cx, %ds\n"
+    "    mov %cx, %es\n"
+    "    pop %r15\n"
+    "    pop %r14\n"
+    "    pop %r13\n"
+    "    pop %r12\n"
+    "    pop %rbp\n"
+    "    pop %rbx\n"
+    "    popfq\n"
+    "    ret\n");
+
+#if defined(KERNEL_USER_SELFTEST) && KERNEL_USER_SELFTEST != 3
 #include "console.h"
 #include "paging.h"
 #include "pmm.h"

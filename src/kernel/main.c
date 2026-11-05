@@ -12,6 +12,7 @@
 #include "desktop.h"
 #include "usermode.h"
 #include "syscall.h"
+#include "process.h"
 
 #ifdef KERNEL_TESTS
 extern void run_tcb_tests(void);
@@ -172,7 +173,9 @@ static __attribute__((noreturn)) void kernel_runtime(const KERNEL_BOOT_INFO *boo
   syscall_init();
   console_write_string("    SYSCALL/SYSRET enabled\r\n");
 
-#ifdef KERNEL_USER_SELFTEST
+#if defined(KERNEL_USER_SELFTEST) && KERNEL_USER_SELFTEST == 3
+  process_selftest();
+#elif defined(KERNEL_USER_SELFTEST)
   usermode_selftest();
 #endif
 
