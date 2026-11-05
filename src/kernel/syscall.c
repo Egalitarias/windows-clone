@@ -2,6 +2,7 @@
 #include "gdt.h"
 #include "paging.h"
 #include "scheduler.h"
+#include "process.h"
 
 #define MSR_EFER   0xC0000080U
 #define MSR_STAR   0xC0000081U
@@ -80,6 +81,7 @@ static int64_t sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
     }
     chunk[n] = 0;
     console_write_string(chunk);
+    process_output_write(chunk, n);
     done += n;
   }
   return (int64_t)done;

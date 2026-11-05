@@ -328,6 +328,55 @@ int process_spawn(const char *path) {
   return handle;
 }
 
+// ---- Program output ----------------------------------------------------------
+// What user programs write(2) is also kept in a ring buffer so the desktop can show
+// it. Readers keep their own cursor (total bytes seen); torn reads are harmless.
+
+#define OUT_RING 4096U
+static char g_out_ring[OUT_RING];
+static volatile uint64_t g_out_total = 0;
+
+void process_output_write(const char *data, uint64_t len) {
+  uint64_t i;
+  for (i = 0; i < len; ++i) {
+    g_out_ring[g_out_total % OUT_RING] = data[i];
+    g_out_total = g_out_total + 1;
+  }
+}
+
+uint64_t process_output_read(uint64_t *cursor, char *buf, uint64_t max) {
+  uint64_t total = g_out_total;
+  uint64_t n = 0;
+
+  if (total - *cursor > OUT_RING) {
+    *cursor = total - OUT_RING;       // fell behind: skip what was overwritten
+  }
+  while (*cursor < total && n < max) {
+    buf[n++] = g_out_ring[*cursor % OUT_RING];
+    *cursor = *cursor + 1;
+  }
+  return n;
+}
+
+int process_poll(int handle, uint64_t *exit_code) {
+  spawn_t *s;
+  int error;
+
+  if (handle < 0 || handle >= SPAWN_MAX || !g_spawns[handle].used) {
+    return PROCESS_ERR_NOFILE;
+  }
+  s = &g_spawns[handle];
+  if (!s->done) {
+    return 1;                          // still running
+  }
+  if (exit_code != 0) {
+    *exit_code = s->exit_code;
+  }
+  error = s->error;
+  s->used = 0;
+  return error;                        // PROCESS_OK or a load error; the handle is now free
+}
+
 int process_wait(int handle, uint64_t *exit_code) {
   spawn_t *s;
   int error;

@@ -68,6 +68,15 @@ int process_spawn(const char *path);
 // the exit code and returns PROCESS_OK, or the load error if it never started.
 int process_wait(int handle, uint64_t *exit_code);
 
+// Non-blocking check on a spawned program. Returns 1 while it is still running;
+// otherwise behaves like process_wait (stores the exit code, releases the handle).
+int process_poll(int handle, uint64_t *exit_code);
+
+// Everything user programs write to stdout/stderr, also captured for the GUI.
+// process_output_read copies new bytes after *cursor (a running total, start at 0).
+void process_output_write(const char *data, uint64_t len);
+uint64_t process_output_read(uint64_t *cursor, char *buf, uint64_t max);
+
 // Called for CPU exceptions that arrived from ring 3. If a process is running it
 // is terminated with PROCESS_EXIT_FAULT_BASE + vector and control returns to the
 // code that called process_run (this function does not return). Returns 0 if no

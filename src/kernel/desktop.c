@@ -38,7 +38,7 @@
 #define TASK_PITCH   132
 #define MENU_W       200
 #define MENU_ITEM_H  28
-#define MENU_COUNT   6
+#define MENU_COUNT   7
 #define ICON_X       24
 #define ICON_Y0      24
 #define ICON_PITCH   84
@@ -71,8 +71,9 @@ static const char *menu_label(int i) {
     case 0:  return "Files";
     case 1:  return "Notes";
     case 2:  return "Paint";
-    case 3:  return "About WinClone";
-    case 4:  return "Setup";
+    case 3:  return "Programs";
+    case 4:  return "About WinClone";
+    case 5:  return "Setup";
     default: return "Shut down";
   }
 }
@@ -231,6 +232,8 @@ static void launch(int which) {
   } else if (which == 2) {
     app_paint_open();
   } else if (which == 3) {
+    app_programs_open();
+  } else if (which == 4) {
     app_about_open();
   } else {
     app_setup_open();
@@ -456,6 +459,7 @@ static __attribute__((noreturn)) void desktop_run(void) {
 
   for (;;) {
     g_desktop_loops++;
+    app_programs_poll();
     while (ps2_poll(&ev)) {
       if (ev.type == PS2_EVENT_KEY) {
         if (ev.pressed && ev.ch == 27) {

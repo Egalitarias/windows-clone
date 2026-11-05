@@ -62,6 +62,11 @@ static int visible_rows(int ch) {
   return rows < 1 ? 1 : rows;
 }
 
+static int is_program_file(const char *name) {
+  size_t n = str_len(name);
+  return n > 4 && str_eq_nocase(name + n - 4, ".bin");
+}
+
 static int is_text_file(const char *name) {
   size_t n = str_len(name), i = n;
   char ext[8];
@@ -235,6 +240,20 @@ static void open_selected(void) {
     load_view();
   } else if (v && is_text_file(e->name)) {
     app_notes_open_file(v, e);
+  } else if (v && is_program_file(e->name)) {
+    char path[96];
+    int n = 1, i;
+    path[0] = '/';
+    path[1] = 0;
+    for (i = 0; i < g_depth; i++) {
+      n += (int)str_copy(path + n, g_stack_name[i], sizeof(path) - (size_t)n);
+      if (n + 1 < (int)sizeof(path)) {
+        path[n++] = '/';
+        path[n] = 0;
+      }
+    }
+    str_copy(path + n, e->name, sizeof(path) - (size_t)n);
+    app_programs_run(path);
   } else {
     set_error("No app for this file type");
     refresh();
