@@ -10,6 +10,7 @@
 #define SYS_WRITE   1
 #define SYS_YIELD   2
 #define SYS_GETPID  3
+#define SYS_READ    4
 
 static inline long syscall3(long nr, long a1, long a2, long a3) {
   long result;
@@ -29,6 +30,11 @@ static inline void exit(int code) {
 
 static inline long write(int fd, const void *buf, unsigned long len) {
   return syscall3(SYS_WRITE, fd, (long)buf, (long)len);
+}
+
+// Read from the keyboard (fd 0). Blocks; returns 0 at end of input.
+static inline long read(int fd, void *buf, unsigned long len) {
+  return syscall3(SYS_READ, fd, (long)buf, (long)len);
 }
 
 static inline long yield(void) { return syscall3(SYS_YIELD, 0, 0, 0); }

@@ -87,6 +87,36 @@ static int64_t sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
   return (int64_t)done;
 }
 
+static int64_t sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
+  uint64_t n;
+
+  if (fd != 0) {
+    return SYSCALL_EBADF;
+  }
+  if (len > SYSCALL_WRITE_MAX) {
+    return SYSCALL_EINVAL;
+  }
+  if (len == 0) {
+    return 0;
+  }
+  if (!paging_user_range_ok(buf, len)) {
+    return SYSCALL_EFAULT;
+  }
+  // Block until there is input. Interrupts are off inside a syscall, so open
+  // them for the wait exactly as SYS_YIELD does. Without a scheduler nothing
+  // could ever supply input, so report end of input instead of hanging.
+  for (;;) {
+    n = process_input_read((char *)(uintptr_t)buf, len);
+    if (n > 0) {
+      return (int64_t)n;
+    }
+    if (process_input_eof() || !scheduler_is_running()) {
+      return 0;
+    }
+    __asm__ volatile("sti; hlt; cli" : : : "memory");
+  }
+}
+
 int64_t syscall_dispatch(uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3,
                          uint64_t a4, uint64_t a5) {
   (void)a3;
@@ -115,6 +145,8 @@ int64_t syscall_dispatch(uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3,
         __asm__ volatile("sti; hlt; cli" : : : "memory");
       }
       return 0;
+    case SYS_READ:
+      return sys_read(a1, a2, a3);
     case SYS_GETPID:
       return (int64_t)g_current_pid;
     default:

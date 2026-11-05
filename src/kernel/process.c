@@ -8,6 +8,7 @@
 #include "string.h"
 #include "syscall.h"
 #include "usermode.h"
+#include "irqlock.h"
 #include "desktop.h"
 
 static process_t *g_current = 0;
@@ -356,6 +357,52 @@ uint64_t process_output_read(uint64_t *cursor, char *buf, uint64_t max) {
     *cursor = *cursor + 1;
   }
   return n;
+}
+
+// ---- Program input -----------------------------------------------------------
+// Bytes typed for the running program (the GUI does line editing and pushes whole
+// lines). SYS_READ blocks until something is here. `eof` makes reads return 0.
+
+#define IN_RING 256U
+static char g_in_ring[IN_RING];
+static volatile uint32_t g_in_head = 0;     // next byte to read
+static volatile uint32_t g_in_tail = 0;     // next free slot
+static volatile int g_in_eof = 0;
+
+void process_input_reset(void) {
+  uint64_t f = irq_save();
+  g_in_head = 0;
+  g_in_tail = 0;
+  g_in_eof = 0;
+  irq_restore(f);
+}
+
+void process_input_push(char c) {
+  uint64_t f = irq_save();
+  if (g_in_tail - g_in_head < IN_RING) {
+    g_in_ring[g_in_tail % IN_RING] = c;
+    g_in_tail = g_in_tail + 1;
+  }
+  irq_restore(f);
+}
+
+void process_input_close(void) {
+  g_in_eof = 1;
+}
+
+uint64_t process_input_read(char *buf, uint64_t max) {
+  uint64_t n = 0;
+  uint64_t f = irq_save();
+  while (g_in_head != g_in_tail && n < max) {
+    buf[n++] = g_in_ring[g_in_head % IN_RING];
+    g_in_head = g_in_head + 1;
+  }
+  irq_restore(f);
+  return n;
+}
+
+int process_input_eof(void) {
+  return g_in_eof;
 }
 
 int process_poll(int handle, uint64_t *exit_code) {

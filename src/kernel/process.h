@@ -77,6 +77,15 @@ int process_poll(int handle, uint64_t *exit_code);
 void process_output_write(const char *data, uint64_t len);
 uint64_t process_output_read(uint64_t *cursor, char *buf, uint64_t max);
 
+// Keyboard input for the running program. The GUI pushes characters (whole lines);
+// SYS_READ drains them. process_input_close() marks end of input: once the buffer
+// is empty reads return 0. process_input_reset() starts a fresh stream.
+void process_input_reset(void);
+void process_input_push(char c);
+void process_input_close(void);
+uint64_t process_input_read(char *buf, uint64_t max);   // never blocks; returns bytes copied
+int process_input_eof(void);
+
 // Called for CPU exceptions that arrived from ring 3. If a process is running it
 // is terminated with PROCESS_EXIT_FAULT_BASE + vector and control returns to the
 // code that called process_run (this function does not return). Returns 0 if no

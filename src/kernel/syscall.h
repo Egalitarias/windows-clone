@@ -10,6 +10,7 @@
 #define SYS_WRITE   1   // write(fd, buf, len) -> bytes written; fd 1 and 2 go to the console
 #define SYS_YIELD   2   // yield() -> 0
 #define SYS_GETPID  3   // getpid() -> pid
+#define SYS_READ    4   // read(fd, buf, len) -> bytes read; fd 0 is the keyboard, blocks until input (0 = end of input)
 
 #define SYSCALL_EFAULT  (-14)
 #define SYSCALL_EBADF   (-9)
