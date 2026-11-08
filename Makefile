@@ -423,7 +423,7 @@ $(USER_DIR)/%.bin: $(USER_DIR)/%.elf
 	$(KERNEL_OBJCOPY) -O binary $< $@
 
 # Each program is staged under an upper-case 8.3 name on the boot volume.
-user-apps: $(USER_DIR)/hello.bin $(USER_DIR)/count.bin $(USER_DIR)/crash.bin $(USER_DIR)/echo.bin $(USER_DIR)/tick.bin $(USER_DIR)/iso.bin $(USER_DIR)/files.bin $(USER_DIR)/wintest.bin $(USER_DIR)/winev.bin $(USER_DIR)/windemo.bin
+user-apps: $(USER_DIR)/hello.bin $(USER_DIR)/count.bin $(USER_DIR)/crash.bin $(USER_DIR)/echo.bin $(USER_DIR)/tick.bin $(USER_DIR)/iso.bin $(USER_DIR)/files.bin $(USER_DIR)/wintest.bin $(USER_DIR)/winev.bin $(USER_DIR)/windemo.bin $(USER_DIR)/notes.bin
 	@mkdir -p $(UEFI_DIR)/APPS
 	cp $(USER_DIR)/hello.bin $(UEFI_DIR)/APPS/HELLO.BIN
 	cp $(USER_DIR)/count.bin $(UEFI_DIR)/APPS/COUNT.BIN
@@ -435,6 +435,7 @@ user-apps: $(USER_DIR)/hello.bin $(USER_DIR)/count.bin $(USER_DIR)/crash.bin $(U
 	cp $(USER_DIR)/wintest.bin $(UEFI_DIR)/APPS/WINTEST.BIN
 	cp $(USER_DIR)/winev.bin $(UEFI_DIR)/APPS/WINEV.BIN
 	cp $(USER_DIR)/windemo.bin $(UEFI_DIR)/APPS/WINDEMO.BIN
+	cp $(USER_DIR)/notes.bin $(UEFI_DIR)/APPS/NOTES.BIN
 
 .PHONY: user-apps
 

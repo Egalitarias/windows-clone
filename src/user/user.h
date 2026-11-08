@@ -23,6 +23,9 @@
 #define SYS_WIN_TEXT   13
 #define SYS_WIN_EVENT  14
 
+#define SYS_GETARG    15
+#define SYS_WIN_TITLE 16
+
 #define O_RDONLY 0   // file or directory
 #define O_WRONLY 1   // create or truncate; the data is stored by close()
 
@@ -109,6 +112,10 @@ static inline long win_text(int id, int x, int y, const char *s, uint32_t color,
 }
 // Next event: 1 = stored in *ev, 0 = none (block = 0), negative = error (window gone).
 static inline long win_event(int id, win_event_t *ev, int block) { return syscall3(SYS_WIN_EVENT, id, (long)ev, block); }
+
+// The argument string the program was started with (empty if none). Returns its length.
+static inline long getarg(char *buf, unsigned long len) { return syscall3(SYS_GETARG, (long)buf, (long)len, 0); }
+static inline long win_title(int id, const char *title) { return syscall3(SYS_WIN_TITLE, id, (long)title, 0); }
 
 // Sleep for at least `ms` milliseconds; returns the time actually slept.
 static inline long sleep_ms(unsigned long ms) { return syscall3(SYS_SLEEP, (long)ms, 0, 0); }

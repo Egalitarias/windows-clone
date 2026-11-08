@@ -21,6 +21,8 @@
 #define SYS_WIN_FILL   12   // win_fill(id, syswin_op_t *)   fill a rectangle
 #define SYS_WIN_TEXT   13   // win_text(id, syswin_op_t *)   draw text (8x8 font)
 #define SYS_WIN_EVENT  14   // win_event(id, syswin_event_t *, block) -> 1 event stored, 0 none
+#define SYS_GETARG     15   // getarg(buf, len) -> length of the argument string; copies it, NUL-terminated
+#define SYS_WIN_TITLE  16   // win_title(id, title)  change the window title
 #define SYS_READDIR 8   // readdir(fd, sysfile_dirent_t *out) -> 1 entry stored, 0 at the end
                         // read(fd, ...) and write(fd, ...) also take file descriptors (see sysfile.h)
 

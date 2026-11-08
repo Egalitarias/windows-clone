@@ -207,6 +207,28 @@ int64_t syscall_dispatch(uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3,
       return syswin_text(a1, a2);
     case SYS_WIN_EVENT:
       return syswin_event(a1, a2, a3);
+    case SYS_GETARG: {
+      const char *arg = process_current_arg();
+      uint64_t n = 0;
+      uint64_t i;
+
+      while (arg[n] != 0) {
+        ++n;
+      }
+      if (a2 == 0 || a2 > SYSCALL_WRITE_MAX) {
+        return SYSCALL_EINVAL;
+      }
+      if (!paging_user_range_ok(a1, a2)) {
+        return SYSCALL_EFAULT;
+      }
+      for (i = 0; i + 1 < a2 && i < n; ++i) {
+        ((char *)(uintptr_t)a1)[i] = arg[i];
+      }
+      ((char *)(uintptr_t)a1)[i] = 0;
+      return (int64_t)n;
+    }
+    case SYS_WIN_TITLE:
+      return syswin_title(a1, a2);
     case SYS_GETPID: {
       uint64_t pid = process_current_pid();
       return (int64_t)(pid != 0 ? pid : g_current_pid);

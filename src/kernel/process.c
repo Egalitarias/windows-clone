@@ -36,6 +36,12 @@ uint64_t process_current_pid(void) {
   return p != 0 ? p->pid : 0;
 }
 
+const char *process_current_arg(void) {
+  process_t *p = current_process();
+
+  return (p != 0 && p->arg != 0) ? p->arg : "";
+}
+
 void **process_files_slot(void) {
   process_t *p = current_process();
 
@@ -321,6 +327,7 @@ typedef struct {
   int error;
   uint64_t exit_code;
   char path[64];
+  char arg[PROCESS_ARG_MAX];
   char name[40];
 } spawn_t;
 
@@ -351,6 +358,7 @@ static int spawn_task(void *arg) {
   }
 
   p.io = &s->io;
+  p.arg = s->arg;
   s->exit_code = process_run(&p);
   {
     TCB *self = scheduler_current_tcb();
@@ -364,6 +372,10 @@ static int spawn_task(void *arg) {
 }
 
 int process_spawn(const char *path) {
+  return process_spawn_arg(path, 0);
+}
+
+int process_spawn_arg(const char *path, const char *arg) {
   int i;
   int handle = -1;
   uint64_t flags;
@@ -388,6 +400,7 @@ int process_spawn(const char *path) {
     size_t n = str_copy(s->name, "user:", sizeof(s->name));
     str_copy(s->name + n, path, sizeof(s->name) - n);
     str_copy(s->path, path, sizeof(s->path));
+    str_copy(s->arg, arg != 0 ? arg : "", sizeof(s->arg));
     s->done = 0;
     s->io.out_total = 0;
     s->io.in_head = 0;
@@ -898,6 +911,47 @@ static int window_supervisor_task(void *arg) {
   failures += win_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
                          "winev: blocked read woke for key, mouse and close events");
   console_printf("[WIN] winev exit code %llu\r\n", code);
+  failures += win_expect(wait_for(cond_no_windows, 500), "no windows left at the end");
+
+  // Notes as a user program: type, save with Ctrl+S, quit; then run it again on the
+  // same file, which it must load, and append to it.
+  {
+    static const char expect1[] = "hi\r\nyo";
+    static const char expect2[] = "hi\r\nyo!";
+    static char buf[64];
+    const char *keys1 = "hi\nyo";
+    fat_volume_t *v = fs_default_volume();
+    fat_dirent_t ent;
+    uint32_t got = 0;
+    int ok;
+
+    h = process_spawn_arg("/APPS/NOTES.BIN", "/NTEST.TXT");
+    failures += win_expect(h >= 0 && wait_for(cond_has_window, 500), "notes: window appeared");
+    for (i = 0; keys1[i] != 0; ++i) {
+      syswin_test_inject(SYSWIN_EV_KEY, 0, 0, (uint32_t)(unsigned char)keys1[i]);
+    }
+    syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 0x13);
+    syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
+    failures += win_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0, "notes: exited cleanly");
+    ok = v != 0 && fat_lookup(v, v->root_cluster, "NTEST.TXT", &ent) && ent.size == sizeof(expect1) - 1 &&
+         fat_read_file(v, &ent, buf, sizeof(buf), &got) && got == sizeof(expect1) - 1 &&
+         memcmp(buf, expect1, got) == 0;
+    failures += win_expect(ok, "notes: typed text was saved to /NTEST.TXT (CR LF line ends)");
+    wait_for(cond_no_windows, 500);
+
+    h = process_spawn_arg("/APPS/NOTES.BIN", "/NTEST.TXT");
+    failures += win_expect(h >= 0 && wait_for(cond_has_window, 500), "notes: window appeared again");
+    syswin_test_inject(SYSWIN_EV_KEY, 0, 0, '!');
+    syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 0x13);
+    syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
+    failures += win_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0, "notes: second run exited cleanly");
+    got = 0;
+    ok = v != 0 && fat_lookup(v, v->root_cluster, "NTEST.TXT", &ent) && ent.size == sizeof(expect2) - 1 &&
+         fat_read_file(v, &ent, buf, sizeof(buf), &got) && got == sizeof(expect2) - 1 &&
+         memcmp(buf, expect2, got) == 0;
+    failures += win_expect(ok, "notes: second run loaded the file and appended to it");
+    wait_for(cond_no_windows, 500);
+  }
   failures += win_expect(wait_for(cond_no_windows, 500), "no windows left at the end");
   failures += win_expect(process_live_count() == 0, "no processes left at the end");
 

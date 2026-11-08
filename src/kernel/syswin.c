@@ -26,6 +26,8 @@ typedef struct {
   uint64_t owner;                       // pid of the creating program, 0 once released
   wm_window_t *win;                     // desktop task only
   char title[WM_TITLE_CHARS];
+  char new_title[WM_TITLE_CHARS];
+  volatile int title_dirty;
   int w, h;                             // surface (= client area) size
   uint64_t surf_phys;
   uint64_t surf_pages;
@@ -164,6 +166,10 @@ void syswin_poll(void) {
         wm_close(win);                              // the program vanished meanwhile
       }
     } else if (st == UW_ACTIVE) {
+      if (u->title_dirty && u->win != 0) {
+        u->title_dirty = 0;
+        wm_set_title(u->win, u->new_title);
+      }
       if (u->dirty && u->win != 0) {
         u->dirty = 0;
         wm_invalidate_window(u->win);
@@ -264,6 +270,7 @@ int64_t syswin_create(uint64_t title_uaddr, uint64_t w, uint64_t h) {
   u->h = (int)h;
   u->win = 0;
   u->dirty = 0;
+  u->title_dirty = 0;
   u->ev_head = u->ev_tail = 0;
   str_copy(u->title, title, sizeof(u->title));
   u->owner = pid;
@@ -290,6 +297,25 @@ int64_t syswin_close(uint64_t id) {
   }
   u->owner = 0;
   u->state = UW_CLOSING;                            // the desktop closes and frees it
+  return 0;
+}
+
+int64_t syswin_title(uint64_t id, uint64_t title_uaddr) {
+  uwin_t *u = get_win(id, 1);
+  char title[WM_TITLE_CHARS];
+  int64_t r;
+
+  if (u == 0) {
+    return SYSCALL_EBADF;
+  }
+  r = sys_copy_user_string(title_uaddr, title, sizeof(title));
+  if (r == SYSCALL_ENAMETOOLONG) {
+    title[sizeof(title) - 1] = 0;
+  } else if (r < 0) {
+    return r;
+  }
+  str_copy(u->new_title, title, sizeof(u->new_title));
+  u->title_dirty = 1;                               // the desktop applies it
   return 0;
 }
 

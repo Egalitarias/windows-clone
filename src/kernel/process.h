@@ -47,6 +47,7 @@ typedef struct {
   uint64_t saved_rsp;         // kernel context to return to when the program exits
   uint64_t exit_code;
   void *io;                   // the program's console (set by process_spawn), or 0
+  const char *arg;            // argument string given to process_spawn_arg, or 0
   void *files;                // open-file table (sysfile.c), or 0
   int running;                // inside process_run (user code or one of its syscalls)
 } process_t;
@@ -67,6 +68,10 @@ void process_destroy(process_t *p);
 // code. Returns a handle for process_wait(), or a negative PROCESS_ERR_* code.
 // The program is preemptible: timer ticks interrupt it in ring 3 like any task.
 int process_spawn(const char *path);
+// Same, with an argument string (at most PROCESS_ARG_MAX - 1 characters) the program
+// reads with the getarg syscall - e.g. the file to open.
+int process_spawn_arg(const char *path, const char *arg);
+#define PROCESS_ARG_MAX 64
 
 // Wait (from a scheduler task) until the spawned program has finished. Stores
 // the exit code and returns PROCESS_OK, or the load error if it never started.
@@ -95,6 +100,9 @@ int process_input_eof(void);
 
 // The open-file table slot of the process on this task (0 if there is none).
 void **process_files_slot(void);
+
+// The argument of the process on this task ("" if it has none).
+const char *process_current_arg(void);
 
 // Pid of the process running on this task, or 0 if the task is not a process.
 uint64_t process_current_pid(void);

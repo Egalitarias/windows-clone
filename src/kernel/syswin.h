@@ -49,6 +49,7 @@ typedef struct {
 // Each returns a non-negative result or a negative SYSCALL_E* code.
 int64_t syswin_create(uint64_t title_uaddr, uint64_t w, uint64_t h);   // -> window id
 int64_t syswin_close(uint64_t id);
+int64_t syswin_title(uint64_t id, uint64_t title_uaddr);
 int64_t syswin_blit(uint64_t id, uint64_t op_uaddr);
 int64_t syswin_fill(uint64_t id, uint64_t op_uaddr);
 int64_t syswin_text(uint64_t id, uint64_t op_uaddr);
