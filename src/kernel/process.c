@@ -969,3 +969,81 @@ void process_window_selftest(void) {
   scheduler_add_task("win-supervisor", window_supervisor_task, 0);
 }
 #endif
+
+#if defined(KERNEL_USER_SELFTEST) && KERNEL_USER_SELFTEST == 9
+// USER_SELFTEST=9: hardening. Bad pointers and unknown syscalls (PROBE.BIN), a stack
+// overflow (STACKOVF.BIN), and a program that never gives up the CPU (SPIN.BIN).
+static int hard_expect(int ok, const char *what) {
+  console_printf("[HARD]  %s %s\r\n", ok ? "ok  " : "FAIL", what);
+  return ok ? 0 : 1;
+}
+
+static int hard_supervisor_task(void *arg) {
+  int failures = 0;
+  uint64_t code = 0;
+  int h, spin, hello;
+  int i;
+
+  (void)arg;
+  h = process_spawn("/APPS/PROBE.BIN");
+  failures += hard_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
+                          "probe: every bad pointer / descriptor / syscall number failed cleanly");
+  if (code != 0) {
+    console_printf("[HARD] probe stopped at check %llu\r\n", code);
+  }
+
+  h = process_spawn("/APPS/STACKOVF.BIN");
+  failures += hard_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK &&
+                              code == PROCESS_EXIT_FAULT_BASE + 14,
+                          "stack overflow: killed by a page fault");
+  h = process_spawn("/APPS/STACKOVF.BIN");
+  failures += hard_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK &&
+                              code == PROCESS_EXIT_FAULT_BASE + 14,
+                          "stack overflow again (stack and tables were freed)");
+
+  // A program that never makes a syscall must not starve the others: a second
+  // program has to start, run and finish while the first is still looping.
+  spin = process_spawn("/APPS/SPIN.BIN");
+  hello = process_spawn("/APPS/HELLO.BIN");
+  failures += hard_expect(spin >= 0 && hello >= 0, "spin and hello spawned");
+  failures += hard_expect(process_wait(hello, &code) == PROCESS_OK && code == 7, "hello finished");
+  failures += hard_expect(spin >= 0 && !process_finished(spin), "spin was still looping then (preempted, not blocking)");
+  failures += hard_expect(process_wait(spin, &code) == PROCESS_OK && code == 11, "spin finished by itself");
+
+  // Faults and bad calls in a mix with healthy programs.
+  {
+    int a = process_spawn("/APPS/PROBE.BIN");
+    int b = process_spawn("/APPS/STACKOVF.BIN");
+    int c = process_spawn("/APPS/CRASH.BIN");
+    int d = process_spawn("/APPS/HELLO.BIN");
+    uint64_t ca = 99, cb = 0, cc = 0, cd = 0;
+
+    failures += hard_expect(a >= 0 && b >= 0 && c >= 0 && d >= 0 &&
+                                process_wait(a, &ca) == PROCESS_OK && process_wait(b, &cb) == PROCESS_OK &&
+                                process_wait(c, &cc) == PROCESS_OK && process_wait(d, &cd) == PROCESS_OK &&
+                                ca == 0 && cb == PROCESS_EXIT_FAULT_BASE + 14 &&
+                                cc == PROCESS_EXIT_FAULT_BASE + 14 && cd == 7,
+                            "mixed batch: each program got its own outcome");
+  }
+  for (i = 0; i < 6; ++i) {
+    h = process_spawn("/APPS/STACKOVF.BIN");
+    if (h < 0 || process_wait(h, &code) != PROCESS_OK || code != PROCESS_EXIT_FAULT_BASE + 14) {
+      break;
+    }
+  }
+  failures += hard_expect(i == 6, "six more stack overflows (no leak)");
+  failures += hard_expect(process_live_count() == 0, "nothing leaked at the end");
+
+  if (failures == 0) {
+    console_write_string("[HARD] PASS: bad pointers, unknown syscalls, stack overflow, preemption\r\n");
+  } else {
+    console_printf("[HARD] FAIL: %d check(s) failed\r\n", failures);
+  }
+  return 0;
+}
+
+void process_hardening_selftest(void) {
+  fs_init();
+  scheduler_add_task("hard-supervisor", hard_supervisor_task, 0);
+}
+#endif

@@ -124,6 +124,7 @@ void process_desktop_selftest(void);     // USER_SELFTEST=5: same, with the desk
 void process_isolation_selftest(void);   // USER_SELFTEST=6: concurrent processes in separate address spaces
 void process_file_selftest(void);        // USER_SELFTEST=7: file syscalls (FILES.BIN)
 void process_window_selftest(void);      // USER_SELFTEST=8: window syscalls (WINTEST.BIN, WINEV.BIN)
+void process_hardening_selftest(void);   // USER_SELFTEST=9: bad pointers, stack overflow, preemption
 #endif
 
 #endif // KERNEL_PROCESS_H
