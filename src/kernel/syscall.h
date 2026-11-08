@@ -13,12 +13,25 @@
 #define SYS_READ    4   // read(fd, buf, len) -> bytes read; fd 0 is the keyboard, blocks until input (0 = end of input)
 
 #define SYS_SLEEP   5   // sleep(ms) -> ms actually slept (>= ms); other tasks run meanwhile
+#define SYS_OPEN    6   // open(path, flags) -> fd (>= 3); flags 0 = read file or directory, 1 = write (create/truncate on close)
+#define SYS_CLOSE   7   // close(fd) -> 0; a write-opened file is stored now (-EIO if that fails)
+#define SYS_READDIR 8   // readdir(fd, sysfile_dirent_t *out) -> 1 entry stored, 0 at the end
+                        // read(fd, ...) and write(fd, ...) also take file descriptors (see sysfile.h)
 
 #define SYSCALL_SLEEP_MAX_MS 3600000ULL   // one hour
 
+#define SYSCALL_ENOENT  (-2)
+#define SYSCALL_EIO     (-5)
+#define SYSCALL_ENOMEM  (-12)
+#define SYSCALL_EACCES  (-13)
 #define SYSCALL_EFAULT  (-14)
+#define SYSCALL_ENOTDIR (-20)
+#define SYSCALL_EISDIR  (-21)
 #define SYSCALL_EBADF   (-9)
 #define SYSCALL_EINVAL  (-22)
+#define SYSCALL_EMFILE  (-24)
+#define SYSCALL_EFBIG   (-27)
+#define SYSCALL_ENAMETOOLONG (-36)
 #define SYSCALL_ENOSYS  (-38)
 
 #define SYSCALL_WRITE_MAX 4096ULL

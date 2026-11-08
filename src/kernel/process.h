@@ -47,6 +47,7 @@ typedef struct {
   uint64_t saved_rsp;         // kernel context to return to when the program exits
   uint64_t exit_code;
   void *io;                   // the program's console (set by process_spawn), or 0
+  void *files;                // open-file table (sysfile.c), or 0
   int running;                // inside process_run (user code or one of its syscalls)
 } process_t;
 
@@ -92,6 +93,9 @@ void process_input_close(int handle);
 uint64_t process_input_read(char *buf, uint64_t max);   // never blocks; returns bytes copied
 int process_input_eof(void);
 
+// The open-file table slot of the process on this task (0 if there is none).
+void **process_files_slot(void);
+
 // Pid of the process running on this task, or 0 if the task is not a process.
 uint64_t process_current_pid(void);
 
@@ -110,6 +114,7 @@ void process_selftest(void);             // USER_SELFTEST=3: load and run /APPS/
 void process_scheduler_selftest(void);   // USER_SELFTEST=4: add a supervisor task that spawns programs
 void process_desktop_selftest(void);     // USER_SELFTEST=5: same, with the desktop running as a task
 void process_isolation_selftest(void);   // USER_SELFTEST=6: concurrent processes in separate address spaces
+void process_file_selftest(void);        // USER_SELFTEST=7: file syscalls (FILES.BIN)
 #endif
 
 #endif // KERNEL_PROCESS_H

@@ -12,6 +12,19 @@
 #define SYS_GETPID  3
 #define SYS_READ    4
 #define SYS_SLEEP   5
+#define SYS_OPEN    6
+#define SYS_CLOSE   7
+#define SYS_READDIR 8
+
+#define O_RDONLY 0   // file or directory
+#define O_WRONLY 1   // create or truncate; the data is stored by close()
+
+// What readdir() fills in. attr 0x10 = directory.
+typedef struct {
+  uint32_t size;
+  uint32_t attr;
+  char name[128];
+} dirent_t;
 
 static inline long syscall3(long nr, long a1, long a2, long a3) {
   long result;
@@ -37,6 +50,14 @@ static inline long write(int fd, const void *buf, unsigned long len) {
 static inline long read(int fd, void *buf, unsigned long len) {
   return syscall3(SYS_READ, fd, (long)buf, (long)len);
 }
+
+// Files. Paths look like "/APPS/HELLO.BIN". open() returns an fd >= 3 or a negative
+// error; read() and write() also take these fds. Files are buffered whole: a file
+// opened for writing reaches the disk when it is closed, and close() reports failure.
+static inline long open(const char *path, int flags) { return syscall3(SYS_OPEN, (long)path, flags, 0); }
+static inline long close(int fd) { return syscall3(SYS_CLOSE, fd, 0, 0); }
+// Next entry of an open directory: 1 = stored, 0 = no more, negative = error.
+static inline long readdir(int fd, dirent_t *out) { return syscall3(SYS_READDIR, fd, (long)out, 0); }
 
 // Sleep for at least `ms` milliseconds; returns the time actually slept.
 static inline long sleep_ms(unsigned long ms) { return syscall3(SYS_SLEEP, (long)ms, 0, 0); }

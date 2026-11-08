@@ -4,6 +4,7 @@
 #include "scheduler.h"
 #include "timer.h"
 #include "process.h"
+#include "sysfile.h"
 
 #define MSR_EFER   0xC0000080U
 #define MSR_STAR   0xC0000081U
@@ -58,6 +59,9 @@ static int64_t sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
   char chunk[128];
   uint64_t done = 0;
 
+  if (fd >= SYSFILE_FIRST_FD) {
+    return sysfile_write(fd, buf, len);
+  }
   if (fd != 1 && fd != 2) {
     return SYSCALL_EBADF;
   }
@@ -91,6 +95,9 @@ static int64_t sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
 static int64_t sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
   uint64_t n;
 
+  if (fd >= SYSFILE_FIRST_FD) {
+    return sysfile_read(fd, buf, len);
+  }
   if (fd != 0) {
     return SYSCALL_EBADF;
   }
@@ -181,6 +188,12 @@ int64_t syscall_dispatch(uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3,
       return sys_sleep(a1);
     case SYS_READ:
       return sys_read(a1, a2, a3);
+    case SYS_OPEN:
+      return sysfile_open(a1, a2);
+    case SYS_CLOSE:
+      return sysfile_close(a1);
+    case SYS_READDIR:
+      return sysfile_readdir(a1, a2);
     case SYS_GETPID: {
       uint64_t pid = process_current_pid();
       return (int64_t)(pid != 0 ? pid : g_current_pid);

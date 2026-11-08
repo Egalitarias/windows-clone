@@ -10,6 +10,7 @@
 #include "usermode.h"
 #include "irqlock.h"
 #include "desktop.h"
+#include "sysfile.h"
 
 // The process running on the current task. Under the scheduler it hangs off the
 // task's TCB (address_space field), so concurrent processes each find their own;
@@ -32,6 +33,12 @@ uint64_t process_current_pid(void) {
   process_t *p = current_process();
 
   return p != 0 ? p->pid : 0;
+}
+
+void **process_files_slot(void) {
+  process_t *p = current_process();
+
+  return p != 0 ? &p->files : 0;
 }
 
 int process_live_count(void) {
@@ -265,6 +272,9 @@ void process_destroy(process_t *p) {
   paging_activate(0);
   irq_restore(flags);
 
+  // Files the program left open: store pending writes unless it was killed by a fault.
+  sysfile_close_all(p->files, p->exit_code < PROCESS_EXIT_FAULT_BASE);
+  p->files = 0;
   create_cleanup(p);
   p->loaded = 0;
   flags = irq_save();
@@ -772,5 +782,60 @@ static int isolation_supervisor_task(void *arg) {
 void process_isolation_selftest(void) {
   fs_init();
   scheduler_add_task("iso-supervisor", isolation_supervisor_task, 0);
+}
+#endif
+
+#if defined(KERNEL_USER_SELFTEST) && KERNEL_USER_SELFTEST == 7
+// USER_SELFTEST=7: the file syscalls. FILES.BIN checks open/read/write/close/readdir
+// and their errors itself and leaves a file open when it exits; running it twice
+// proves the kernel stored that file at exit (the second run finds it).
+static int file_expect(int ok, const char *what) {
+  console_printf("[FILE]  %s %s\r\n", ok ? "ok  " : "FAIL", what);
+  return ok ? 0 : 1;
+}
+
+static int file_supervisor_task(void *arg) {
+  int failures = 0;
+  uint64_t code = 0;
+  int h;
+  int i;
+
+  (void)arg;
+  h = process_spawn("/APPS/FILES.BIN");
+  failures += file_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && (code == 0 || code == 50),
+                          "first run: every check passed");
+  console_printf("[FILE] first run exit code %llu\r\n", code);
+  h = process_spawn("/APPS/FILES.BIN");
+  failures += file_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
+                          "second run: file left open was stored at exit");
+  {
+    // Two at once, each with its own descriptor table.
+    int a = process_spawn("/APPS/FILES.BIN");
+    int b = process_spawn("/APPS/FILES.BIN");
+    uint64_t ca = 1, cb = 1;
+    failures += file_expect(a >= 0 && b >= 0 && process_wait(a, &ca) == PROCESS_OK &&
+                                process_wait(b, &cb) == PROCESS_OK && ca == 0 && cb == 0,
+                            "two concurrent runs");
+  }
+  for (i = 0; i < 6; ++i) {
+    h = process_spawn("/APPS/FILES.BIN");
+    if (h < 0 || process_wait(h, &code) != PROCESS_OK || code != 0) {
+      break;
+    }
+  }
+  failures += file_expect(i == 6, "six more runs (descriptor tables and buffers freed)");
+  failures += file_expect(process_live_count() == 0, "nothing leaked at the end");
+
+  if (failures == 0) {
+    console_write_string("[FILE] PASS: file syscalls\r\n");
+  } else {
+    console_printf("[FILE] FAIL: %d check(s) failed\r\n", failures);
+  }
+  return 0;
+}
+
+void process_file_selftest(void) {
+  fs_init();
+  scheduler_add_task("file-supervisor", file_supervisor_task, 0);
 }
 #endif
