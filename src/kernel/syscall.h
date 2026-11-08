@@ -15,6 +15,12 @@
 #define SYS_SLEEP   5   // sleep(ms) -> ms actually slept (>= ms); other tasks run meanwhile
 #define SYS_OPEN    6   // open(path, flags) -> fd (>= 3); flags 0 = read file or directory, 1 = write (create/truncate on close)
 #define SYS_CLOSE   7   // close(fd) -> 0; a write-opened file is stored now (-EIO if that fails)
+#define SYS_WIN_CREATE 9    // win_create(title, w, h) -> window id; w x h is the client area (see syswin.h)
+#define SYS_WIN_CLOSE  10   // win_close(id)
+#define SYS_WIN_BLIT   11   // win_blit(id, syswin_op_t *)   copy pixels into the window
+#define SYS_WIN_FILL   12   // win_fill(id, syswin_op_t *)   fill a rectangle
+#define SYS_WIN_TEXT   13   // win_text(id, syswin_op_t *)   draw text (8x8 font)
+#define SYS_WIN_EVENT  14   // win_event(id, syswin_event_t *, block) -> 1 event stored, 0 none
 #define SYS_READDIR 8   // readdir(fd, sysfile_dirent_t *out) -> 1 entry stored, 0 at the end
                         // read(fd, ...) and write(fd, ...) also take file descriptors (see sysfile.h)
 
@@ -24,6 +30,7 @@
 #define SYSCALL_EIO     (-5)
 #define SYSCALL_ENOMEM  (-12)
 #define SYSCALL_EACCES  (-13)
+#define SYSCALL_ENODEV  (-19)
 #define SYSCALL_EFAULT  (-14)
 #define SYSCALL_ENOTDIR (-20)
 #define SYSCALL_EISDIR  (-21)

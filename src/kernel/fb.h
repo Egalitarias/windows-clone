@@ -25,6 +25,8 @@ uint32_t fb_get_pixel(int x, int y);  // 0x00RRGGBB; 0 when out of range
 void fb_fill_rect(int x, int y, int w, int h, uint32_t rgb);
 void fb_draw_rect(int x, int y, int w, int h, uint32_t rgb);  // 1px outline
 void fb_clear(uint32_t rgb);
+// Copy a w x h block of 0x00RRGGBB pixels (src_stride pixels per source row) to (x, y).
+void fb_blit(int x, int y, int w, int h, const uint32_t *src, int src_stride);
 
 // Clip rectangle: every drawing call is limited to it (reads are not).
 // The default is the whole screen. Clips do not nest; save and restore the

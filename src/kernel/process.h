@@ -115,6 +115,7 @@ void process_scheduler_selftest(void);   // USER_SELFTEST=4: add a supervisor ta
 void process_desktop_selftest(void);     // USER_SELFTEST=5: same, with the desktop running as a task
 void process_isolation_selftest(void);   // USER_SELFTEST=6: concurrent processes in separate address spaces
 void process_file_selftest(void);        // USER_SELFTEST=7: file syscalls (FILES.BIN)
+void process_window_selftest(void);      // USER_SELFTEST=8: window syscalls (WINTEST.BIN, WINEV.BIN)
 #endif
 
 #endif // KERNEL_PROCESS_H

@@ -5,6 +5,7 @@
 #include "process.h"
 #include "string.h"
 #include "syscall.h"
+#include "syswin.h"
 
 #define KIND_FREE  0
 #define KIND_READ  1
@@ -66,8 +67,8 @@ static sysfile_t *get_fd(uint64_t fd) {
 }
 
 // Copy a NUL-terminated string out of user memory, checking each page first.
-static int copy_user_path(uint64_t uaddr, char *out, size_t max) {
-  size_t i;
+int sys_copy_user_string(uint64_t uaddr, char *out, uint64_t max) {
+  uint64_t i;
 
   for (i = 0; i < max; ++i) {
     uint64_t a = uaddr + i;
@@ -309,7 +310,7 @@ int64_t sysfile_open(uint64_t path_uaddr, uint64_t flags) {
   if (flags != SYSFILE_O_RDONLY && flags != SYSFILE_O_WRONLY) {
     return SYSCALL_EINVAL;
   }
-  r = copy_user_path(path_uaddr, path, sizeof(path));
+  r = sys_copy_user_string(path_uaddr, path, sizeof(path));
   if (r < 0) {
     return r;
   }

@@ -107,6 +107,26 @@ void fb_fill_rect(int x, int y, int w, int h, uint32_t rgb) {
   }
 }
 
+void fb_blit(int x, int y, int w, int h, const uint32_t *src, int src_stride) {
+  int x0, y0, x1, y1, row, col;
+
+  if (!g_fb || w <= 0 || h <= 0) {
+    return;
+  }
+  x0 = x < g_clip_x0 ? g_clip_x0 : x;
+  y0 = y < g_clip_y0 ? g_clip_y0 : y;
+  x1 = x + w > g_clip_x1 ? g_clip_x1 : x + w;
+  y1 = y + h > g_clip_y1 ? g_clip_y1 : y + h;
+  for (row = y0; row < y1; row++) {
+    volatile uint32_t *line = g_fb + (uint64_t)row * g_stride;
+    const uint32_t *in = src + (int64_t)(row - y) * src_stride - x;
+
+    for (col = x0; col < x1; col++) {
+      line[col] = fb_pack(in[col]);
+    }
+  }
+}
+
 void fb_draw_rect(int x, int y, int w, int h, uint32_t rgb) {
   if (w <= 0 || h <= 0) {
     return;

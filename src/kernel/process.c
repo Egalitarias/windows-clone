@@ -11,6 +11,7 @@
 #include "irqlock.h"
 #include "desktop.h"
 #include "sysfile.h"
+#include "syswin.h"
 
 // The process running on the current task. Under the scheduler it hangs off the
 // task's TCB (address_space field), so concurrent processes each find their own;
@@ -275,6 +276,7 @@ void process_destroy(process_t *p) {
   // Files the program left open: store pending writes unless it was killed by a fault.
   sysfile_close_all(p->files, p->exit_code < PROCESS_EXIT_FAULT_BASE);
   p->files = 0;
+  syswin_process_exit(p->pid);
   create_cleanup(p);
   p->loaded = 0;
   flags = irq_save();
@@ -837,5 +839,79 @@ static int file_supervisor_task(void *arg) {
 void process_file_selftest(void) {
   fs_init();
   scheduler_add_task("file-supervisor", file_supervisor_task, 0);
+}
+#endif
+
+#if defined(KERNEL_USER_SELFTEST) && KERNEL_USER_SELFTEST == 8
+// USER_SELFTEST=8: window syscalls, with the desktop running as a task. WINTEST.BIN
+// checks the calls and leaves windows open; the kernel must release them at exit.
+// WINEV.BIN waits for input events that this task injects.
+static int win_expect(int ok, const char *what) {
+  console_printf("[WIN]  %s %s\r\n", ok ? "ok  " : "FAIL", what);
+  return ok ? 0 : 1;
+}
+
+static int wait_for(int (*cond)(void), int ticks) {
+  while (ticks-- > 0 && !cond()) {
+    wait_one_tick();
+  }
+  return cond();
+}
+
+static int cond_has_window(void) { return syswin_test_active() > 0; }
+static int cond_no_windows(void) { return syswin_test_used() == 0; }
+
+static int window_supervisor_task(void *arg) {
+  int failures = 0;
+  uint64_t code = 0;
+  int h;
+  int i;
+
+  (void)arg;
+  console_write_string("[WIN] waiting for the desktop task\r\n");
+  while (desktop_loop_count() < 3) {
+    wait_one_tick();
+  }
+
+  h = process_spawn("/APPS/WINTEST.BIN");
+  failures += win_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
+                         "wintest: all window checks passed");
+  console_printf("[WIN] wintest exit code %llu\r\n", code);
+  failures += win_expect(wait_for(cond_no_windows, 500), "windows left open were released at exit");
+
+  // Several runs in a row would run out of the 4 window slots if any leaked.
+  for (i = 0; i < 4; ++i) {
+    h = process_spawn("/APPS/WINTEST.BIN");
+    if (h < 0 || process_wait(h, &code) != PROCESS_OK || code != 0) {
+      break;
+    }
+    wait_for(cond_no_windows, 500);
+  }
+  failures += win_expect(i == 4, "four more runs (no window slots leaked)");
+
+  // Input events.
+  h = process_spawn("/APPS/WINEV.BIN");
+  failures += win_expect(h >= 0 && wait_for(cond_has_window, 500), "winev: window appeared on the desktop");
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 'x');
+  syswin_test_inject(SYSWIN_EV_MOUSE_DOWN, 5, 6, 0);
+  syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
+  failures += win_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
+                         "winev: blocked read woke for key, mouse and close events");
+  console_printf("[WIN] winev exit code %llu\r\n", code);
+  failures += win_expect(wait_for(cond_no_windows, 500), "no windows left at the end");
+  failures += win_expect(process_live_count() == 0, "no processes left at the end");
+
+  if (failures == 0) {
+    console_write_string("[WIN] PASS: window syscalls\r\n");
+  } else {
+    console_printf("[WIN] FAIL: %d check(s) failed\r\n", failures);
+  }
+  return 0;
+}
+
+void process_window_selftest(void) {
+  fs_init();
+  desktop_start();
+  scheduler_add_task("win-supervisor", window_supervisor_task, 0);
 }
 #endif

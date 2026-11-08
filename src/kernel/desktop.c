@@ -10,6 +10,7 @@
 #include "rtc.h"
 #include "timer.h"
 #include "wm.h"
+#include "syswin.h"
 
 // The shell: wallpaper, desktop icons, taskbar (Start button, one button per
 // window, clock), Start menu and the mouse cursor. Windows themselves belong to
@@ -460,6 +461,7 @@ static __attribute__((noreturn)) void desktop_run(void) {
   for (;;) {
     g_desktop_loops++;
     app_programs_poll();
+    syswin_poll();
     while (ps2_poll(&ev)) {
       if (ev.type == PS2_EVENT_KEY) {
         if (ev.pressed && ev.ch == 27) {

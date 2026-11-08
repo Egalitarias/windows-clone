@@ -5,6 +5,7 @@
 #include "timer.h"
 #include "process.h"
 #include "sysfile.h"
+#include "syswin.h"
 
 #define MSR_EFER   0xC0000080U
 #define MSR_STAR   0xC0000081U
@@ -194,6 +195,18 @@ int64_t syscall_dispatch(uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3,
       return sysfile_close(a1);
     case SYS_READDIR:
       return sysfile_readdir(a1, a2);
+    case SYS_WIN_CREATE:
+      return syswin_create(a1, a2, a3);
+    case SYS_WIN_CLOSE:
+      return syswin_close(a1);
+    case SYS_WIN_BLIT:
+      return syswin_blit(a1, a2);
+    case SYS_WIN_FILL:
+      return syswin_fill(a1, a2);
+    case SYS_WIN_TEXT:
+      return syswin_text(a1, a2);
+    case SYS_WIN_EVENT:
+      return syswin_event(a1, a2, a3);
     case SYS_GETPID: {
       uint64_t pid = process_current_pid();
       return (int64_t)(pid != 0 ? pid : g_current_pid);

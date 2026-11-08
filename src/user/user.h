@@ -16,6 +16,13 @@
 #define SYS_CLOSE   7
 #define SYS_READDIR 8
 
+#define SYS_WIN_CREATE 9
+#define SYS_WIN_CLOSE  10
+#define SYS_WIN_BLIT   11
+#define SYS_WIN_FILL   12
+#define SYS_WIN_TEXT   13
+#define SYS_WIN_EVENT  14
+
 #define O_RDONLY 0   // file or directory
 #define O_WRONLY 1   // create or truncate; the data is stored by close()
 
@@ -58,6 +65,50 @@ static inline long open(const char *path, int flags) { return syscall3(SYS_OPEN,
 static inline long close(int fd) { return syscall3(SYS_CLOSE, fd, 0, 0); }
 // Next entry of an open directory: 1 = stored, 0 = no more, negative = error.
 static inline long readdir(int fd, dirent_t *out) { return syscall3(SYS_READDIR, fd, (long)out, 0); }
+
+// Windows. win_create makes a window whose client area is w x h pixels and returns
+// its id (or a negative error). You draw into a pixel surface (0x00RRGGBB) with
+// win_blit / win_fill / win_text; the desktop shows changes shortly afterwards.
+// Input arrives as events. Mouse positions are relative to the client area.
+#define EV_KEY        1   // ch = character (backspace, newline or printable)
+#define EV_MOUSE_DOWN 2
+#define EV_MOUSE_MOVE 3   // only while the button is held
+#define EV_MOUSE_UP   4
+#define EV_CLOSE      5   // the user closed the window; call win_close() and exit
+
+typedef struct {
+  uint32_t type;
+  int32_t x, y;
+  uint32_t ch;
+} win_event_t;
+
+// One drawing request; which fields count depends on the call:
+//   blit: x, y, w, h, ptr = w*h pixels (rows packed, no padding)
+//   fill: x, y, w, h, color
+//   text: x, y, ptr = string, color, scale = 1.. (8x8 font)
+typedef struct {
+  int32_t x, y, w, h;
+  uint32_t color;
+  uint32_t scale;
+  uint64_t ptr;
+} win_op_t;
+
+static inline long win_create(const char *title, int w, int h) { return syscall3(SYS_WIN_CREATE, (long)title, w, h); }
+static inline long win_close(int id) { return syscall3(SYS_WIN_CLOSE, id, 0, 0); }
+static inline long win_blit(int id, int x, int y, int w, int h, const uint32_t *pixels) {
+  win_op_t op = {x, y, w, h, 0, 0, (uint64_t)(unsigned long)pixels};
+  return syscall3(SYS_WIN_BLIT, id, (long)&op, 0);
+}
+static inline long win_fill(int id, int x, int y, int w, int h, uint32_t color) {
+  win_op_t op = {x, y, w, h, color, 0, 0};
+  return syscall3(SYS_WIN_FILL, id, (long)&op, 0);
+}
+static inline long win_text(int id, int x, int y, const char *s, uint32_t color, int scale) {
+  win_op_t op = {x, y, 0, 0, color, (uint32_t)scale, (uint64_t)(unsigned long)s};
+  return syscall3(SYS_WIN_TEXT, id, (long)&op, 0);
+}
+// Next event: 1 = stored in *ev, 0 = none (block = 0), negative = error (window gone).
+static inline long win_event(int id, win_event_t *ev, int block) { return syscall3(SYS_WIN_EVENT, id, (long)ev, block); }
 
 // Sleep for at least `ms` milliseconds; returns the time actually slept.
 static inline long sleep_ms(unsigned long ms) { return syscall3(SYS_SLEEP, (long)ms, 0, 0); }
