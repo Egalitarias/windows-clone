@@ -18,6 +18,11 @@ int scheduler_is_running(void);
 // Do not block or wait for another task while holding it.
 void scheduler_preempt_disable(void);
 void scheduler_preempt_enable(void);
+// Nesting depth of scheduler_preempt_disable(). A syscall that is aborted by a
+// kernel fault never reaches its matching enable, so the process code saves the
+// level at syscall entry and puts it back when it kills the process.
+unsigned int scheduler_preempt_level(void);
+void scheduler_preempt_restore(unsigned int level);
 
 // Called once, after all tasks complete. It may add new tasks (the desktop does);
 // if none are runnable afterwards the scheduler halts.

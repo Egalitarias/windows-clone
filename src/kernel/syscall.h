@@ -26,6 +26,8 @@
 #define SYS_READDIR 8   // readdir(fd, sysfile_dirent_t *out) -> 1 entry stored, 0 at the end
                         // read(fd, ...) and write(fd, ...) also take file descriptors (see sysfile.h)
 
+#define SYS_TEST_KFAULT 100   // USER_SELFTEST=9 only: faults in the kernel (kfault(hold_preempt_lock))
+
 #define SYSCALL_SLEEP_MAX_MS 3600000ULL   // one hour
 
 #define SYSCALL_ENOENT  (-2)

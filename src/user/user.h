@@ -6,6 +6,7 @@
 
 #include <stdint.h>
 
+#define SYS_TEST_KFAULT 100   // USER_SELFTEST=9 only
 #define SYS_EXIT    0
 #define SYS_WRITE   1
 #define SYS_YIELD   2

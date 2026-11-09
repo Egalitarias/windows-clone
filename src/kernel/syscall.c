@@ -157,8 +157,23 @@ static int64_t sys_sleep(uint64_t ms) {
   }
 }
 
+static int64_t syscall_dispatch_inner(uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3,
+                                      uint64_t a4, uint64_t a5);
+
+// Every syscall runs between enter and leave, so a ring-0 fault in the middle can
+// be blamed on (and kill) just the calling process. See process_handle_kernel_fault.
 int64_t syscall_dispatch(uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3,
                          uint64_t a4, uint64_t a5) {
+  int64_t rc;
+
+  process_syscall_enter();
+  rc = syscall_dispatch_inner(nr, a1, a2, a3, a4, a5);
+  process_syscall_leave();
+  return rc;
+}
+
+static int64_t syscall_dispatch_inner(uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3,
+                                      uint64_t a4, uint64_t a5) {
   (void)a3;
   (void)a4;
   (void)a5;
@@ -233,6 +248,15 @@ int64_t syscall_dispatch(uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3,
       uint64_t pid = process_current_pid();
       return (int64_t)(pid != 0 ? pid : g_current_pid);
     }
+#if defined(KERNEL_USER_SELFTEST) && KERNEL_USER_SELFTEST == 9
+    case SYS_TEST_KFAULT:
+      // Self-test only: fault inside the kernel on purpose. a1 = 1 holds the
+      // scheduler's preempt lock first, like the FAT driver does.
+      if (a1 == 1) {
+        scheduler_preempt_disable();
+      }
+      return *(volatile int64_t *)0;
+#endif
     default:
       return SYSCALL_ENOSYS;
   }

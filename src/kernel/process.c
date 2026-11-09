@@ -303,6 +303,44 @@ int process_handle_user_fault(uint64_t vector, uint64_t error_code, uint64_t rip
   user_return(p->saved_rsp, p->exit_code);
 }
 
+void process_syscall_enter(void) {
+  process_t *p = current_process();
+
+  if (p != 0) {
+    p->preempt_level = scheduler_preempt_level();
+    p->in_syscall = 1;
+  }
+}
+
+void process_syscall_leave(void) {
+  process_t *p = current_process();
+
+  if (p != 0) {
+    p->in_syscall = 0;
+  }
+}
+
+int process_handle_kernel_fault(uint64_t vector, uint64_t error_code, uint64_t rip, uint64_t fault_addr) {
+  process_t *p = current_process();
+
+  // NMI, double fault and machine check say the kernel itself is broken; do not
+  // try to carry on from those.
+  if (vector == 2 || vector == 8 || vector == 18) {
+    return 0;
+  }
+  if (p == 0 || !p->running || !p->in_syscall) {
+    return 0;
+  }
+  console_printf("[PROC] pid %llu killed: kernel fault in syscall: exception %llu (error 0x%llx) at rip 0x%llx, address 0x%llx\r\n",
+                 p->pid, vector, error_code, rip, fault_addr);
+  // The aborted syscall may have been holding the FAT driver's preempt lock.
+  scheduler_preempt_restore(p->preempt_level);
+  p->in_syscall = 0;
+  p->exit_code = PROCESS_EXIT_FAULT_BASE + vector;
+  // We are on the process's kernel stack; unwind to the code that called process_run.
+  user_return(p->saved_rsp, p->exit_code);
+}
+
 // ---- Spawning programs as scheduler tasks -----------------------------------
 
 #define SPAWN_MAX 8
@@ -1032,6 +1070,28 @@ static int hard_supervisor_task(void *arg) {
     }
   }
   failures += hard_expect(i == 6, "six more stack overflows (no leak)");
+
+  // A fault inside the kernel while serving a syscall must kill only that process.
+  h = process_spawn_arg("/APPS/KFAULT.BIN", "0");
+  failures += hard_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK &&
+                              code == PROCESS_EXIT_FAULT_BASE + 14,
+                          "kernel fault inside a syscall: process killed, kernel survives");
+  h = process_spawn_arg("/APPS/KFAULT.BIN", "1");
+  failures += hard_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK &&
+                              code == PROCESS_EXIT_FAULT_BASE + 14,
+                          "kernel fault while holding the preempt lock: process killed");
+  failures += hard_expect(scheduler_preempt_level() == 0, "preempt lock was released");
+  {
+    int a = process_spawn_arg("/APPS/KFAULT.BIN", "1");
+    int b = process_spawn("/APPS/HELLO.BIN");
+    uint64_t ca = 0, cb = 0;
+
+    failures += hard_expect(a >= 0 && b >= 0 &&
+                                process_wait(a, &ca) == PROCESS_OK && process_wait(b, &cb) == PROCESS_OK &&
+                                ca == PROCESS_EXIT_FAULT_BASE + 14 && cb == 7,
+                            "kernel fault next to a healthy program: the other one is unaffected");
+  }
+  failures += hard_expect(scheduler_preempt_level() == 0, "preempt lock still released");
   failures += hard_expect(process_live_count() == 0, "nothing leaked at the end");
 
   if (failures == 0) {

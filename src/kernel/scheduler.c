@@ -466,6 +466,14 @@ void scheduler_preempt_enable(void) {
   }
 }
 
+unsigned int scheduler_preempt_level(void) {
+  return g_preempt_disabled;
+}
+
+void scheduler_preempt_restore(unsigned int level) {
+  g_preempt_disabled = level;
+}
+
 TCB *scheduler_current_tcb(void) {
   if (!g_scheduler_started || g_current_index >= g_task_count) {
     return 0;

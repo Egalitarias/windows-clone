@@ -111,6 +111,12 @@ __attribute__((noreturn)) void exception_dispatch(uint64_t vector, uint64_t erro
       uint64_t cr2;
       __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
       process_handle_user_fault(vector, error_code, cpu[0], cr2);
+    } else {
+      // A fault in the kernel while it was serving a process's syscall: kill that
+      // process rather than the machine. Does not return when it applies.
+      uint64_t cr2;
+      __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+      process_handle_kernel_fault(vector, error_code, cpu[0], cr2);
     }
   }
 

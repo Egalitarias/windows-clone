@@ -50,6 +50,8 @@ typedef struct {
   const char *arg;            // argument string given to process_spawn_arg, or 0
   void *files;                // open-file table (sysfile.c), or 0
   int running;                // inside process_run (user code or one of its syscalls)
+  int in_syscall;             // between process_syscall_enter() and process_syscall_leave()
+  unsigned int preempt_level; // scheduler_preempt_level() when the current syscall began
 } process_t;
 
 // Load the flat binary at `path` (like "/APPS/HELLO.BIN", searched on every
@@ -117,8 +119,20 @@ int process_live_max(void);
 // process is running, so the caller can treat it as a kernel fault.
 int process_handle_user_fault(uint64_t vector, uint64_t error_code, uint64_t rip, uint64_t fault_addr);
 
+// Bracket every syscall (syscall_dispatch). While inside, a CPU exception in ring 0
+// is a kernel fault caused by that process's request, not by a kernel-wide bug.
+void process_syscall_enter(void);
+void process_syscall_leave(void);
+
+// Called for CPU exceptions that arrived in ring 0. If they happened inside a
+// syscall of a running process, that process is killed with
+// PROCESS_EXIT_FAULT_BASE + vector, the preempt lock the syscall may have held is
+// released, and control returns to the code that called process_run (this function
+// does not return). Returns 0 otherwise, so the caller treats it as a kernel crash.
+int process_handle_kernel_fault(uint64_t vector, uint64_t error_code, uint64_t rip, uint64_t fault_addr);
+
 #ifdef KERNEL_USER_SELFTEST
-void process_selftest(void);             // USER_SELFTEST=3: load and run /APPS/HELLO.BIN twice, then return
+void process_selftest(void);            // USER_SELFTEST=3: load and run /APPS/HELLO.BIN twice, then return
 void process_scheduler_selftest(void);   // USER_SELFTEST=4: add a supervisor task that spawns programs
 void process_desktop_selftest(void);     // USER_SELFTEST=5: same, with the desktop running as a task
 void process_isolation_selftest(void);   // USER_SELFTEST=6: concurrent processes in separate address spaces
