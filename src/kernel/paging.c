@@ -1,5 +1,6 @@
 #include "console.h"
 #include "paging.h"
+#include "irqlock.h"
 
 #define PAGE_SIZE_BYTES 4096ULL
 #define PAGE_PRESENT    0x001ULL
@@ -252,16 +253,16 @@ void paging_set_page_table_pool(void *pool, uint64_t size) {
   g_page_table_pool_used = 0;
 }
 
-int paging_map_range(uint64_t phys_start, uint64_t size) {
+static int paging_map_range_locked(uint64_t phys_start, uint64_t size) {
   return map_range_virt(phys_start, phys_start, size, PAGE_WRITE);
 }
 
-int paging_map_mmio(uint64_t phys_start, uint64_t size) {
+static int paging_map_mmio_locked(uint64_t phys_start, uint64_t size) {
   // PWT | PCD selects the strong-uncached PAT entry.
   return map_range_virt(phys_start, phys_start, size, PAGE_WRITE | 0x08ULL | 0x10ULL);
 }
 
-void paging_unmap_identity_range(uint64_t phys_start, uint64_t size) {
+static void paging_unmap_identity_range_locked(uint64_t phys_start, uint64_t size) {
   uint64_t addr;
   uint64_t end;
 
@@ -277,7 +278,7 @@ void paging_unmap_identity_range(uint64_t phys_start, uint64_t size) {
   }
 }
 
-int paging_map_user(uint64_t virt_start, uint64_t phys_start, uint64_t size, int writable) {
+static int paging_map_user_locked(uint64_t virt_start, uint64_t phys_start, uint64_t size, int writable) {
   uint64_t flags = PAGE_USER | (writable ? PAGE_WRITE : 0ULL);
   uint64_t offset;
   uint64_t total = align_up(size, PAGE_SIZE_BYTES);
@@ -317,7 +318,7 @@ uint64_t paging_kernel_cr3(void) {
   return (uint64_t)(uintptr_t)g_pml4;
 }
 
-void paging_activate(uint64_t cr3) {
+static void paging_activate_locked(uint64_t cr3) {
   if (g_pml4 == 0) {
     return;
   }
@@ -349,7 +350,7 @@ static uint64_t *alloc_user_table(void) {
   return table;
 }
 
-uint64_t paging_create_address_space(void) {
+static uint64_t paging_create_address_space_locked(void) {
   uint64_t *pml4;
   uint64_t i;
 
@@ -381,7 +382,7 @@ static uint64_t *user_table_next(uint64_t *parent, uint64_t index) {
   return child;
 }
 
-int paging_map_user_in(uint64_t cr3, uint64_t virt_start, uint64_t phys_start, uint64_t size, int writable) {
+static int paging_map_user_in_locked(uint64_t cr3, uint64_t virt_start, uint64_t phys_start, uint64_t size, int writable) {
   uint64_t *pml4 = (uint64_t *)(uintptr_t)cr3;
   uint64_t flags = PAGE_USER | PAGE_PRESENT | (writable ? PAGE_WRITE : 0ULL);
   uint64_t total = align_up(size, PAGE_SIZE_BYTES);
@@ -434,7 +435,7 @@ static void free_table_tree(uint64_t *table, int level) {
   pmm_free_page((uint64_t)(uintptr_t)table);
 }
 
-void paging_destroy_address_space(uint64_t cr3) {
+static void paging_destroy_address_space_locked(uint64_t cr3) {
   uint64_t *pml4 = (uint64_t *)(uintptr_t)cr3;
   uint64_t i;
 
@@ -490,7 +491,7 @@ int paging_user_range_ok(uint64_t virt, uint64_t len) {
   return 1;
 }
 
-void paging_unmap_user(uint64_t virt_start, uint64_t size) {
+static void paging_unmap_user_locked(uint64_t virt_start, uint64_t size) {
   uint64_t addr = align_down(virt_start, PAGE_SIZE_BYTES);
   uint64_t end = align_up(virt_start + size, PAGE_SIZE_BYTES);
 
@@ -501,4 +502,79 @@ void paging_unmap_user(uint64_t virt_start, uint64_t size) {
     clear_page_virt(addr);
     addr += PAGE_SIZE_BYTES;
   }
+}
+
+// ---- Locking ------------------------------------------------------------------
+// The page tables (the kernel's shared lower levels, the table pool, and the PML4
+// copy made for a new address space) are edited from several tasks and the timer
+// tick can switch between them, so every public editing function runs with
+// interrupts masked. The sections are short: one call maps at most a few hundred
+// pages. irq_save/irq_restore nest, so calls from code that already masks are fine.
+
+int paging_map_range(uint64_t phys_start, uint64_t size) {
+  uint64_t flags = irq_save();
+  int result = paging_map_range_locked(phys_start, size);
+
+  irq_restore(flags);
+  return result;
+}
+
+int paging_map_mmio(uint64_t phys_start, uint64_t size) {
+  uint64_t flags = irq_save();
+  int result = paging_map_mmio_locked(phys_start, size);
+
+  irq_restore(flags);
+  return result;
+}
+
+void paging_unmap_identity_range(uint64_t phys_start, uint64_t size) {
+  uint64_t flags = irq_save();
+
+  paging_unmap_identity_range_locked(phys_start, size);
+  irq_restore(flags);
+}
+
+int paging_map_user(uint64_t virt_start, uint64_t phys_start, uint64_t size, int writable) {
+  uint64_t flags = irq_save();
+  int result = paging_map_user_locked(virt_start, phys_start, size, writable);
+
+  irq_restore(flags);
+  return result;
+}
+
+uint64_t paging_create_address_space(void) {
+  uint64_t flags = irq_save();
+  uint64_t result = paging_create_address_space_locked();
+
+  irq_restore(flags);
+  return result;
+}
+
+int paging_map_user_in(uint64_t cr3, uint64_t virt_start, uint64_t phys_start, uint64_t size, int writable) {
+  uint64_t flags = irq_save();
+  int result = paging_map_user_in_locked(cr3, virt_start, phys_start, size, writable);
+
+  irq_restore(flags);
+  return result;
+}
+
+void paging_destroy_address_space(uint64_t cr3) {
+  uint64_t flags = irq_save();
+
+  paging_destroy_address_space_locked(cr3);
+  irq_restore(flags);
+}
+
+void paging_unmap_user(uint64_t virt_start, uint64_t size) {
+  uint64_t flags = irq_save();
+
+  paging_unmap_user_locked(virt_start, size);
+  irq_restore(flags);
+}
+
+void paging_activate(uint64_t cr3) {
+  uint64_t flags = irq_save();
+
+  paging_activate_locked(cr3);
+  irq_restore(flags);
 }

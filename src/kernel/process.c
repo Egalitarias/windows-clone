@@ -136,7 +136,7 @@ static void create_cleanup(process_t *p) {
   p->image_phys = 0;
 }
 
-int process_create(const char *path, process_t *p) {
+static int process_create_locked(const char *path, process_t *p) {
   fat_volume_t *vol = 0;
   fat_dirent_t ent;
   uint64_t image_bytes;
@@ -212,6 +212,17 @@ int process_create(const char *path, process_t *p) {
     irq_restore(flags);
   }
   return PROCESS_OK;
+}
+
+// Finding the file and reading it are separate FAT calls; keep other tasks from
+// switching in between so the directory cannot change under the loader.
+int process_create(const char *path, process_t *p) {
+  int rc;
+
+  scheduler_preempt_disable();
+  rc = process_create_locked(path, p);
+  scheduler_preempt_enable();
+  return rc;
 }
 
 // Called by the exit syscall on the process's kernel stack: jump back into

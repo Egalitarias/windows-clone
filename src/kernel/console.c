@@ -1,4 +1,5 @@
 #include "console.h"
+#include "scheduler.h"
 
 // UEFI types and structures
 typedef unsigned char UINT8;
@@ -127,6 +128,7 @@ void console_write_string(const char *str) {
   if (str == 0) {
     return;
   }
+  scheduler_preempt_disable();   // keep one string (and the shared wide buffer) together
 
   original = str;
   while (*str) {
@@ -137,6 +139,7 @@ void console_write_string(const char *str) {
     wide = ascii_to_wide(original);
     console_write_wide_string(wide);
   }
+  scheduler_preempt_enable();
 }
 
 void console_write_char(char c) {
@@ -152,6 +155,7 @@ void console_newline(void) {
 void console_printf(const char *fmt, ...) {
   if (fmt == 0) return;
 
+  scheduler_preempt_disable();   // a whole message stays in one piece when tasks print at once
   __builtin_va_list args;
   __builtin_va_start(args, fmt);
 
@@ -225,4 +229,5 @@ void console_printf(const char *fmt, ...) {
   }
 
   __builtin_va_end(args);
+  scheduler_preempt_enable();
 }

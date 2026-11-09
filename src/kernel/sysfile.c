@@ -3,6 +3,7 @@
 #include "heap.h"
 #include "paging.h"
 #include "process.h"
+#include "scheduler.h"
 #include "string.h"
 #include "syscall.h"
 #include "syswin.h"
@@ -327,7 +328,12 @@ int64_t sysfile_open(uint64_t path_uaddr, uint64_t flags) {
   if (f == 0) {
     return SYSCALL_EMFILE;
   }
+  // Each fat_* call is atomic on its own, but opening is a lookup followed by a read
+  // (or a parent lookup followed by a name lookup). Keep other tasks from switching in
+  // between so the directory cannot change under us.
+  scheduler_preempt_disable();
   r = (flags == SYSFILE_O_WRONLY) ? open_write(f, path) : open_read(f, path);
+  scheduler_preempt_enable();
   if (r < 0) {
     release(f);
     return r;
