@@ -48,7 +48,16 @@
 #define DOUBLE_CLICK_MS   400
 #define DOUBLE_CLICK_SLOP 5
 
+#define CLOCK_W      100
+#define TZ_STEP_MIN  30
+#define TZ_MIN       (-12 * 60)
+#define TZ_MAX       (14 * 60)
+
 static char g_clock[6] = "--:--";
+static char g_date[11] = "";
+static char g_zone[10] = "";
+static int g_tz_offset_min = 0;     // local time = RTC (UTC) + this; not persisted yet
+static void update_clock(void);
 static int g_icon_selected = -1;
 static uint64_t g_last_click_ms = 0;
 static int g_last_click_x = -9999, g_last_click_y = -9999;
@@ -137,7 +146,9 @@ static void draw_taskbar(void) {
     fb_draw_text(slot_x + 10, y + 16, label, COL_WHITE, 1);
     slot_x += TASK_PITCH;
   }
-  fb_draw_text(w - 8 * 5 - 14, y + 16, g_clock, COL_WHITE, 1);
+  fb_draw_text(w - CLOCK_W + (CLOCK_W - 8 * 5) / 2, y + 5, g_clock, COL_WHITE, 1);
+  fb_draw_text(w - CLOCK_W + (CLOCK_W - 8 * 10) / 2, y + 16, g_date, COL_WHITE, 1);
+  fb_draw_text(w - CLOCK_W + (CLOCK_W - 8 * 9) / 2, y + 27, g_zone, FB_RGB(150, 165, 200), 1);
 }
 
 static void draw_menu(void) {
@@ -319,6 +330,16 @@ static void handle_click(int x, int y, int double_click) {
   }
   // Taskbar
   if (y >= bar_y()) {
+    // Clock: left half steps the time zone back, right half forward.
+    if (x >= (int)fb_width() - CLOCK_W) {
+      int step = (x < (int)fb_width() - CLOCK_W / 2) ? -TZ_STEP_MIN : TZ_STEP_MIN;
+      int next = g_tz_offset_min + step;
+      if (next >= TZ_MIN && next <= TZ_MAX) {
+        g_tz_offset_min = next;
+        update_clock();
+      }
+      return;
+    }
     taskbar_click(x);
     return;
   }
@@ -340,26 +361,53 @@ static void handle_click(int x, int y, int double_click) {
   select_icon(-1);
 }
 
-static void update_clock(void) {
-  int h, m, s;
-  char text[6];
+static void put2(char *p, int v) {
+  p[0] = (char)('0' + v / 10);
+  p[1] = (char)('0' + v % 10);
+}
 
-  if (!rtc_read_time(&h, &m, &s)) {
+static void update_clock(void) {
+  int y, mo, d, h, m, i, off, changed = 0;
+  char text[6], date[11], zone[10];
+
+  if (!rtc_read_local(g_tz_offset_min, &y, &mo, &d, &h, &m)) {
     return;
   }
-  text[0] = (char)('0' + h / 10);
-  text[1] = (char)('0' + h % 10);
+  put2(text, h);
   text[2] = ':';
-  text[3] = (char)('0' + m / 10);
-  text[4] = (char)('0' + m % 10);
+  put2(text + 3, m);
   text[5] = 0;
-  if (text[0] != g_clock[0] || text[1] != g_clock[1] || text[3] != g_clock[3] ||
-      text[4] != g_clock[4]) {
-    int i;
-    for (i = 0; i < 6; i++) {
-      g_clock[i] = text[i];
-    }
-    wm_invalidate((int)fb_width() - 80, bar_y(), 80, TASKBAR_H);
+  date[0] = (char)('0' + y / 1000 % 10);
+  date[1] = (char)('0' + y / 100 % 10);
+  date[2] = (char)('0' + y / 10 % 10);
+  date[3] = (char)('0' + y % 10);
+  date[4] = '-';
+  put2(date + 5, mo);
+  date[7] = '-';
+  put2(date + 8, d);
+  date[10] = 0;
+  off = g_tz_offset_min < 0 ? -g_tz_offset_min : g_tz_offset_min;
+  zone[0] = 'U'; zone[1] = 'T'; zone[2] = 'C';
+  zone[3] = g_tz_offset_min < 0 ? '-' : '+';
+  put2(zone + 4, off / 60);
+  zone[6] = ':';
+  put2(zone + 7, off % 60);
+  zone[9] = 0;
+
+  for (i = 0; i < 6; i++) {
+    if (text[i] != g_clock[i]) { changed = 1; }
+  }
+  for (i = 0; i < 11; i++) {
+    if (date[i] != g_date[i]) { changed = 1; }
+  }
+  for (i = 0; i < 10; i++) {
+    if (zone[i] != g_zone[i]) { changed = 1; }
+  }
+  if (changed) {
+    for (i = 0; i < 6; i++)  { g_clock[i] = text[i]; }
+    for (i = 0; i < 11; i++) { g_date[i] = date[i]; }
+    for (i = 0; i < 10; i++) { g_zone[i] = zone[i]; }
+    wm_invalidate((int)fb_width() - CLOCK_W, bar_y(), CLOCK_W, TASKBAR_H);
   }
 }
 

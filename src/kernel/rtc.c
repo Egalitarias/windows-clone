@@ -93,3 +93,47 @@ int rtc_read_date(int *year, int *month, int *day) {
   *day = d;
   return 1;
 }
+
+static int days_in_month(int year, int month) {
+  static const char dim[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  int leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+  return (month == 2 && leap) ? 29 : dim[month - 1];
+}
+
+int rtc_read_local(int offset_min, int *year, int *month, int *day,
+                   int *hour, int *minute) {
+  int h, m, s, y, mo, d, total;
+
+  // Read the date on both sides of the time so a midnight rollover between
+  // the two reads cannot pair a new time with the old date.
+  if (!rtc_read_date(&y, &mo, &d) || !rtc_read_time(&h, &m, &s)) {
+    return 0;
+  }
+  {
+    int y2, mo2, d2;
+    if (rtc_read_date(&y2, &mo2, &d2) && (d2 != d || mo2 != mo || y2 != y)) {
+      y = y2; mo = mo2; d = d2;
+      if (!rtc_read_time(&h, &m, &s)) {
+        return 0;
+      }
+    }
+  }
+  total = h * 60 + m + offset_min;
+  while (total < 0) {
+    total += 24 * 60;
+    if (--d < 1) {
+      if (--mo < 1) { mo = 12; y--; }
+      d = days_in_month(y, mo);
+    }
+  }
+  while (total >= 24 * 60) {
+    total -= 24 * 60;
+    if (++d > days_in_month(y, mo)) {
+      d = 1;
+      if (++mo > 12) { mo = 1; y++; }
+    }
+  }
+  *year = y; *month = mo; *day = d;
+  *hour = total / 60; *minute = total % 60;
+  return 1;
+}
