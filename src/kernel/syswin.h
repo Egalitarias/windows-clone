@@ -15,7 +15,7 @@
 // Pixels are 0x00RRGGBB. The surface is the window's client area; mouse positions
 // are relative to it.
 
-#define SYSWIN_MAX          4          // windows on the system
+#define SYSWIN_MAX          8          // windows on the system
 #define SYSWIN_MAX_PER_PROC 2
 #define SYSWIN_MIN_SIZE     16
 #define SYSWIN_MAX_W        800
@@ -116,6 +116,8 @@ int sys_copy_user_string(uint64_t uaddr, char *out, uint64_t max);
 // edge to this client size; syswin_test_size reports the first window's surface size.
 void syswin_test_resize(int client_w, int client_h);
 int syswin_test_size(int *w, int *h);
+int syswin_test_pixel(int x, int y);         // 0x00RRGGBB of a pixel of the first open window, -1 if none
+int syswin_test_count(uint32_t color);       // pixels of that colour in the first open window
 int syswin_test_active(void);   // windows the program can use right now
 int syswin_test_used(void);     // slots in use in any state
 void syswin_test_inject(uint32_t type, int x, int y, uint32_t ch);

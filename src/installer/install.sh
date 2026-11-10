@@ -30,7 +30,8 @@ Usage:
 
 Options:
   --source-dir <path>      Source directory containing BOOTX64.EFI/KERNEL.BIN
-                           or EFI/BOOT/BOOTX64.EFI + KERNEL.BIN
+                           or EFI/BOOT/BOOTX64.EFI + KERNEL.BIN, and optionally
+                           an APPS folder with the programs (copied to <ESP>/APPS)
                            (default: current directory)
   --esp-mount <path>       Mountpoint of EFI System Partition (default: /boot/efi)
   --esp-device <device>    Block device to mount as ESP if --esp-mount is not mounted
@@ -226,6 +227,32 @@ else
     }
 
     log_info "Installed BOOTX64.EFI and KERNEL.BIN to $TARGET_BOOT_DIR"
+fi
+
+# The programs (Notes, Files, Paint, ...) live in <ESP>/APPS; the kernel loads them from there.
+APPS_SOURCE="$SOURCE_DIR/APPS"
+TARGET_APPS="$ESP_MOUNT/APPS"
+if [ -d "$APPS_SOURCE" ]; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log_info "[dry-run] Would copy $APPS_SOURCE/*.BIN -> $TARGET_APPS"
+    else
+        mkdir -p "$TARGET_APPS"
+        for program in "$APPS_SOURCE"/*.BIN; do
+            [ -f "$program" ] || continue
+            cp "$program" "$TARGET_APPS/"
+        done
+        sync
+        for program in "$APPS_SOURCE"/*.BIN; do
+            [ -f "$program" ] || continue
+            cmp -s "$program" "$TARGET_APPS/$(basename "$program")" || {
+                log_error "Verification failed for $(basename "$program")"
+                exit 1
+            }
+        done
+        log_info "Installed programs to $TARGET_APPS"
+    fi
+else
+    log_warn "No APPS folder in $SOURCE_DIR: Notes, Files and the other programs will not be installed."
 fi
 
 if [ "$MOUNTED_BY_SCRIPT" -eq 1 ]; then

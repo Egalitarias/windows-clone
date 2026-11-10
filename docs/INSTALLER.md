@@ -11,6 +11,7 @@ FAT32 formatter), `nvme.c`, `disk.c`. Open it from **Start > Setup**.
 2. You pick a disk, press **Install to selected disk**, then confirm with
    **Erase and install** (the confirmation names the disk in red).
 3. Reads both boot files into memory, so nothing depends on the source after this point.
+   (The programs in `\APPS` are copied later, one at a time, from the same medium.)
 4. Clears the first and last MiB of the disk and writes a fresh **GPT**: protective MBR,
    primary and backup headers, primary and backup entry arrays, CRC-32 on all of them,
    random disk and partition GUIDs.
@@ -18,12 +19,20 @@ FAT32 formatter), `nvme.c`, `disk.c`. Open it from **Start > Setup**.
    - partition 2: **data** (basic data type), the rest of the disk, 1 MiB aligned
 5. Rescans partitions, formats both as **FAT32** (labels `ESP` and `WINCLONE`).
 6. Mounts the new ESP, creates `\EFI\BOOT`, copies `BOOTX64.EFI` and `KERNEL.BIN`, and
-   reads each back and compares it byte for byte.
+   reads each back and compares it byte for byte. Then it creates `\APPS` on the ESP and
+   copies every file of the medium's `\APPS` folder (Notes, Files, Paint, About and the
+   other programs) the same way. **The desktop's Notes and Files are those programs, so a
+   system without `\APPS` cannot open or edit files**: if the medium has no `\APPS`, Setup
+   says so in the log and the installed system shows a message window instead.
 7. Remounts everything. Files and Notes notice (via `fs_generation()`) and refresh or
    refuse to save through stale volume pointers.
 
 Progress is shown live in the log. Afterwards shut down, remove the installation medium
 and boot from the new disk: UEFI's fallback path `\EFI\BOOT\BOOTX64.EFI` starts it.
+
+The Linux script (`src/installer/install.sh`) and the VM / VirtualBox disk images
+(`make vm-disk`, `make vbox-disk`) ship the programs too: the installer package has an
+`APPS` folder next to `EFI`, and they put it at `<ESP>/APPS`.
 
 New files created in Notes go to the first volume without an `\EFI` folder (the data
 partition), never the ESP.

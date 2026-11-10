@@ -1,13 +1,13 @@
 # Storage and file system
 
 Source: `pci.c`, `ahci.c`, `nvme.c`, `disk.c`, `block.c`, `fat32.c`, `fs.c` (kernel) and
-the Files app (`explorer.c`). Partitioning, formatting and the installer are in
+the Files app (`src/user/explorer.c`, a user program). Partitioning, formatting and the installer are in
 `INSTALLER.md`. Host tools: `scripts/make-disk-image.py`, `scripts/fat32-ls.py`.
 
 ## Stack
 
 ```
-Files app / Notes (explorer.c, apps.c)
+Files app / Notes (user programs: explorer.c, notes.c)
         |
 fs.c        mounted FAT32 volumes (fs_volume(i))
 fat32.c     FAT16 and FAT32: long names, read, write, mkdir, delete

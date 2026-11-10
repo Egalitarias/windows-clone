@@ -231,11 +231,11 @@ static void launch(int which) {
   } else if (which == 1) {
     app_launch_notes();
   } else if (which == 2) {
-    app_paint_open();
+    app_launch_paint();
   } else if (which == 3) {
     app_programs_open();
   } else if (which == 4) {
-    app_about_open();
+    app_launch_about();
   } else {
     app_setup_open();
   }
@@ -455,10 +455,7 @@ static __attribute__((noreturn)) void desktop_run(void) {
   }
   last_second = timer_get_ms();
 
-#ifdef KERNEL_USER_SELFTEST
-  app_notes_open();                                 // the self-tests count user windows: keep them out
-  app_files_open();
-#else
+#ifndef KERNEL_USER_SELFTEST                        // the self-tests count user windows: keep them out
   app_launch_notes();
   app_launch_files();
 #endif

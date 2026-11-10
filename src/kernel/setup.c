@@ -10,8 +10,8 @@
 
 // Setup: installs WinClone onto a disk. It erases the chosen disk, writes a GPT
 // with an EFI System Partition and a data partition, formats both as FAT32,
-// copies \EFI\BOOT\BOOTX64.EFI and KERNEL.BIN from the boot medium into the ESP
-// and reads them back to verify. The disk the system booted from is refused.
+// copies \EFI\BOOT\BOOTX64.EFI and KERNEL.BIN, and the programs in \APPS, from the boot
+// medium into the ESP and reads them back to verify. The disk the system booted from is refused.
 
 #define MAX_LOG       8
 #define LOG_LEN       80
@@ -48,6 +48,8 @@ static uint8_t g_boot_file[MAX_BOOT_FILE];
 static uint8_t g_kernel_file[MAX_KERNEL_FILE];
 static uint8_t g_verify[MAX_KERNEL_FILE];
 static fat_volume_t g_target;               // the freshly formatted ESP
+static fat_volume_t *g_src_vol;             // the volume the boot files were read from
+static fat_iter_t g_apps_iter;
 
 // ---- helpers ---------------------------------------------------------------
 
@@ -137,6 +139,7 @@ static int load_sources(uint32_t *boot_len, uint32_t *kernel_len) {
         log_line("Could not read the boot files", 0);
         return 0;
       }
+      g_src_vol = v;
       return 1;
     }
   }
@@ -169,6 +172,45 @@ static int copy_and_verify(fat_volume_t *v, uint32_t dir, const char *name,
       memcmp(g_verify, src, len) != 0) {
     return 0;
   }
+  return 1;
+}
+
+// Copy every file of \APPS on the boot medium to \APPS on the new ESP (Notes, Files, Paint
+// and the other programs the kernel starts from there). A medium without \APPS is not
+// an error, but the installed system will then have no programs. Uses g_kernel_file as
+// the buffer, so call it after the kernel has been copied.
+static int copy_apps(void) {
+  fat_dirent_t apps, e;
+  uint32_t dir = 0, len = 0;
+  int count = 0;
+  char num[12];
+
+  if (g_src_vol == 0 || !fat_lookup(g_src_vol, g_src_vol->root_cluster, "APPS", &apps) ||
+      !(apps.attr & FAT_ATTR_DIR)) {
+    log_line("  no \\APPS folder on the medium: the programs are not installed", 0);
+    return 1;
+  }
+  if (!fat_mkdir(&g_target, g_target.root_cluster, "APPS", &dir)) {
+    return 0;
+  }
+  fat_iter_open(g_src_vol, apps.first_cluster, &g_apps_iter);
+  while (fat_iter_next(&g_apps_iter, &e)) {
+    if ((e.attr & FAT_ATTR_DIR) != 0 || e.size == 0) {
+      continue;
+    }
+    if (e.size > MAX_KERNEL_FILE) {
+      log_line("  skipped (too large): ", e.name);
+      continue;
+    }
+    if (!fat_read_file(g_src_vol, &e, g_kernel_file, MAX_KERNEL_FILE, &len) ||
+        !copy_and_verify(&g_target, dir, e.name, g_kernel_file, len)) {
+      log_line("FAILED: copying ", e.name);
+      return 0;
+    }
+    ++count;
+  }
+  u32_to_str((uint32_t)count, num);
+  log_line("  programs copied and verified: ", num);
   return 1;
 }
 
@@ -265,7 +307,14 @@ static void run_install(int disk) {
     return;
   }
   log_line("  KERNEL.BIN copied and verified", 0);
+  log_line("Copying programs to \\APPS", 0);
+  if (!copy_apps()) {
+    log_line("FAILED: could not copy the programs", 0);
+    g_state = STATE_DONE;
+    return;
+  }
 
+  g_src_vol = 0;
   fs_rescan();
   detect_boot_disk();
   log_line("Installation complete.", 0);

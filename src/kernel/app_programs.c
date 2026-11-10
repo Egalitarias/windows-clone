@@ -371,20 +371,52 @@ static int launch_user_program(const char *path) {
   return process_spawn_detached(path, 0) == PROCESS_OK;
 }
 
+// Tell the user why `path` did not start.
+static void launch_failed(const char *what, const char *path) {
+  char line[100];
+  size_t n = str_copy(line, "Cannot start ", sizeof(line));
+
+  str_copy(line + n, path, sizeof(line) - n);
+  if (!process_program_exists(path)) {
+    app_message_open(what, line, "The program file was not found on any disk.",
+                     "Programs live in the \\APPS folder next to the kernel.");
+  } else {
+    app_message_open(what, line, "No free window or program slot: close something and try again.", 0);
+  }
+}
+
+// A single-instance program: raise it if it runs, else start it, else `fallback` (a
+// built-in app) or, with none, a message window.
+static void launch_single(const char *path, const char *what, void (*fallback)(void)) {
+  uint64_t pid = 0;
+
+  if (process_spawn_active(path, &pid)) {
+    syswin_raise_pid(pid);
+    return;
+  }
+  if (!launch_user_program(path)) {
+    if (fallback != 0) {
+      fallback();
+    } else {
+      launch_failed(what, path);
+    }
+  }
+}
+
 void app_launch_notes(void) {
   if (!launch_user_program(NOTES_PROGRAM)) {
-    app_notes_open();
+    launch_failed("Notes", NOTES_PROGRAM);
   }
 }
 
 void app_launch_files(void) {
-  uint64_t pid = 0;
+  launch_single(EXPLORER_PROGRAM, "Files", 0);
+}
 
-  if (process_spawn_active(EXPLORER_PROGRAM, &pid)) {
-    syswin_raise_pid(pid);                          // one Explorer: bring it back
-    return;
-  }
-  if (!launch_user_program(EXPLORER_PROGRAM)) {
-    app_files_open();
-  }
+void app_launch_paint(void) {
+  launch_single("/APPS/PAINT.BIN", "Paint", app_paint_open);
+}
+
+void app_launch_about(void) {
+  launch_single("/APPS/ABOUT.BIN", "About", app_about_open);
 }

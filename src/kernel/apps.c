@@ -15,245 +15,52 @@ static void next_position(int *x, int *y) {
   g_cascade = (g_cascade + 1) % 8;
 }
 
-// ---- Notes -----------------------------------------------------------------
+// ---- Message ---------------------------------------------------------------
+// Shown when a program that should open (Notes, Files) cannot be started. One window,
+// reused if it is already open.
 
-#define NOTES_INSTANCES 4
-#define NOTES_MAX       4096
-#define NOTES_STATUS_H  16
+#define MSG_LINES 3
+#define MSG_LEN   100
 
-typedef struct {
-  int in_use;
-  int len;
-  int has_file;                 // loaded from / saved to a file
-  fat_volume_t *vol;
-  unsigned int generation;      // fs_generation() when vol was taken
-  uint32_t dir_cluster;
-  char file[FAT_NAME_MAX];
-  char status[48];
-  char text[NOTES_MAX + 1];
-} NotesData;
+static char g_msg[MSG_LINES][MSG_LEN];
+static wm_window_t *g_msg_win = 0;
 
-static NotesData g_notes[NOTES_INSTANCES];
-static uint8_t g_io_buf[NOTES_MAX * 2 + 16];     // file <-> text conversion buffer
-
-static void notes_paint(wm_window_t *win, int cx, int cy, int cw, int ch) {
-  NotesData *d = (NotesData *)win->data;
-  int text_h = ch - NOTES_STATUS_H;
-  int cols = (cw - 16) / FB_FONT_WIDTH;
-  int rows = (text_h - 16) / 12;
-  int i, row = 0, col = 0;
-
-  fb_fill_rect(cx + 4, cy + 4, cw - 8, text_h - 4, FB_RGB(255, 255, 255));
-
-  // Status line
-  fb_fill_rect(cx, cy + ch - NOTES_STATUS_H, cw, NOTES_STATUS_H, FB_RGB(228, 230, 238));
-  fb_draw_text(cx + 6, cy + ch - NOTES_STATUS_H + 4,
-               d->status[0] ? d->status : "Ctrl+S saves", FB_RGB(70, 75, 95), 1);
-
-  if (cols < 1 || rows < 1) {
-    return;
-  }
-  for (i = 0; i < d->len; i++) {
-    if (d->text[i] == '\n') {
-      row++;
-      col = 0;
-      continue;
-    }
-    if (col >= cols) {
-      row++;
-      col = 0;
-    }
-    if (row >= rows) {
-      return;
-    }
-    fb_draw_char(cx + 8 + col * FB_FONT_WIDTH, cy + 8 + row * 12, d->text[i], COL_TEXT, 1);
-    col++;
-  }
-  if (col >= cols) {
-    row++;
-    col = 0;
-  }
-  if (row < rows) {
-    fb_draw_char(cx + 8 + col * FB_FONT_WIDTH, cy + 8 + row * 12, '_', FB_RGB(40, 90, 190), 1);
-  }
-}
-
-static void notes_set_title(wm_window_t *win, const char *file) {
-  char title[WM_TITLE_CHARS];
-  int n = (int)str_copy(title, "Notes - ", sizeof(title));
-  str_copy(title + n, file, sizeof(title) - (size_t)n);
-  wm_set_title(win, title);
-}
-
-static void notes_set_status(NotesData *d, const char *a, const char *b) {
-  int n = (int)str_copy(d->status, a, sizeof(d->status));
-  if (b) {
-    str_copy(d->status + n, b, sizeof(d->status) - (size_t)n);
-  }
-}
-
-// Save to the associated file, or to a new NOTEn.TXT on the default volume.
-static void notes_save(wm_window_t *win) {
-  NotesData *d = (NotesData *)win->data;
-  fat_volume_t *vol = d->has_file ? d->vol : fs_default_volume();
-  uint32_t dir, len = 0;
+static void msg_paint(wm_window_t *win, int cx, int cy, int cw, int ch) {
   int i;
 
-  if (d->has_file && d->generation != fs_generation()) {
-    notes_set_status(d, "Disks changed since this file was opened: cannot save", 0);
-    wm_invalidate_window(win);
-    return;
-  }
-
-  if (!vol) {
-    notes_set_status(d, "No disk available", 0);
-    wm_invalidate_window(win);
-    return;
-  }
-  dir = d->has_file ? d->dir_cluster : vol->root_cluster;
-  if (!d->has_file) {
-    fat_dirent_t probe;
-    int n;
-    for (n = 1; n < 1000; n++) {
-      char name[16];
-      int k = (int)str_copy(name, "NOTE", sizeof(name));
-      k += u32_to_str((uint32_t)n, name + k);
-      str_copy(name + k, ".TXT", sizeof(name) - (size_t)k);
-      if (!fat_lookup(vol, dir, name, &probe)) {
-        str_copy(d->file, name, sizeof(d->file));
-        break;
-      }
-    }
-  }
-  for (i = 0; i < d->len; i++) {            // text uses LF; files use CR LF
-    if (d->text[i] == '\n') {
-      g_io_buf[len++] = '\r';
-    }
-    g_io_buf[len++] = (uint8_t)d->text[i];
-  }
-  if (fat_write_file(vol, dir, d->file, g_io_buf, len)) {
-    d->has_file = 1;
-    d->vol = vol;
-    d->generation = fs_generation();
-    d->dir_cluster = dir;
-    notes_set_title(win, d->file);
-    notes_set_status(d, "Saved ", d->file);
-  } else {
-    notes_set_status(d, "Save failed", 0);
-  }
-  wm_invalidate_window(win);
-}
-
-static void notes_key(wm_window_t *win, char ch) {
-  NotesData *d = (NotesData *)win->data;
-
-  if (ch == 0x13) {                         // Ctrl+S
-    notes_save(win);
-    return;
-  }
-  if (ch == '\b') {
-    if (d->len > 0) {
-      d->len--;
-      d->text[d->len] = 0;
-    }
-  } else if ((ch == '\n' || (ch >= 0x20 && ch <= 0x7E)) && d->len < NOTES_MAX) {
-    d->text[d->len++] = ch;
-    d->text[d->len] = 0;
-  } else {
-    return;
-  }
-  d->status[0] = 0;
-  wm_invalidate_window(win);
-}
-
-static void notes_closing(wm_window_t *win) {
-  NotesData *d = (NotesData *)win->data;
-  if (d) {
-    d->in_use = 0;
+  (void)win;
+  (void)cw;
+  (void)ch;
+  for (i = 0; i < MSG_LINES; i++) {
+    fb_draw_text(cx + 16, cy + 16 + i * 16, g_msg[i], i == 0 ? FB_RGB(170, 40, 40) : COL_TEXT, 1);
   }
 }
 
-static NotesData *notes_alloc(void) {
-  int i;
-  for (i = 0; i < NOTES_INSTANCES; i++) {
-    if (!g_notes[i].in_use) {
-      g_notes[i].in_use = 1;
-      g_notes[i].len = 0;
-      g_notes[i].text[0] = 0;
-      g_notes[i].has_file = 0;
-      g_notes[i].vol = 0;
-      g_notes[i].dir_cluster = 0;
-      g_notes[i].file[0] = 0;
-      g_notes[i].status[0] = 0;
-      return &g_notes[i];
-    }
-  }
-  return 0;
+static void msg_closing(wm_window_t *win) {
+  (void)win;
+  g_msg_win = 0;
 }
 
-static wm_window_t *notes_window(NotesData *d, const char *title) {
+void app_message_open(const char *title, const char *line1, const char *line2, const char *line3) {
   int x, y;
-  wm_window_t *win;
 
+  str_copy(g_msg[0], line1 ? line1 : "", MSG_LEN);
+  str_copy(g_msg[1], line2 ? line2 : "", MSG_LEN);
+  str_copy(g_msg[2], line3 ? line3 : "", MSG_LEN);
+  if (g_msg_win) {
+    wm_set_title(g_msg_win, title);
+    wm_restore(g_msg_win);
+    return;
+  }
   next_position(&x, &y);
-  win = wm_create(title, x, y, 460, 300);
-  if (!win) {
-    d->in_use = 0;
-    return 0;
-  }
-  win->data = d;
-  win->paint = notes_paint;
-  win->key = notes_key;
-  win->closing = notes_closing;
-  win->min_w = 220;
-  win->min_h = 140;
-  return win;
-}
-
-void app_notes_open(void) {
-  NotesData *d = notes_alloc();
-  if (d) {
-    notes_window(d, "Notes");
-  }
-}
-
-void app_notes_open_file(fat_volume_t *vol, const fat_dirent_t *ent) {
-  NotesData *d = notes_alloc();
-  uint32_t got = 0, i;
-  wm_window_t *win;
-
-  if (!d) {
+  g_msg_win = wm_create(title, x, y, 520, 110);
+  if (!g_msg_win) {
     return;
   }
-  win = notes_window(d, "Notes");
-  if (!win) {
-    return;
-  }
-  d->has_file = 1;
-  d->vol = vol;
-  d->generation = fs_generation();
-  d->dir_cluster = ent->dir_cluster;
-  str_copy(d->file, ent->name, sizeof(d->file));
-  notes_set_title(win, d->file);
-
-  if (fat_read_file(vol, ent, g_io_buf, NOTES_MAX * 2, &got)) {
-    for (i = 0; i < got && d->len < NOTES_MAX; i++) {
-      uint8_t c = g_io_buf[i];
-      if (c == '\r') {
-        continue;
-      }
-      if (c == '\n' || c == '\t' || (c >= 0x20 && c <= 0x7E)) {
-        d->text[d->len++] = (c == '\t') ? ' ' : (char)c;
-      }
-    }
-    d->text[d->len] = 0;
-    if (got > NOTES_MAX) {
-      notes_set_status(d, "File truncated to 4096 bytes: do not save", 0);
-    }
-  } else {
-    notes_set_status(d, "Could not read file", 0);
-  }
-  wm_invalidate_window(win);
+  g_msg_win->paint = msg_paint;
+  g_msg_win->closing = msg_closing;
+  g_msg_win->min_w = 200;
+  g_msg_win->min_h = 80;
 }
 
 // ---- Paint -----------------------------------------------------------------

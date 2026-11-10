@@ -976,6 +976,10 @@ static int wait_for(int (*cond)(void), int ticks) {
 
 static int cond_has_window(void) { return syswin_test_active() > 0; }
 static int cond_no_windows(void) { return syswin_test_used() == 0; }
+static int cond_paint_white(void) { return syswin_test_count(0x00FFFFFFu) >= 100000; }
+static int cond_paint_red(void) { return syswin_test_pixel(105, 100) == 0x00C82828; }
+static int cond_paint_cleared(void) { return syswin_test_pixel(105, 100) == 0x00FFFFFF; }
+static int cond_about_title(void) { return syswin_test_count(0x002A5ABEu) >= 100; }
 static int cond_size_300(void) {
   int w = 0, h = 0;
 
@@ -1060,9 +1064,11 @@ static int window_supervisor_task(void *arg) {
   {
     int i2;
 
+    int free_before = syswin_free_slots();
+
     app_launch_notes();
     failures += win_expect(wait_for(cond_has_window, 500), "launcher: Notes opened as a user window");
-    failures += win_expect(syswin_free_slots() == 3, "launcher: it uses one window slot");
+    failures += win_expect(syswin_free_slots() == free_before - 1, "launcher: it uses one window slot");
     syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
     failures += win_expect(wait_for(cond_no_windows, 500), "launcher: closing the window releases it");
     for (i2 = 0; i2 < 500 && process_live_count() != 0; ++i2) {
@@ -1070,6 +1076,35 @@ static int window_supervisor_task(void *arg) {
     }
     failures += win_expect(process_live_count() == 0 && !process_spawn_active("/APPS/NOTES.BIN", 0),
                            "launcher: the program exited and its slot is free");
+  }
+
+  // Paint: pick red on the palette, drag across the canvas, then press Clear.
+  {
+    h = process_spawn("/APPS/PAINT.BIN");
+    failures += win_expect(h >= 0 && wait_for(cond_has_window, 500), "paint: window appeared");
+    failures += win_expect(wait_for(cond_paint_white, 500), "paint: the white canvas was drawn");
+    syswin_test_inject(SYSWIN_EV_MOUSE_DOWN, 4 + 2 * 26 + 5, 10, 0);   // the red swatch
+    syswin_test_inject(SYSWIN_EV_MOUSE_UP, 4 + 2 * 26 + 5, 10, 0);
+    syswin_test_inject(SYSWIN_EV_MOUSE_DOWN, 100, 100, 0);              // press on the canvas
+    syswin_test_inject(SYSWIN_EV_MOUSE_MOVE, 110, 100, 0);              // drag right
+    syswin_test_inject(SYSWIN_EV_MOUSE_UP, 110, 100, 0);
+    failures += win_expect(wait_for(cond_paint_red, 500), "paint: dragging drew a red line");
+    syswin_test_inject(SYSWIN_EV_MOUSE_MOVE, 120, 100, 0);              // pen is up: draws nothing
+    syswin_test_inject(SYSWIN_EV_MOUSE_DOWN, 4 + 8 * 26 + 8 + 5, 10, 0);   // Clear
+    failures += win_expect(wait_for(cond_paint_cleared, 500), "paint: Clear wiped the canvas");
+    syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
+    failures += win_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0, "paint: exited cleanly");
+    failures += win_expect(wait_for(cond_no_windows, 500), "paint: no windows left");
+  }
+
+  // About: it draws its title and exits when the window closes.
+  {
+    h = process_spawn("/APPS/ABOUT.BIN");
+    failures += win_expect(h >= 0 && wait_for(cond_has_window, 500), "about: window appeared");
+    failures += win_expect(wait_for(cond_about_title, 500), "about: the title was drawn");
+    syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
+    failures += win_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0, "about: exited cleanly");
+    failures += win_expect(wait_for(cond_no_windows, 500), "about: no windows left");
   }
 
   // Resizing: a resizable window gets a new surface of the new client size and an

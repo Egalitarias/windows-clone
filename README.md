@@ -14,10 +14,10 @@ interrupt-driven PS/2 keyboard and mouse (IRQ layer, 1 kHz PIT timer, RTC clock,
 overlapping windows with z-order and focus, move, resize, minimize, maximize and close,
 a taskbar with one button per window and a real-time clock, a Start menu, desktop icons
 (double-click to launch), and dirty-rectangle repainting. Native AHCI/SATA and NVMe drivers, MBR/GPT partition scan and FAT16/FAT32 (long names,
-read/write/mkdir/delete) back a Files explorer and Notes open/save. An in-kernel GPT writer
+read/write/mkdir/delete) back the Files explorer and Notes open/save (both ordinary user programs). An in-kernel GPT writer
 and FAT32 formatter power **Setup**, which installs WinClone onto a disk (GPT + ESP +
-data partition + boot files) that then boots on its own. Demo apps: Files, Notes, Paint,
-About and Setup.
+data partition + boot files) that then boots on its own. Apps: Files, Notes, Paint and
+About (user programs in `\APPS`) and Setup.
 
 ![Demo desktop drawn by the kernel](docs/screenshots/framebuffer-desktop.png)
 
@@ -268,7 +268,6 @@ sudo out/installer-package/install.sh \
 ### Next Steps
 User-space task launching, per-process address spaces, a file system interface and a
 system call interface for user tasks are done (see `docs/SYSCALL_PLAN.md`). Still open:
-- Moving more built-in apps (Files, Paint) to user processes
 - A user-space library (fonts, widgets), an ELF loader and a high-half kernel
 - Enhanced QEMU/installer validation workflow (Issue #3)
 

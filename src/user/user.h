@@ -33,6 +33,8 @@
 #define SYS_WIN_WAIT   21
 #define SYS_CLIP_SET   24
 #define SYS_VOLINFO    26
+#define SYS_UPTIME     29
+#define SYS_SCREEN     30
 #define SYS_WIN_RESIZABLE 28
 #define SYS_SPAWN      27
 #define SYS_CLIP_GET   25
@@ -93,6 +95,15 @@ static inline long readdir(int fd, dirent_t *out) { return syscall3(SYS_READDIR,
 // with "/@i" names volume i exactly: "/@1/DOCS/A.TXT"; "/@1" is its root. Without
 // the prefix reads search the default volume first and writes go to it.
 static inline long volinfo(int index, dirent_t *out) { return syscall3(SYS_VOLINFO, index, (long)out, 0); }
+// Milliseconds since the machine started.
+static inline long uptime_ms(void) { return syscall3(SYS_UPTIME, 0, 0, 0); }
+// The display size in pixels.
+static inline void screen_size(int *w, int *h) {
+  long v = syscall3(SYS_SCREEN, 0, 0, 0);
+
+  *w = (int)(v >> 16);
+  *h = (int)(v & 0xFFFF);
+}
 // Start a program (arg may be 0) and carry on; nobody waits for it. Returns 0, or a
 // negative error when there is no free slot. A program that does not exist is only
 // reported on the kernel console, so stat() the path first.

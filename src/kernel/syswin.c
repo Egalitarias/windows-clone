@@ -775,6 +775,39 @@ int syswin_test_size(int *w, int *h) {
   return 0;
 }
 
+static const uwin_t *first_active(void) {
+  int i;
+
+  for (i = 0; i < SYSWIN_MAX; ++i) {
+    if (g_uw[i].state == UW_ACTIVE && g_uw[i].surf != 0) {
+      return &g_uw[i];
+    }
+  }
+  return 0;
+}
+
+int syswin_test_pixel(int x, int y) {
+  const uwin_t *u = first_active();
+
+  if (u == 0 || x < 0 || y < 0 || x >= u->w || y >= u->h) {
+    return -1;
+  }
+  return (int)(u->surf[(int64_t)y * u->w + x] & 0x00FFFFFFu);
+}
+
+int syswin_test_count(uint32_t color) {
+  const uwin_t *u = first_active();
+  int64_t i, n = 0;
+
+  if (u == 0) {
+    return 0;
+  }
+  for (i = 0; i < (int64_t)u->w * u->h; ++i) {
+    n += (u->surf[i] & 0x00FFFFFFu) == color;
+  }
+  return (int)n;
+}
+
 int syswin_test_active(void) {
   int i, n = 0;
 

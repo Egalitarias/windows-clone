@@ -35,6 +35,8 @@
 #define SYS_VOLINFO    26   // volinfo(index, dirent_t *out) -> 0; name, size in MB, attr = directory; -ENOENT past the last
 #define SYS_SPAWN      27   // spawn(path, arg) -> 0; starts a program (arg may be 0), nobody waits for it
 #define SYS_WIN_RESIZABLE 28   // win_resizable(id, enable)  surface follows user resizing; EV_RESIZE tells the program
+#define SYS_UPTIME     29   // uptime_ms() -> milliseconds since boot
+#define SYS_SCREEN     30   // screen_size() -> (width << 16) | height of the display
 #define SYS_READDIR 8   // readdir(fd, sysfile_dirent_t *out) -> 1 entry stored, 0 at the end
                         // read(fd, ...) and write(fd, ...) also take file descriptors (see sysfile.h)
 

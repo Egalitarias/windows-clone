@@ -3,6 +3,7 @@
 #include "paging.h"
 #include "scheduler.h"
 #include "timer.h"
+#include "fb.h"
 #include "process.h"
 #include "sysfile.h"
 #include "syswin.h"
@@ -252,6 +253,10 @@ static int64_t syscall_dispatch_inner(uint64_t nr, uint64_t a1, uint64_t a2, uin
     }
     case SYS_WIN_TITLE:
       return syswin_title(a1, a2);
+    case SYS_UPTIME:
+      return (int64_t)timer_get_ms();
+    case SYS_SCREEN:
+      return ((int64_t)fb_width() << 16) | (int64_t)fb_height();
     case SYS_VOLINFO:
       return sysfile_volinfo(a1, a2);
     case SYS_SPAWN: {
