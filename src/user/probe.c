@@ -55,7 +55,7 @@ int main(void) {
   if (!fails(win_event(3, (win_event_t *)(void *)g_buf, 0))) return 28;
   if (!fails(win_title(3, "t"))) return 29;
   // unknown syscall numbers
-  if (!is(syscall3(21, 1, 2, 3), ENOSYS)) return 30;
+  if (!is(syscall3(60, 1, 2, 3), ENOSYS)) return 30;
   if (!is(syscall3(99, 0, 0, 0), ENOSYS)) return 31;
   if (!is(syscall3(0x100000000L, 0, 0, 0), ENOSYS)) return 32;    // must not alias SYS_EXIT
   if (!is(syscall3(-1, 0, 0, 0), ENOSYS)) return 33;
@@ -70,6 +70,11 @@ int main(void) {
   if (!is(lseek(77, 0, SEEK_SET), EBADF)) return 41;
   if (!fails(lseek(1, 0, SEEK_SET))) return 42;
   if (!fails(open("/APPS/HELLO.BIN", O_RDWR | O_WRONLY))) return 43;
+  // window calls added later
+  if (!is(win_wait(3, (win_event_t *)(void *)g_buf, 10), EBADF)) return 44;
+  if (!fails(win_move(3, 0, 0))) return 45;
+  if (!fails(win_resize(3, 100, 100))) return 46;
+  if (!fails(win_resize(3, 5, 5))) return 47;
   // The process still works after all that.
   puts("probe: ok\r\n");
   return 0;

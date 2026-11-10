@@ -54,6 +54,25 @@ int main(void) {
   check(win_text((int)a, 8, 90, "Big", 0x0000FF00, 3) == 0, 16, "scaled text");
   check(win_text((int)a, 0, 0, (const char *)1, 0, 1) == -14, 17, "bad text pointer is EFAULT");
 
+  // Move, resize and timed wait.
+  check(win_move((int)a, 120, 90) == 0, 25, "move");
+  check(win_move((int)a, -100000, 5) == 0, 26, "move far off screen is clamped, not an error");
+  check(win_move((int)a, 120, 90) == 0, 27, "move back");
+  check(win_move(3, 0, 0) == -9, 28, "move of a foreign window is EBADF");
+  check(win_resize((int)a, 4, 4) == -22, 29, "resize too small is EINVAL");
+  check(win_resize((int)a, 5000, 100) == -22, 30, "resize too large is EINVAL");
+  check(win_resize(3, 100, 100) == -9, 31, "resize of a foreign window is EBADF");
+  check(win_resize((int)a, 240, 160) == 0, 32, "resize");
+  check(win_fill((int)a, 0, 0, 240, 160, 0x00304050) == 0, 33, "fill the whole new surface");
+  check(win_text((int)a, 8, 140, "resized", 0x00FFFFFF, 1) == 0, 34, "text near the new bottom edge");
+  check(win_resize((int)a, 200, 120) == 0, 35, "resize back");
+  check(win_fill((int)a, 0, 0, 200, 120, 0x00203040) == 0, 36, "fill after shrinking");
+  check(win_wait((int)a, &ev, 0) == 0, 37, "win_wait with 0 ms polls");
+  check(win_wait((int)a, &ev, 40) == 0, 38, "win_wait times out");
+  check(win_wait((int)a, &ev, 40) == 0, 39, "win_wait times out again");
+  check(win_wait((int)a, (win_event_t *)1, 40) == -14, 40, "win_wait bad pointer is EFAULT");
+  check(win_wait(3, &ev, 40) == -9, 41, "win_wait on a foreign window is EBADF");
+
   check(win_event((int)a, &ev, 0) == 0, 18, "no event pending");
   check(win_event((int)a, (win_event_t *)1, 0) == -14, 19, "bad event pointer is EFAULT");
   check(win_event(3, &ev, 0) == -9, 20, "foreign window id is EBADF");

@@ -30,6 +30,9 @@
 
 #define SYS_GETARG    15
 #define SYS_WIN_TITLE 16
+#define SYS_WIN_WAIT   21
+#define SYS_WIN_MOVE   22
+#define SYS_WIN_RESIZE 23
 
 #define O_RDONLY 0   // file or directory
 #define O_WRONLY 1   // create or truncate; the data is stored by close()
@@ -98,6 +101,14 @@ static inline long mkdir(const char *path) { return syscall3(SYS_MKDIR, (long)pa
 #define EV_MOUSE_UP   4
 #define EV_CLOSE      5   // the user closed the window; call win_close() and exit
 
+// Non-printing keys arrive as EV_KEY with these values in ch.
+#define KEY_LEFT   0x1C
+#define KEY_RIGHT  0x1D
+#define KEY_UP     0x1E
+#define KEY_DOWN   0x1F
+#define KEY_DELETE 0x7F
+// Ctrl+letter arrives as the usual control code (Ctrl+S = 0x13).
+
 typedef struct {
   uint32_t type;
   int32_t x, y;
@@ -131,6 +142,13 @@ static inline long win_text(int id, int x, int y, const char *s, uint32_t color,
 }
 // Next event: 1 = stored in *ev, 0 = none (block = 0), negative = error (window gone).
 static inline long win_event(int id, win_event_t *ev, int block) { return syscall3(SYS_WIN_EVENT, id, (long)ev, block); }
+// Wait up to timeout_ms for an event: 1 = stored in *ev, 0 = timed out (0 ms just polls),
+// negative = error (window gone). Use it to animate or blink a cursor without a thread.
+static inline long win_wait(int id, win_event_t *ev, unsigned long timeout_ms) { return syscall3(SYS_WIN_WAIT, id, (long)ev, (long)timeout_ms); }
+// Move the window so its top-left corner is at (x, y) on the screen (it stays reachable).
+static inline long win_move(int id, int x, int y) { return syscall3(SYS_WIN_MOVE, id, x, y); }
+// Change the client size (16..800 x 16..600). The surface comes back cleared: redraw.
+static inline long win_resize(int id, int w, int h) { return syscall3(SYS_WIN_RESIZE, id, w, h); }
 
 // The argument string the program was started with (empty if none). Returns its length.
 static inline long getarg(char *buf, unsigned long len) { return syscall3(SYS_GETARG, (long)buf, (long)len, 0); }

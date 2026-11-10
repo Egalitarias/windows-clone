@@ -955,6 +955,7 @@ static int window_supervisor_task(void *arg) {
   h = process_spawn("/APPS/WINEV.BIN");
   failures += win_expect(h >= 0 && wait_for(cond_has_window, 500), "winev: window appeared on the desktop");
   syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 'x');
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, SYSWIN_KEY_LEFT);
   syswin_test_inject(SYSWIN_EV_MOUSE_DOWN, 5, 6, 0);
   syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
   failures += win_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,

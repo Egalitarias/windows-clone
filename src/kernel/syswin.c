@@ -33,6 +33,12 @@ typedef struct {
   uint64_t surf_pages;
   uint32_t *surf;
   volatile int dirty;
+  volatile int move_dirty;              // a new position waits for the desktop
+  int move_x, move_y;
+  volatile int resize_pending;          // a new surface waits for the desktop
+  int rs_w, rs_h;
+  uint64_t rs_phys;
+  uint64_t rs_pages;
   syswin_event_t ev[EV_RING];
   volatile uint32_t ev_head;
   volatile uint32_t ev_tail;
@@ -129,17 +135,25 @@ static void uw_closing(wm_window_t *win) {
 
 // ---- desktop side ----------------------------------------------------------------
 
-static void release_surface(uwin_t *u) {
+static void free_pages(uint64_t phys, uint64_t pages) {
   uint64_t i;
 
-  if (u->surf_phys != 0) {
-    for (i = 0; i < u->surf_pages; ++i) {
-      pmm_free_page(u->surf_phys + i * 4096ULL);
+  if (phys != 0) {
+    for (i = 0; i < pages; ++i) {
+      pmm_free_page(phys + i * 4096ULL);
     }
   }
+}
+
+static void release_surface(uwin_t *u) {
+  free_pages(u->surf_phys, u->surf_pages);
   u->surf_phys = 0;
   u->surf_pages = 0;
   u->surf = 0;
+  free_pages(u->rs_phys, u->rs_pages);          // a resize that was never applied
+  u->rs_phys = 0;
+  u->rs_pages = 0;
+  u->resize_pending = 0;
 }
 
 void syswin_poll(void) {
@@ -169,6 +183,28 @@ void syswin_poll(void) {
       if (u->title_dirty && u->win != 0) {
         u->title_dirty = 0;
         wm_set_title(u->win, u->new_title);
+      }
+      if (u->move_dirty && u->win != 0) {
+        u->move_dirty = 0;
+        wm_move(u->win, u->move_x, u->move_y);
+      }
+      if (u->resize_pending && u->win != 0) {
+        uint64_t old_phys = u->surf_phys;
+        uint64_t old_pages = u->surf_pages;
+        uint64_t f = irq_save();                // no drawing syscall may see a half-swapped surface
+
+        u->surf_phys = u->rs_phys;
+        u->surf_pages = u->rs_pages;
+        u->surf = (uint32_t *)(uintptr_t)u->rs_phys;
+        u->w = u->rs_w;
+        u->h = u->rs_h;
+        u->rs_phys = 0;
+        u->rs_pages = 0;
+        irq_restore(f);
+        free_pages(old_phys, old_pages);
+        wm_set_client_size(u->win, u->w, u->h);
+        u->dirty = 1;
+        u->resize_pending = 0;                  // wakes the program waiting in win_resize
       }
       if (u->dirty && u->win != 0) {
         u->dirty = 0;
@@ -216,11 +252,29 @@ static void wait_ms(uint64_t ms) {
   scheduler_wait_end();
 }
 
+// Allocate, map and clear a surface of w x h pixels.
+static int surf_alloc(uint64_t w, uint64_t h, uint64_t *phys, uint64_t *pages) {
+  uint64_t n = (w * h * 4ULL + 4095ULL) / 4096ULL;
+  uint64_t p = pmm_alloc_pages(n);
+
+  if (p == 0) {
+    return 0;
+  }
+  if (!paging_map_range(p, n * 4096ULL)) {
+    free_pages(p, n);
+    return 0;
+  }
+  memset((void *)(uintptr_t)p, 0, (size_t)(n * 4096ULL));
+  *phys = p;
+  *pages = n;
+  return 1;
+}
+
 int64_t syswin_create(uint64_t title_uaddr, uint64_t w, uint64_t h) {
   char title[WM_TITLE_CHARS];
   uint64_t pid = process_current_pid();
   uwin_t *u = 0;
-  uint64_t bytes, start;
+  uint64_t start;
   int owned = 0;
   int i;
   int64_t r;
@@ -256,16 +310,17 @@ int64_t syswin_create(uint64_t title_uaddr, uint64_t w, uint64_t h) {
     return SYSCALL_ENOMEM;
   }
 
-  bytes = w * h * 4ULL;
-  u->surf_pages = (bytes + 4095ULL) / 4096ULL;
-  u->surf_phys = pmm_alloc_pages(u->surf_pages);
-  if (u->surf_phys == 0 || !paging_map_range(u->surf_phys, u->surf_pages * 4096ULL)) {
-    release_surface(u);
+  if (!surf_alloc(w, h, &u->surf_phys, &u->surf_pages)) {
+    u->surf_phys = 0;
+    u->surf_pages = 0;
     u->state = UW_FREE;
     return SYSCALL_ENOMEM;
   }
-  memset((void *)(uintptr_t)u->surf_phys, 0, (size_t)(u->surf_pages * 4096ULL));
   u->surf = (uint32_t *)(uintptr_t)u->surf_phys;
+  u->rs_phys = 0;
+  u->rs_pages = 0;
+  u->resize_pending = 0;
+  u->move_dirty = 0;
   u->w = (int)w;
   u->h = (int)h;
   u->win = 0;
@@ -472,8 +527,10 @@ int64_t syswin_text(uint64_t id, uint64_t op_uaddr) {
   return 0;
 }
 
-int64_t syswin_event(uint64_t id, uint64_t out_uaddr, uint64_t block) {
+// timeout_ms == 0 with block set waits forever. Returns 1 / 0 / negative error.
+static int64_t event_wait(uint64_t id, uint64_t out_uaddr, uint64_t block, uint64_t timeout_ms) {
   uwin_t *u = get_win(id, 0);
+  uint64_t deadline = timeout_ms != 0 ? timer_get_ms() + timeout_ms : 0;
   syswin_event_t ev;
 
   if (u == 0) {
@@ -497,9 +554,73 @@ int64_t syswin_event(uint64_t id, uint64_t out_uaddr, uint64_t block) {
     }
     // Same pattern as read(0): leave the run queue until the next event. Interrupts
     // are off, so nothing can be pushed between the check and the block.
-    scheduler_block_current(TASK_WAIT_INPUT, 0);
+    if (deadline != 0 && timer_get_ms() >= deadline) {
+      scheduler_wait_end();
+      return 0;                                     // timed out
+    }
+    scheduler_block_current(TASK_WAIT_INPUT, deadline);
     __asm__ volatile("sti; hlt; cli" : : : "memory");
   }
+}
+
+int64_t syswin_event(uint64_t id, uint64_t out_uaddr, uint64_t block) {
+  return event_wait(id, out_uaddr, block, 0);
+}
+
+int64_t syswin_wait(uint64_t id, uint64_t out_uaddr, uint64_t timeout_ms) {
+  if (timeout_ms > SYSWIN_WAIT_MAX_MS) {
+    return SYSCALL_EINVAL;
+  }
+  if (timeout_ms == 0) {
+    return event_wait(id, out_uaddr, 0, 0);         // a poll
+  }
+  return event_wait(id, out_uaddr, 1, timeout_ms);
+}
+
+int64_t syswin_move(uint64_t id, int64_t x, int64_t y) {
+  uwin_t *u = get_win(id, 1);
+
+  if (u == 0) {
+    return SYSCALL_EBADF;
+  }
+  if (x < -100000 || x > 100000 || y < -100000 || y > 100000) {
+    return SYSCALL_EINVAL;
+  }
+  u->move_x = (int)x;
+  u->move_y = (int)y;
+  u->move_dirty = 1;                                // the desktop applies it
+  return 0;
+}
+
+int64_t syswin_resize(uint64_t id, uint64_t w, uint64_t h) {
+  uwin_t *u = get_win(id, 1);
+  uint64_t start;
+
+  if (u == 0) {
+    return SYSCALL_EBADF;
+  }
+  if (w < SYSWIN_MIN_SIZE || h < SYSWIN_MIN_SIZE || w > SYSWIN_MAX_W || h > SYSWIN_MAX_H) {
+    return SYSCALL_EINVAL;
+  }
+  if (u->resize_pending) {
+    return SYSCALL_EBUSY;                           // an earlier request is still waiting
+  }
+  if (!surf_alloc(w, h, &u->rs_phys, &u->rs_pages)) {
+    u->rs_phys = 0;
+    u->rs_pages = 0;
+    return SYSCALL_ENOMEM;
+  }
+  u->rs_w = (int)w;
+  u->rs_h = (int)h;
+  u->resize_pending = 1;                            // hand over to the desktop task
+  start = timer_get_ms();
+  while (u->resize_pending && u->state == UW_ACTIVE && timer_get_ms() - start < CREATE_TIMEOUT_MS) {
+    wait_ms(10);
+  }
+  if (u->resize_pending) {
+    return SYSCALL_ENODEV;                          // not applied (yet); freed with the window
+  }
+  return 0;
 }
 
 #ifdef KERNEL_USER_SELFTEST

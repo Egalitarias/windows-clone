@@ -252,6 +252,12 @@ static int64_t syscall_dispatch_inner(uint64_t nr, uint64_t a1, uint64_t a2, uin
     }
     case SYS_WIN_TITLE:
       return syswin_title(a1, a2);
+    case SYS_WIN_WAIT:
+      return syswin_wait(a1, a2, a3);
+    case SYS_WIN_MOVE:
+      return syswin_move(a1, (int64_t)a2, (int64_t)a3);
+    case SYS_WIN_RESIZE:
+      return syswin_resize(a1, a2, a3);
     case SYS_GETPID: {
       uint64_t pid = process_current_pid();
       return (int64_t)(pid != 0 ? pid : g_current_pid);

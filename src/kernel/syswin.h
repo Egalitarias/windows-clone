@@ -28,6 +28,15 @@
 #define SYSWIN_EV_MOUSE_UP   4
 #define SYSWIN_EV_CLOSE      5         // the user closed the window; call win_close()
 
+// Non-printing keys arrive as EV_KEY with these codes in ch (same values as PS2_KEY_*).
+#define SYSWIN_KEY_LEFT   0x1C
+#define SYSWIN_KEY_RIGHT  0x1D
+#define SYSWIN_KEY_UP     0x1E
+#define SYSWIN_KEY_DOWN   0x1F
+#define SYSWIN_KEY_DELETE 0x7F
+
+#define SYSWIN_WAIT_MAX_MS 3600000ULL
+
 typedef struct {
   uint32_t type;
   int x;
@@ -55,6 +64,14 @@ int64_t syswin_fill(uint64_t id, uint64_t op_uaddr);
 int64_t syswin_text(uint64_t id, uint64_t op_uaddr);
 // -> 1 event stored, 0 none (non-blocking). With block != 0 waits for one.
 int64_t syswin_event(uint64_t id, uint64_t out_uaddr, uint64_t block);
+
+// Like syswin_event with block, but gives up after timeout_ms: -> 1 event stored, 0 timed out.
+int64_t syswin_wait(uint64_t id, uint64_t out_uaddr, uint64_t timeout_ms);
+// Move the window; its top-left corner goes to (x, y) on the screen (kept reachable).
+int64_t syswin_move(uint64_t id, int64_t x, int64_t y);
+// New client size (same limits as create). The surface is replaced by a cleared one, so
+// the program must redraw. Returns once the desktop has applied it.
+int64_t syswin_resize(uint64_t id, uint64_t w, uint64_t h);
 
 // The program with this pid is gone: release its windows (closed by syswin_poll).
 void syswin_process_exit(uint64_t pid);

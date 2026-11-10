@@ -266,11 +266,12 @@ sudo out/installer-package/install.sh \
 - **#25**: Context-switch refactor (iret optimization)
 
 ### Next Steps
-- User-space task launching (currently hardcoded kernel-space tasks)
-- Stack guard pages & memory protection between tasks
+User-space task launching, per-process address spaces, a file system interface and a
+system call interface for user tasks are done (see `docs/SYSCALL_PLAN.md`). Still open:
+- Moving more built-in apps (Files, Paint) to user processes
+- A user-space library (fonts, widgets), an ELF loader and a high-half kernel
+- Files over 256 KiB (files are held whole in memory today)
 - Enhanced QEMU/installer validation workflow (Issue #3)
-- File system integration (for applications)
-- System call interface for user tasks
 
 ## Kernel coding notes
 

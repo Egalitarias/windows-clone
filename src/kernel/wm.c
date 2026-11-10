@@ -274,6 +274,43 @@ void wm_set_title(wm_window_t *win, const char *title) {
   invalidate_taskbar();
 }
 
+void wm_move(wm_window_t *win, int x, int y) {
+  int max_x = g_desk_w - 40;
+  int max_y = work_h() - WM_TITLE_H;
+
+  if (!win) {
+    return;
+  }
+  if (x < 40 - win->w) {
+    x = 40 - win->w;
+  }
+  if (x > max_x) {
+    x = max_x;
+  }
+  if (y < 0) {
+    y = 0;
+  }
+  if (y > max_y) {
+    y = max_y;
+  }
+  wm_invalidate_window(win);
+  win->maximized = 0;
+  win->x = x;
+  win->y = y;
+  wm_invalidate_window(win);
+}
+
+void wm_set_client_size(wm_window_t *win, int cw, int ch) {
+  if (!win) {
+    return;
+  }
+  wm_invalidate_window(win);
+  win->maximized = 0;
+  win->w = cw + 2;
+  win->h = ch + WM_TITLE_H + 1;
+  wm_invalidate_window(win);
+}
+
 wm_window_t *wm_focused(void) {
   int i;
   for (i = g_count - 1; i >= 0; i--) {

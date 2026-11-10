@@ -30,7 +30,8 @@ void scheduler_set_idle_callback(void (*callback)(void));
 int scheduler_add_task(const char *name, SCHEDULER_TASK_FN fn, void *arg);
 int scheduler_add_task_with_priority(const char *name, SCHEDULER_TASK_FN fn, void *arg, uint32_t priority);
 // Block the running task until a wake-up: kind TASK_WAIT_SLEEP wakes at wake_ms
-// (timer_get_ms), TASK_WAIT_INPUT on scheduler_wake_all(TASK_WAIT_INPUT). Call with
+// (timer_get_ms), TASK_WAIT_INPUT on scheduler_wake_all(TASK_WAIT_INPUT) (or at wake_ms
+// when that is non-zero: input with a timeout). Call with
 // interrupts off, re-check the wake condition in a loop, and park with
 // "sti; hlt; cli": the next tick switches to another task, and the task returns
 // here once woken. scheduler_wait_end() must be called when the wait is over.

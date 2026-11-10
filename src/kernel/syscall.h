@@ -27,6 +27,9 @@
 #define SYS_STAT    18  // stat(path, sysfile_dirent_t *out) -> 0
 #define SYS_UNLINK  19  // unlink(path) -> 0; a file or an empty directory on the default volume
 #define SYS_MKDIR   20  // mkdir(path) -> 0; on the default volume
+#define SYS_WIN_WAIT   21   // win_wait(id, syswin_event_t *, timeout_ms) -> 1 event stored, 0 timed out
+#define SYS_WIN_MOVE   22   // win_move(id, x, y)  move the window (screen coordinates of its top-left corner)
+#define SYS_WIN_RESIZE 23   // win_resize(id, w, h)  new client size; the surface is cleared
 #define SYS_READDIR 8   // readdir(fd, sysfile_dirent_t *out) -> 1 entry stored, 0 at the end
                         // read(fd, ...) and write(fd, ...) also take file descriptors (see sysfile.h)
 
@@ -40,6 +43,7 @@
 #define SYSCALL_EACCES  (-13)
 #define SYSCALL_ENODEV  (-19)
 #define SYSCALL_EFAULT  (-14)
+#define SYSCALL_EBUSY   (-16)
 #define SYSCALL_EEXIST  (-17)
 #define SYSCALL_ENOTEMPTY (-39)
 #define SYSCALL_ENOTDIR (-20)

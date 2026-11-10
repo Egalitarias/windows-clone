@@ -563,7 +563,10 @@ static void scheduler_wake_sleepers(void) {
 
   for (i = 0; i < g_task_count; ++i) {
     TCB *t = g_tasks[i].tcb;
-    if (t != 0 && t->state == TASK_STATE_BLOCKED && t->wait_kind == TASK_WAIT_SLEEP &&
+    // Sleepers wake at their deadline; an input wait with a non-zero wake_ms is a
+    // wait with a timeout and wakes then too (or earlier, on scheduler_wake_all).
+    if (t != 0 && t->state == TASK_STATE_BLOCKED &&
+        (t->wait_kind == TASK_WAIT_SLEEP || (t->wait_kind == TASK_WAIT_INPUT && t->wake_ms != 0)) &&
         now >= t->wake_ms) {
       scheduler_task_unblock(t);
     }

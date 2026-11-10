@@ -62,6 +62,10 @@ void wm_restore(wm_window_t *win);
 void wm_toggle_maximize(wm_window_t *win);
 
 void wm_set_title(wm_window_t *win, const char *title);
+// Move the window (kept reachable: title bar on screen) and give it a client area of
+// cw x ch pixels. Both un-maximize the window.
+void wm_move(wm_window_t *win, int x, int y);
+void wm_set_client_size(wm_window_t *win, int cw, int ch);
 
 wm_window_t *wm_focused(void);
 // Pool slot i (for taskbar buttons); returns 0 for an unused slot.
