@@ -1,4 +1,4 @@
-#include "user.h"
+#include "ulib.h"
 
 // Notes as a real user program: a text editor in its own window.
 //   - type to insert text at the cursor; Backspace and Delete remove text
@@ -40,37 +40,13 @@ static unsigned char g_io[MAX * 2 + 16];
 static long g_win;
 
 static void set_status(const char *a, const char *b) {
-  int n = 0;
-
-  while (a[n] != 0 && n < (int)sizeof(g_status) - 1) {
-    g_status[n] = a[n];
-    ++n;
-  }
-  if (b != 0) {
-    int i = 0;
-
-    while (b[i] != 0 && n < (int)sizeof(g_status) - 1) {
-      g_status[n++] = b[i++];
-    }
-  }
-  g_status[n] = 0;
+  ulib_cat(g_status, (int)sizeof(g_status), a, b);
 }
 
 static void set_title(void) {
-  char title[32] = "Notes - ";
-  const char *name = g_file;
-  int n = 8;
-  int i;
+  char title[32];
 
-  for (i = 0; g_file[i] != 0; ++i) {
-    if (g_file[i] == '/') {
-      name = g_file + i + 1;
-    }
-  }
-  for (i = 0; name[i] != 0 && n < (int)sizeof(title) - 1; ++i) {
-    title[n++] = name[i];
-  }
-  title[n] = 0;
+  ulib_cat(title, (int)sizeof(title), "Notes - ", ulib_basename(g_file));
   win_title((int)g_win, title);
 }
 
@@ -358,32 +334,14 @@ static void choose_name(void) {
   int n;
 
   for (n = 1; n < 1000; ++n) {
-    char num[8];
-    int k = 0;
-    int i = 0;
-    int v = n;
+    char num[24];
+    int k;
     long fd;
 
-    num[k++] = (char)('0' + v / 100 % 10);
-    num[k++] = (char)('0' + v / 10 % 10);
-    num[k++] = (char)('0' + v % 10);
-    num[k] = 0;
-    {
-      const char *pre = "/NOTE";
-      const char *post = ".TXT";
-      int p = 0;
-
-      for (i = 0; pre[i] != 0; ++i) {
-        g_file[p++] = pre[i];
-      }
-      for (i = (n < 10 ? 2 : (n < 100 ? 1 : 0)); num[i] != 0; ++i) {
-        g_file[p++] = num[i];
-      }
-      for (i = 0; post[i] != 0; ++i) {
-        g_file[p++] = post[i];
-      }
-      g_file[p] = 0;
-    }
+    ulib_utoa((unsigned long)n, num);
+    k = ulib_copy(g_file, "/NOTE", (int)sizeof(g_file));
+    k += ulib_copy(g_file + k, num, (int)sizeof(g_file) - k);
+    ulib_copy(g_file + k, ".TXT", (int)sizeof(g_file) - k);
     fd = open(g_file, O_RDONLY);
     if (fd < 0) {
       return;
@@ -448,8 +406,7 @@ int main(void) {
 
   for (;;) {
     long n = win_event((int)g_win, &ev, 1);
-    int shift = (ev.x & MOD_SHIFT) != 0;
-    int ctrl = (ev.x & MOD_CTRL) != 0;
+    int shift, ctrl;
     int a, b;
 
     if (n != 1 || ev.type == EV_CLOSE) {
@@ -462,8 +419,13 @@ int main(void) {
       continue;
     }
     if (ev.type == EV_MOUSE_DOWN) {                 // click: place the cursor; drag selects
-      set_cursor(pos_at(ev.x, ev.y));
-      g_anchor = g_cur;
+      if (ulib_mods(&ev) & MOD_SHIFT) {             // Shift+click extends the selection
+        begin_move(1);
+        set_cursor(pos_at(ev.x, ev.y));
+      } else {
+        set_cursor(pos_at(ev.x, ev.y));
+        g_anchor = g_cur;
+      }
       g_status[0] = 0;
       redraw();
       continue;

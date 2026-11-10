@@ -472,6 +472,8 @@ static __attribute__((noreturn)) void desktop_run(void) {
         }
       } else if (ev.type == PS2_EVENT_MOUSE) {
         unsigned int pressed_now = ev.buttons & ~g_buttons;
+
+        wm_set_key_mods(ev.mods);                 // window callbacks may ask which modifiers are down
         unsigned int released_now = g_buttons & ~ev.buttons;
 
         g_mouse_x += ev.dx;

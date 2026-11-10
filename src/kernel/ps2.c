@@ -296,6 +296,7 @@ int ps2_poll(ps2_event_t *ev) {
     ev->buttons = 0;
     if (aux) {
       if (decode_mouse(byte, ev)) {
+        ev->mods = (g_shift ? PS2_MOD_SHIFT : 0U) | (g_ctrl ? PS2_MOD_CTRL : 0U) | (g_alt ? PS2_MOD_ALT : 0U);
         return 1;
       }
     } else if (decode_key(byte, ev)) {

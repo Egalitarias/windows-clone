@@ -124,7 +124,7 @@ static void uw_mouse(wm_window_t *win, int lx, int ly, int event) {
   } else {
     return;
   }
-  ev_push(u, type, lx, ly, 0);
+  ev_push(u, type, lx, ly, wm_key_mods());       // mouse events: ch = modifier bits
 }
 
 static void uw_closing(wm_window_t *win) {

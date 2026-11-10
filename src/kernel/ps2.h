@@ -46,7 +46,7 @@ typedef struct {
   // make and 0 on break.
   char ch;
   int pressed;
-  unsigned int mods;           // PS2_MOD_* held down for a key event
+  unsigned int mods;           // PS2_MOD_* held down (key and mouse events)
   // Mouse events: movement since the last packet (screen orientation: +y is
   // down) and the current button state (PS2_MOUSE_* bits).
   int dx;

@@ -128,7 +128,8 @@ static inline long mkdir(const char *path) { return syscall3(SYS_MKDIR, (long)pa
 #define KEY_END    0x81
 #define KEY_PGUP   0x82
 #define KEY_PGDN   0x83
-// For EV_KEY, win_event_t.x holds the modifiers that were down:
+// For EV_KEY, win_event_t.x holds the modifiers that were down; for mouse events it is
+// win_event_t.ch (x and y are the position):
 #define MOD_SHIFT  0x1
 #define MOD_CTRL   0x2
 #define MOD_ALT    0x4

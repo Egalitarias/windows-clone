@@ -24,7 +24,8 @@ int main(void) {
       stage = 1;
     } else if (stage == 1 && ev.type == EV_KEY && ev.ch == KEY_LEFT) {
       stage = 2;
-    } else if (stage == 2 && ev.type == EV_MOUSE_DOWN && ev.x == 5 && ev.y == 6) {
+    } else if (stage == 2 && ev.type == EV_MOUSE_DOWN && ev.x == 5 && ev.y == 6 &&
+               ev.ch == (MOD_SHIFT | MOD_CTRL)) {
       stage = 3;
     } else if (stage == 3 && ev.type == EV_CLOSE) {
       stage = 4;

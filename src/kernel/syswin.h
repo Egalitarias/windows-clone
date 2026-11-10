@@ -23,7 +23,7 @@
 
 // Event types, as stored in syswin_event_t.type. Keep in sync with src/user/user.h.
 #define SYSWIN_EV_KEY        1         // ch = character ('\b', '\n' or printable)
-#define SYSWIN_EV_MOUSE_DOWN 2         // x, y
+#define SYSWIN_EV_MOUSE_DOWN 2         // x, y; ch = modifier bits (SYSWIN_MOD_*), also for MOVE, UP and DOUBLE
 #define SYSWIN_EV_MOUSE_MOVE 3         // only while the button is held
 #define SYSWIN_EV_MOUSE_UP   4
 #define SYSWIN_EV_CLOSE      5         // the user closed the window; call win_close()

@@ -972,6 +972,19 @@ static int cond_explorer_folder(void) {
   return v != 0 && fat_lookup(v, v->root_cluster, "New Folder", &e);
 }
 static int cond_explorer_folder_gone(void) { return !cond_explorer_folder(); }
+static int cond_explorer_two_folders(void) {
+  fat_volume_t *v = fs_volume(0);
+  fat_dirent_t e;
+
+  return v != 0 && fat_lookup(v, v->root_cluster, "New Folder", &e) &&
+         fat_lookup(v, v->root_cluster, "New Folder 2", &e);
+}
+static int cond_explorer_two_gone(void) {
+  fat_volume_t *v = fs_volume(0);
+  fat_dirent_t e;
+
+  return v != 0 && !fat_lookup(v, v->root_cluster, "New Folder 2", &e);
+}
 
 static int window_supervisor_task(void *arg) {
   int failures = 0;
@@ -1006,7 +1019,7 @@ static int window_supervisor_task(void *arg) {
   failures += win_expect(h >= 0 && wait_for(cond_has_window, 500), "winev: window appeared on the desktop");
   syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 'x');
   syswin_test_inject(SYSWIN_EV_KEY, 0, 0, SYSWIN_KEY_LEFT);
-  syswin_test_inject(SYSWIN_EV_MOUSE_DOWN, 5, 6, 0);
+  syswin_test_inject(SYSWIN_EV_MOUSE_DOWN, 5, 6, SYSWIN_MOD_SHIFT | SYSWIN_MOD_CTRL);
   syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
   failures += win_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
                          "winev: blocked read woke for key, mouse and close events");
@@ -1119,6 +1132,33 @@ static int window_supervisor_task(void *arg) {
       wait_for(cond_no_windows, 500);
     }
 
+    // Mouse: the file is "AX\nZ!yoZ!?h". Click after the 'A' (row 0, column 1), Shift+click
+    // at row 1, column 1 (selects "X\nZ"), Ctrl+X cuts it, End goes to the end, Ctrl+V pastes.
+    {
+      static const char expect5[] = "A!yoZ!?hX\r\nZ";
+      static const unsigned char keys5[] = {0x18, 0x81, 0x16, 0x13};
+      unsigned int k;
+
+      h = process_spawn_arg("/APPS/NOTES.BIN", "/NTEST.TXT");
+      failures += win_expect(h >= 0 && wait_for(cond_has_window, 500), "notes: window appeared a fifth time");
+      syswin_test_inject(SYSWIN_EV_MOUSE_DOWN, 16, 6, 0);
+      syswin_test_inject(SYSWIN_EV_MOUSE_UP, 16, 6, 0);
+      syswin_test_inject(SYSWIN_EV_MOUSE_DOWN, 16, 16, SYSWIN_MOD_SHIFT);
+      syswin_test_inject(SYSWIN_EV_MOUSE_UP, 16, 16, SYSWIN_MOD_SHIFT);
+      for (k = 0; k < sizeof(keys5); ++k) {
+        syswin_test_inject(SYSWIN_EV_KEY, keys5[k] == 0x18 || keys5[k] == 0x16 || keys5[k] == 0x13 ? SYSWIN_MOD_CTRL : 0,
+                           0, keys5[k]);
+      }
+      syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
+      failures += win_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0, "notes: fifth run exited cleanly");
+      got = 0;
+      ok = v != 0 && fat_lookup(v, v->root_cluster, "NTEST.TXT", &ent) && ent.size == sizeof(expect5) - 1 &&
+           fat_read_file(v, &ent, buf, sizeof(buf), &got) && got == sizeof(expect5) - 1 &&
+           memcmp(buf, expect5, got) == 0;
+      failures += win_expect(ok, "notes: click and Shift+click selected a range");
+      wait_for(cond_no_windows, 500);
+    }
+
     // Explorer: Enter opens drive 0, a click on "New Folder" makes a folder in its root,
     // Down (as many times as the folder sorts after the others) plus Delete removes it.
     {
@@ -1151,6 +1191,27 @@ static int window_supervisor_task(void *arg) {
       }
       syswin_test_inject(SYSWIN_EV_KEY, 0, 0, SYSWIN_KEY_DELETE);
       failures += win_expect(wait_for(cond_explorer_folder_gone, 500), "explorer: Delete removed the folder");
+      // Multi-select. Two folders ("New Folder", "New Folder 2"), then Shift+Down marks both
+      // and Delete removes them; again, with Ctrl+click on both rows.
+      syswin_test_inject(SYSWIN_EV_MOUSE_DOWN, 60, 12, 0);
+      syswin_test_inject(SYSWIN_EV_MOUSE_DOWN, 60, 12, 0);
+      failures += win_expect(wait_for(cond_explorer_two_folders, 500), "explorer: two folders were created");
+      for (k = 0; k < before; ++k) {
+        syswin_test_inject(SYSWIN_EV_KEY, 0, 0, SYSWIN_KEY_DOWN);
+      }
+      syswin_test_inject(SYSWIN_EV_KEY, SYSWIN_MOD_SHIFT, 0, SYSWIN_KEY_DOWN);
+      syswin_test_inject(SYSWIN_EV_KEY, 0, 0, SYSWIN_KEY_DELETE);
+      failures += win_expect(wait_for(cond_explorer_folder_gone, 500) && wait_for(cond_explorer_two_gone, 500),
+                             "explorer: Shift+Down marked a range and Delete removed both");
+      syswin_test_inject(SYSWIN_EV_MOUSE_DOWN, 60, 12, 0);
+      syswin_test_inject(SYSWIN_EV_MOUSE_DOWN, 60, 12, 0);
+      failures += win_expect(wait_for(cond_explorer_two_folders, 500), "explorer: two folders were created again");
+      syswin_test_inject(SYSWIN_EV_MOUSE_DOWN, 100, 32 + 14 * before + 2, 0);        // plain click selects it
+      syswin_test_inject(SYSWIN_EV_MOUSE_DOWN, 100, 32 + 14 * before + 2, SYSWIN_MOD_CTRL);
+      syswin_test_inject(SYSWIN_EV_MOUSE_DOWN, 100, 32 + 14 * (before + 1) + 2, SYSWIN_MOD_CTRL);
+      syswin_test_inject(SYSWIN_EV_KEY, 0, 0, SYSWIN_KEY_DELETE);
+      failures += win_expect(wait_for(cond_explorer_folder_gone, 500) && wait_for(cond_explorer_two_gone, 500),
+                             "explorer: Ctrl+click marked two items and Delete removed both");
       syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
       failures += win_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0, "explorer: exited cleanly");
       wait_for(cond_no_windows, 500);
