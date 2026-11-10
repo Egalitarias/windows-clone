@@ -406,7 +406,7 @@ uefi-loader: check-uefi-tools $(UEFI_EFI) $(UEFI_KERNEL) user-apps
 $(OVMF_VARS): | dirs check-qemu-tools
 	cp "$(OVMF_VARS_TEMPLATE)" "$(OVMF_VARS)"
 
-# ---- User programs (flat binaries loaded by the kernel; see src/user/) --------
+# ---- User programs (ELF executables loaded by the kernel; see src/user/) --------
 USER_DIR := $(OUT_DIR)/user
 USER_CFLAGS := --target=x86_64-unknown-elf -ffreestanding -fno-stack-protector -fpie -m64 -O2 -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -mno-avx -Wall -Wextra -Isrc/user
 
@@ -415,10 +415,10 @@ $(USER_DIR)/%.o: src/user/%.c src/user/user.h
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_DIR)/%.elf: $(USER_DIR)/%.o $(USER_DIR)/crt0.o src/user/user.ld
-	$(KERNEL_LD) -T src/user/user.ld -o $@ $< $(USER_DIR)/crt0.o
+	$(KERNEL_LD) -z max-page-size=4096 -T src/user/user.ld -o $@ $< $(USER_DIR)/crt0.o
 
 $(USER_DIR)/%.bin: $(USER_DIR)/%.elf
-	$(KERNEL_OBJCOPY) -O binary $< $@
+	$(KERNEL_OBJCOPY) --strip-all $< $@
 
 # Each program is staged under an upper-case 8.3 name on the boot volume.
 user-apps: $(USER_DIR)/hello.bin $(USER_DIR)/count.bin $(USER_DIR)/crash.bin $(USER_DIR)/echo.bin $(USER_DIR)/tick.bin $(USER_DIR)/iso.bin $(USER_DIR)/files.bin $(USER_DIR)/wintest.bin $(USER_DIR)/winev.bin $(USER_DIR)/windemo.bin $(USER_DIR)/notes.bin $(USER_DIR)/explorer.bin $(USER_DIR)/paint.bin $(USER_DIR)/about.bin $(USER_DIR)/reszt.bin $(USER_DIR)/probe.bin $(USER_DIR)/stackovf.bin $(USER_DIR)/spin.bin $(USER_DIR)/kfault.bin

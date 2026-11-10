@@ -3,7 +3,7 @@
 
 #include "console.h"
 
-// User program loader for flat binaries (see src/user/user.ld).
+// User program loader: ELF64 executables and flat binaries (see src/user/user.ld).
 //
 // Layout of a process (all in the lower half, mapped U/S):
 //   PROCESS_LOAD_BASE            image (.text/.rodata/.data), then zeroed pages for
@@ -29,6 +29,7 @@
 #define PROCESS_ERR_NOMEM    (-4)
 #define PROCESS_ERR_READ     (-5)
 #define PROCESS_ERR_EMPTY    (-6)
+#define PROCESS_ERR_BADELF   (-7)   // an ELF file the loader cannot use (wrong type, bad segments)
 
 // A program killed by a CPU exception in user mode reports this plus the vector
 // as its exit code (0x10E = page fault, 0x10D = general protection fault).
@@ -54,7 +55,7 @@ typedef struct {
   unsigned int preempt_level; // scheduler_preempt_level() when the current syscall began
 } process_t;
 
-// Load the flat binary at `path` (like "/APPS/HELLO.BIN", searched on every
+// Load the program (ELF or flat binary) at `path` (like "/APPS/HELLO.BIN", searched on every
 // mounted volume) into a new process. Returns PROCESS_OK or a PROCESS_ERR_* code.
 int process_create(const char *path, process_t *p);
 

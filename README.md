@@ -26,7 +26,7 @@ About (user programs in `\APPS`) and Setup.
 1. Build and boot on Windows 11 (done, see `INSTALL.md`)
 2. UEFI GOP framebuffer and text drawing (done); on-screen text console still to do
 3. Keyboard and mouse input (PS/2 interrupt-driven, done; USB still to do), timer and clock (done)
-4. Syscalls and user mode (done: processes with their own address spaces, file and window syscalls, Notes as a user program; see `docs/SYSCALL_PLAN.md`); user-space library, ELF loader and a high-half kernel still to do
+4. Syscalls and user mode (done: processes with their own address spaces, file and window syscalls, Notes as a user program; see `docs/SYSCALL_PLAN.md`); user-space library and ELF loader done (programs are ELF64 executables, see `docs/SYSCALL_PLAN.md`); a high-half kernel still to do
 5. Storage and filesystem (AHCI, NVMe, FAT16/FAT32 done, see `docs/STORAGE.md`); USB storage, exFAT/NTFS and our own filesystem still to do
 6. Windowing system (done: window manager, see `docs/WINDOW_MANAGER.md`); double buffering done; a compositor (per-window surfaces composed on the fly) still to do
 7. Desktop shell: taskbar and Start menu (done); file explorer and taskbar clock with date and adjustable time zone done; notifications and a saved time zone still to do
@@ -268,7 +268,7 @@ sudo out/installer-package/install.sh \
 ### Next Steps
 User-space task launching, per-process address spaces, a file system interface and a
 system call interface for user tasks are done (see `docs/SYSCALL_PLAN.md`). Still open:
-- A user-space library (fonts, widgets), an ELF loader and a high-half kernel
+- A high-half kernel
 - Enhanced QEMU/installer validation workflow (Issue #3)
 
 ## Kernel coding notes

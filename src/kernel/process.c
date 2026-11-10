@@ -137,13 +137,142 @@ static void create_cleanup(process_t *p) {
   p->image_phys = 0;
 }
 
+// ---- Program images ----------------------------------------------------------
+//
+// A program file is either an ELF64 executable (ET_EXEC, x86-64, linked at a fixed
+// address by src/user/user.ld) or, for older programs, a flat binary that is loaded
+// whole at PROCESS_LOAD_BASE and starts at its first byte. ELF files are told apart by
+// their magic number. Only PT_LOAD segments are used; there is no dynamic linking and
+// no relocation, so the file must already be linked for the address it asks for.
+
+#define ELF_MAX_SEGS 4
+#define ELFCLASS64   2
+#define ELFDATA2LSB  1
+#define ET_EXEC      2
+#define EM_X86_64    62
+#define PT_LOAD      1
+#define PF_X         1U
+#define PF_W         2U
+
+typedef struct {
+  uint8_t  ident[16];
+  uint16_t type, machine;
+  uint32_t version;
+  uint64_t entry, phoff, shoff;
+  uint32_t flags;
+  uint16_t ehsize, phentsize, phnum, shentsize, shnum, shstrndx;
+} elf64_ehdr_t;
+
+typedef struct {
+  uint32_t type, flags;
+  uint64_t offset, vaddr, paddr, filesz, memsz, align;
+} elf64_phdr_t;
+
+typedef struct {
+  uint64_t vaddr;       // where the segment starts in the process
+  uint64_t filesz;      // bytes taken from the file
+  uint64_t memsz;       // bytes in memory (the rest is zeroed .bss)
+  uint64_t offset;      // position in the file
+  int writable;
+} seg_t;
+
+typedef struct {
+  seg_t seg[ELF_MAX_SEGS];
+  int count;
+  uint64_t base;        // lowest page the image touches
+  uint64_t end;         // one past the highest page, before the heap pages
+  uint64_t entry;
+} image_t;
+
+static uint64_t page_down(uint64_t v) { return v & ~4095ULL; }
+static uint64_t page_up(uint64_t v) { return (v + 4095ULL) & ~4095ULL; }
+
+// Largest span an image may cover: from the load base up to the stack's guard page.
+#define IMAGE_LIMIT (PROCESS_STACK_TOP - (uint64_t)PROCESS_STACK_PAGES * 4096ULL - 4096ULL)
+
+// Describe a flat binary: one writable segment holding the whole file.
+static void image_from_flat(uint64_t size, image_t *img) {
+  img->count = 1;
+  img->seg[0].vaddr = PROCESS_LOAD_BASE;
+  img->seg[0].filesz = size;
+  img->seg[0].memsz = size;
+  img->seg[0].offset = 0;
+  img->seg[0].writable = 1;
+  img->base = PROCESS_LOAD_BASE;
+  img->end = page_up(PROCESS_LOAD_BASE + size);
+  img->entry = PROCESS_LOAD_BASE;
+}
+
+// Check an ELF header and its PT_LOAD segments and fill `img`. `buf` holds the first
+// `have` bytes of the file, `size` is the whole file's length.
+static int image_from_elf(const uint8_t *buf, uint64_t have, uint64_t size, image_t *img) {
+  const elf64_ehdr_t *eh = (const elf64_ehdr_t *)buf;
+  uint64_t lo = ~0ULL, hi = 0;
+  int i, entry_ok = 0;
+
+  if (have < sizeof(*eh) || eh->ident[4] != ELFCLASS64 || eh->ident[5] != ELFDATA2LSB ||
+      eh->type != ET_EXEC || eh->machine != EM_X86_64 || eh->phentsize != sizeof(elf64_phdr_t) ||
+      eh->phnum == 0 || eh->phoff > have || (uint64_t)eh->phnum * sizeof(elf64_phdr_t) > have - eh->phoff) {
+    return 0;
+  }
+  img->count = 0;
+  for (i = 0; i < eh->phnum; ++i) {
+    elf64_phdr_t ph;
+    seg_t *s;
+    int j;
+
+    memcpy(&ph, buf + eh->phoff + (uint64_t)i * sizeof(ph), sizeof(ph));
+    if (ph.type != PT_LOAD || ph.memsz == 0) {
+      continue;
+    }
+    if (img->count == ELF_MAX_SEGS || ph.filesz > ph.memsz || ph.offset > size ||
+        ph.filesz > size - ph.offset || ph.vaddr < PROCESS_LOAD_BASE || ph.vaddr >= IMAGE_LIMIT ||
+        ph.memsz > IMAGE_LIMIT - ph.vaddr) {
+      return 0;
+    }
+    // The pages are what gets mapped, so two segments must not share one.
+    for (j = 0; j < img->count; ++j) {
+      uint64_t a0 = page_down(img->seg[j].vaddr), a1 = page_up(img->seg[j].vaddr + img->seg[j].memsz);
+      if (page_down(ph.vaddr) < a1 && page_up(ph.vaddr + ph.memsz) > a0) {
+        return 0;
+      }
+    }
+    s = &img->seg[img->count++];
+    s->vaddr = ph.vaddr;
+    s->filesz = ph.filesz;
+    s->memsz = ph.memsz;
+    s->offset = ph.offset;
+    s->writable = (ph.flags & PF_W) != 0;
+    if (page_down(ph.vaddr) < lo) {
+      lo = page_down(ph.vaddr);
+    }
+    if (page_up(ph.vaddr + ph.memsz) > hi) {
+      hi = page_up(ph.vaddr + ph.memsz);
+    }
+    if (eh->entry >= ph.vaddr && eh->entry < ph.vaddr + ph.memsz && (ph.flags & PF_X) != 0) {
+      entry_ok = 1;
+    }
+  }
+  if (img->count == 0 || !entry_ok) {
+    return 0;
+  }
+  img->base = lo;
+  img->end = hi;
+  img->entry = eh->entry;
+  return 1;
+}
+
 static int process_create_locked(const char *path, process_t *p) {
   fat_volume_t *vol = 0;
   fat_dirent_t ent;
-  uint64_t image_bytes;
-  uint32_t got = 0;
+  fat_file_t file;
+  image_t img;
+  uint8_t head[512];
+  uint32_t got = 0, head_len = 0;
   uint64_t stack_virt = PROCESS_STACK_TOP - (uint64_t)PROCESS_STACK_PAGES * 4096ULL;
+  uint64_t extra_virt;
   uint8_t *kstack;
+  int i;
 
   memset(p, 0, sizeof(*p));
 
@@ -156,8 +285,22 @@ static int process_create_locked(const char *path, process_t *p) {
   if (ent.size > PROCESS_MAX_IMAGE) {
     return PROCESS_ERR_TOOBIG;
   }
-  image_bytes = ent.size;
-  p->image_pages = (image_bytes + 4095ULL) / 4096ULL + PROCESS_EXTRA_PAGES;
+  if (!fat_file_open(vol, &ent, &file) ||
+      !fat_file_read(&file, 0, head, sizeof(head), &head_len)) {
+    return PROCESS_ERR_READ;
+  }
+  if (head_len >= 4 && head[0] == 0x7F && head[1] == 'E' && head[2] == 'L' && head[3] == 'F') {
+    if (!image_from_elf(head, head_len, ent.size, &img)) {
+      return PROCESS_ERR_BADELF;
+    }
+  } else {
+    image_from_flat(ent.size, &img);
+  }
+  // The image, then a few zeroed pages after it for the heap.
+  p->image_pages = (img.end - img.base) / 4096ULL + PROCESS_EXTRA_PAGES;
+  if (img.base + p->image_pages * 4096ULL > IMAGE_LIMIT) {
+    return PROCESS_ERR_TOOBIG;
+  }
 
   p->image_phys = pmm_alloc_pages(p->image_pages);
   if (p->image_phys == 0) {
@@ -179,17 +322,39 @@ static int process_create_locked(const char *path, process_t *p) {
   zero_pages(p->image_phys, p->image_pages);
   zero_pages(p->stack_phys, PROCESS_STACK_PAGES);
 
-  if (!fat_read_file(vol, &ent, (void *)(uintptr_t)p->image_phys, (uint32_t)image_bytes, &got) ||
-      got != image_bytes) {
-    create_cleanup(p);
-    return PROCESS_ERR_READ;
+  // Copy each segment's file bytes to its place; the rest of it stays zero (.bss).
+  for (i = 0; i < img.count; ++i) {
+    const seg_t *s = &img.seg[i];
+    uint8_t *dst = (uint8_t *)(uintptr_t)(p->image_phys + (s->vaddr - img.base));
+
+    if (s->filesz != 0 &&
+        (!fat_file_read(&file, (uint32_t)s->offset, dst, (uint32_t)s->filesz, &got) || got != s->filesz)) {
+      create_cleanup(p);
+      return PROCESS_ERR_READ;
+    }
   }
 
   // A private address space: it shares the kernel's mappings and maps the image
-  // and stack at the same virtual addresses every process uses.
+  // and stack at the same virtual addresses every process uses. Segments the file
+  // does not mark writable (code, constants) are mapped read-only.
   p->cr3 = paging_create_address_space();
-  if (p->cr3 == 0 ||
-      !paging_map_user_in(p->cr3, PROCESS_LOAD_BASE, p->image_phys, p->image_pages * 4096ULL, 1) ||
+  if (p->cr3 == 0) {
+    create_cleanup(p);
+    return PROCESS_ERR_NOMEM;
+  }
+  for (i = 0; i < img.count; ++i) {
+    const seg_t *s = &img.seg[i];
+    uint64_t v0 = page_down(s->vaddr), v1 = page_up(s->vaddr + s->memsz);
+
+    if (!paging_map_user_in(p->cr3, v0, p->image_phys + (v0 - img.base), v1 - v0, s->writable)) {
+      create_cleanup(p);
+      return PROCESS_ERR_NOMEM;
+    }
+  }
+  // Heap pages, then the stack.
+  extra_virt = img.end;
+  if (!paging_map_user_in(p->cr3, extra_virt, p->image_phys + (extra_virt - img.base),
+                          (uint64_t)PROCESS_EXTRA_PAGES * 4096ULL, 1) ||
       !paging_map_user_in(p->cr3, stack_virt, p->stack_phys, (uint64_t)PROCESS_STACK_PAGES * 4096ULL, 1)) {
     create_cleanup(p);
     return PROCESS_ERR_NOMEM;
@@ -197,7 +362,7 @@ static int process_create_locked(const char *path, process_t *p) {
 
   kstack = (uint8_t *)(((uintptr_t)p->kstack_alloc + 15U) & ~(uintptr_t)15U);
   p->kstack_top = (uint64_t)(uintptr_t)(kstack + PROCESS_KSTACK_SIZE);
-  p->entry = PROCESS_LOAD_BASE;
+  p->entry = img.entry;
   {
     // Under the scheduler the pid is the id of the task running the program.
     TCB *self = scheduler_current_tcb();
