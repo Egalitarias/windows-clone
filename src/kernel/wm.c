@@ -1,4 +1,5 @@
 #include "wm.h"
+#include "timer.h"
 #include "fb.h"
 
 #define BTN_W   20
@@ -498,6 +499,9 @@ int wm_mouse_down(int x, int y, int double_click) {
   return 1;
 }
 
+#define LIVE_RESIZE_MS 60U
+static uint64_t g_live_resize_ms = 0;
+
 void wm_mouse_move(int x, int y, unsigned int buttons) {
   wm_window_t *win = g_cap_win;
 
@@ -530,6 +534,12 @@ void wm_mouse_move(int x, int y, unsigned int buttons) {
       win->w = nw;
       win->h = nh;
       wm_invalidate_window(win);
+      // Let the program follow the drag, but not on every mouse packet: giving it a new
+      // surface costs a memory allocation and a full redraw on its side.
+      if (win->resized && timer_get_ms() - g_live_resize_ms >= LIVE_RESIZE_MS) {
+        g_live_resize_ms = timer_get_ms();
+        win->resized(win);
+      }
     }
   } else if (g_cap == CAP_CLIENT && win->mouse) {
     int cx, cy, cw, ch;

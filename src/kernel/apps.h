@@ -9,8 +9,7 @@
 // ABOUT.BIN). The app_launch_*() functions start them from the desktop (call them from the
 // desktop task). Files, Paint and About are single instance: a running one is raised.
 // Notes opens a new window each time. When a program cannot be started (its file is
-// missing, no window slot or task slot is free) Notes and Files show a message window
-// saying why; Paint and About fall back to the small built-in versions below.
+// missing, no window slot or task slot is free) a message window says why.
 void app_launch_notes(void);
 void app_launch_files(void);
 void app_launch_paint(void);
@@ -18,9 +17,6 @@ void app_launch_about(void);
 // A small window with up to three lines of text.
 void app_message_open(const char *title, const char *line1, const char *line2, const char *line3);
 
-// Built-in fallbacks for Paint and About.
-void app_paint_open(void);
-void app_about_open(void);
 // Programs: run user-mode programs from /APPS and show their output.
 void app_programs_open(void);
 void app_programs_run(const char *path);   // open the window and start `path`

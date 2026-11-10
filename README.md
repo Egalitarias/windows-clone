@@ -28,7 +28,7 @@ About (user programs in `\APPS`) and Setup.
 3. Keyboard and mouse input (PS/2 interrupt-driven, done; USB still to do), timer and clock (done)
 4. Syscalls and user mode (done: processes with their own address spaces, file and window syscalls, Notes as a user program; see `docs/SYSCALL_PLAN.md`); user-space library, ELF loader and a high-half kernel still to do
 5. Storage and filesystem (AHCI, NVMe, FAT16/FAT32 done, see `docs/STORAGE.md`); USB storage, exFAT/NTFS and our own filesystem still to do
-6. Windowing system (done: window manager, see `docs/WINDOW_MANAGER.md`); compositor and double buffering still to do
+6. Windowing system (done: window manager, see `docs/WINDOW_MANAGER.md`); double buffering done; a compositor (per-window surfaces composed on the fly) still to do
 7. Desktop shell: taskbar and Start menu (done); file explorer, clock, notifications still to do
 8. Installer (done for fixed disks, see `docs/INSTALLER.md`); building a bootable USB image from the build still to do
 9. Optional: PE loader and a small Win32 subset

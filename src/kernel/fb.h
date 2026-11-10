@@ -28,6 +28,18 @@ void fb_clear(uint32_t rgb);
 // Copy a w x h block of 0x00RRGGBB pixels (src_stride pixels per source row) to (x, y).
 void fb_blit(int x, int y, int w, int h, const uint32_t *src, int src_stride);
 
+// Double buffering. With buffering on, every drawing call (and fb_get_pixel) works on an
+// off-screen copy of the screen, so the screen never shows a half-drawn picture; call
+// fb_present() for the area you finished to copy it to the screen. Turning it on first
+// copies the screen into the copy. With buffering off, drawing goes straight to the
+// screen (the default). Returns 0 when there is no off-screen copy (out of memory): then
+// drawing stays direct and fb_present does nothing.
+int fb_set_buffered(int on);
+void fb_present(int x, int y, int w, int h);
+// Draw one pixel straight on the screen, bypassing the off-screen copy and the clip. For
+// things that sit on top of the picture, such as the mouse pointer.
+void fb_put_pixel_front(int x, int y, uint32_t rgb);
+
 // Clip rectangle: every drawing call is limited to it (reads are not).
 // The default is the whole screen. Clips do not nest; save and restore the
 // previous one with fb_get_clip() when intersecting.

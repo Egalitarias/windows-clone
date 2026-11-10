@@ -385,9 +385,8 @@ static void launch_failed(const char *what, const char *path) {
   }
 }
 
-// A single-instance program: raise it if it runs, else start it, else `fallback` (a
-// built-in app) or, with none, a message window.
-static void launch_single(const char *path, const char *what, void (*fallback)(void)) {
+// A single-instance program: raise it if it runs, else start it, else say why not.
+static void launch_single(const char *path, const char *what) {
   uint64_t pid = 0;
 
   if (process_spawn_active(path, &pid)) {
@@ -395,11 +394,7 @@ static void launch_single(const char *path, const char *what, void (*fallback)(v
     return;
   }
   if (!launch_user_program(path)) {
-    if (fallback != 0) {
-      fallback();
-    } else {
-      launch_failed(what, path);
-    }
+    launch_failed(what, path);
   }
 }
 
@@ -410,13 +405,13 @@ void app_launch_notes(void) {
 }
 
 void app_launch_files(void) {
-  launch_single(EXPLORER_PROGRAM, "Files", 0);
+  launch_single(EXPLORER_PROGRAM, "Files");
 }
 
 void app_launch_paint(void) {
-  launch_single("/APPS/PAINT.BIN", "Paint", app_paint_open);
+  launch_single("/APPS/PAINT.BIN", "Paint");
 }
 
 void app_launch_about(void) {
-  launch_single("/APPS/ABOUT.BIN", "About", app_about_open);
+  launch_single("/APPS/ABOUT.BIN", "About");
 }

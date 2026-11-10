@@ -176,20 +176,20 @@ static const char kCursor[CUR_H][CUR_W + 1] = {
   "X     X..X  ", "       X..X ", "       XXX  "
 };
 
-static uint32_t g_under[CUR_W * CUR_H];
 static int g_cur_x, g_cur_y, g_cur_drawn = 0;
 
+// The pointer is drawn straight on the screen, on top of the picture, which is kept
+// clean in the off-screen copy: erasing the pointer is just copying that area back.
 static void cursor_save_and_draw(void) {
   int r, c;
   g_cur_x = g_mouse_x;
   g_cur_y = g_mouse_y;
   for (r = 0; r < CUR_H; r++) {
     for (c = 0; c < CUR_W; c++) {
-      g_under[r * CUR_W + c] = fb_get_pixel(g_cur_x + c, g_cur_y + r);
       if (kCursor[r][c] == 'X') {
-        fb_put_pixel(g_cur_x + c, g_cur_y + r, FB_RGB(0, 0, 0));
+        fb_put_pixel_front(g_cur_x + c, g_cur_y + r, FB_RGB(0, 0, 0));
       } else if (kCursor[r][c] == '.') {
-        fb_put_pixel(g_cur_x + c, g_cur_y + r, FB_RGB(255, 255, 255));
+        fb_put_pixel_front(g_cur_x + c, g_cur_y + r, FB_RGB(255, 255, 255));
       }
     }
   }
@@ -197,23 +197,17 @@ static void cursor_save_and_draw(void) {
 }
 
 static void cursor_restore(void) {
-  int r, c;
   if (!g_cur_drawn) {
     return;
   }
-  for (r = 0; r < CUR_H; r++) {
-    for (c = 0; c < CUR_W; c++) {
-      if (kCursor[r][c] != ' ') {
-        fb_put_pixel(g_cur_x + c, g_cur_y + r, g_under[r * CUR_W + c]);
-      }
-    }
-  }
+  fb_present(g_cur_x, g_cur_y, CUR_W, CUR_H);
   g_cur_drawn = 0;
 }
 
 // ---- actions ---------------------------------------------------------------
 
 static __attribute__((noreturn)) void shut_down(void) {
+  fb_set_buffered(0);                               // draw straight on the screen again
   fb_reset_clip();
   fb_clear(FB_RGB(0, 0, 0));
   fb_draw_text(((int)fb_width() - fb_text_width("It is now safe to turn off your computer.", 2)) / 2,
@@ -403,8 +397,9 @@ static int repaint_dirty(void) {
   }
   cursor_restore();
   fb_set_clip(dx, dy, dw, dh);
-  paint_scene();
+  paint_scene();                                    // into the off-screen copy
   fb_reset_clip();
+  fb_present(dx, dy, dw, dh);                       // the screen only ever sees a finished picture
   cursor_save_and_draw();
   return 1;
 }
@@ -426,6 +421,7 @@ static __attribute__((noreturn)) void desktop_run(void) {
   uint64_t last_second;
 
   wm_init((int)fb_width(), (int)fb_height(), TASKBAR_H);
+  fb_set_buffered(1);                               // from here on draw off-screen and present
   g_mouse_x = (int)fb_width() / 2;
   g_mouse_y = (int)fb_height() / 2;
 

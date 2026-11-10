@@ -17,8 +17,17 @@ Source: `src/kernel/wm.c`, `wm.h` (window manager), `desktop.c` (shell), `apps.c
 Anything that changes calls `wm_invalidate(x, y, w, h)`. The shell's main loop asks for
 the accumulated dirty rectangle (`wm_take_dirty`), sets the fb clip to it, repaints the
 whole scene back to front (wallpaper, windows bottom to top, taskbar, menu), then
-resets the clip. Pointer movement alone only restores and redraws the cursor from a
-save-under buffer. There is no back buffer yet, so repaints draw straight to the screen.
+resets the clip.
+
+The scene is **double buffered** (`fb_set_buffered`, `fb_present` in `fb.c`): once the
+desktop is running, every drawing call works on an off-screen copy of the screen (allocated
+from the page allocator in `fb_init`, same layout and pixel format), and only the finished
+dirty rectangle is copied to the screen with `fb_present`. The screen therefore never shows
+a half-drawn picture (wallpaper, then window, then text). The mouse pointer is drawn
+straight on the screen on top (`fb_put_pixel_front`), so the off-screen copy always holds the
+clean picture and erasing the pointer is just presenting that small area again; pointer
+movement costs no scene repaint. If the off-screen copy cannot be allocated, drawing stays
+direct, as before. The shutdown screen turns buffering off.
 
 ## Windows
 
@@ -44,7 +53,9 @@ Double-clicking a title bar toggles maximize. Taskbar buttons restore, focus or 
 
 ## Known limitations
 
-- No double buffering, so fast repaints can flicker on real hardware.
+- No compositor: windows are repainted by their own callbacks into the shared off-screen
+  copy, in z-order. A window cannot be translucent or moved without repainting what it covered.
+- Presenting copies the dirty rectangle with a plain loop; there is no vsync or page flip.
 - Input and timing are interrupt-driven (see `INTERRUPTS.md`), but the shell is a single
   loop on its own stack, not a scheduled task.
 - Fixed pool of 16 windows, of which user programs may hold 8 (`SYSWIN_MAX`); Paint, About
