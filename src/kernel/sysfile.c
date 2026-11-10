@@ -22,7 +22,10 @@ typedef struct {
   uint8_t *data;               // READ: the whole file; WRITE: bytes so far
   uint32_t len;
   uint32_t cap;
-  uint32_t pos;                // READ position
+  uint32_t pos;                // read/write position
+  uint8_t readable;            // WRITE: opened with O_RDWR
+  uint8_t append;              // WRITE: every write goes to the end
+  uint8_t dirty;               // WRITE: needs storing on close
   uint32_t dir_cluster;        // WRITE: directory and name to replace on close
   char name[FAT_NAME_MAX];
   fat_iter_t *iter;            // DIR
@@ -207,6 +210,31 @@ static int flush(sysfile_t *f) {
   return ok;
 }
 
+// Load a whole file into f->data / f->len. Caller holds the preempt lock.
+static int64_t load_file(sysfile_t *f, fat_volume_t *v, const fat_dirent_t *ent) {
+  if (ent->size > SYSFILE_MAX_SIZE) {
+    return SYSCALL_EFBIG;
+  }
+  if (ent->size > 0) {
+    uint32_t got = 0;
+    int ok;
+
+    f->data = (uint8_t *)kmalloc(ent->size);
+    if (f->data == 0) {
+      return SYSCALL_ENOMEM;
+    }
+    f->cap = ent->size;
+    io_begin();
+    ok = fat_read_file(v, ent, f->data, ent->size, &got);
+    io_end();
+    if (!ok || got != ent->size) {
+      return SYSCALL_EIO;
+    }
+  }
+  f->len = ent->size;
+  return 0;
+}
+
 static int64_t open_read(sysfile_t *f, const char *path) {
   int n;
 
@@ -238,32 +266,20 @@ static int64_t open_read(sysfile_t *f, const char *path) {
       f->kind = KIND_DIR;
       return 0;
     }
-    if (ent.size > SYSFILE_MAX_SIZE) {
-      return SYSCALL_EFBIG;
-    }
-    if (ent.size > 0) {
-      uint32_t got = 0;
-      int ok;
+    {
+      int64_t lr = load_file(f, v, &ent);
 
-      f->data = (uint8_t *)kmalloc(ent.size);
-      if (f->data == 0) {
-        return SYSCALL_ENOMEM;
-      }
-      io_begin();
-      ok = fat_read_file(v, &ent, f->data, ent.size, &got);
-      io_end();
-      if (!ok || got != ent.size) {
-        return SYSCALL_EIO;
+      if (lr < 0) {
+        return lr;
       }
     }
-    f->len = ent.size;
     f->kind = KIND_READ;
     return 0;
   }
   return SYSCALL_ENOENT;
 }
 
-static int64_t open_write(sysfile_t *f, const char *path) {
+static int64_t open_write(sysfile_t *f, const char *path, uint64_t flags) {
   fat_volume_t *v = fs_default_volume();
   fat_dirent_t ent;
   int found;
@@ -297,6 +313,19 @@ static int64_t open_write(sysfile_t *f, const char *path) {
   }
   f->v = v;
   f->gen = fs_generation();
+  f->readable = (flags & SYSFILE_O_RDWR) != 0;
+  f->append = (flags & SYSFILE_O_APPEND) != 0;
+  if ((flags & (SYSFILE_O_RDWR | SYSFILE_O_APPEND)) != 0 && found) {
+    int64_t lr = load_file(f, v, &ent);         // keep the old contents
+
+    if (lr < 0) {
+      return lr;
+    }
+    f->dirty = 0;
+  } else {
+    f->dirty = 1;                               // truncated or newly created
+  }
+  f->pos = f->append ? f->len : 0;
   f->kind = KIND_WRITE;
   return 0;
 }
@@ -308,7 +337,9 @@ int64_t sysfile_open(uint64_t path_uaddr, uint64_t flags) {
   int64_t r;
   int i;
 
-  if (flags != SYSFILE_O_RDONLY && flags != SYSFILE_O_WRONLY) {
+  // Valid: 0, WRONLY, RDWR, and either of the last two with APPEND.
+  if (flags != SYSFILE_O_RDONLY && flags != SYSFILE_O_WRONLY && flags != SYSFILE_O_RDWR &&
+      flags != (SYSFILE_O_WRONLY | SYSFILE_O_APPEND) && flags != (SYSFILE_O_RDWR | SYSFILE_O_APPEND)) {
     return SYSCALL_EINVAL;
   }
   r = sys_copy_user_string(path_uaddr, path, sizeof(path));
@@ -332,7 +363,7 @@ int64_t sysfile_open(uint64_t path_uaddr, uint64_t flags) {
   // (or a parent lookup followed by a name lookup). Keep other tasks from switching in
   // between so the directory cannot change under us.
   scheduler_preempt_disable();
-  r = (flags == SYSFILE_O_WRONLY) ? open_write(f, path) : open_read(f, path);
+  r = (flags != SYSFILE_O_RDONLY) ? open_write(f, path, flags) : open_read(f, path);
   scheduler_preempt_enable();
   if (r < 0) {
     release(f);
@@ -348,7 +379,7 @@ int64_t sysfile_close(uint64_t fd) {
   if (f == 0) {
     return SYSCALL_EBADF;
   }
-  if (f->kind == KIND_WRITE) {
+  if (f->kind == KIND_WRITE && f->dirty) {
     ok = flush(f);
   }
   release(f);
@@ -363,7 +394,7 @@ void sysfile_close_all(void *tbl, int do_flush) {
     return;
   }
   for (i = 0; i < SYSFILE_MAX_FDS; ++i) {
-    if (t->f[i].kind == KIND_WRITE && do_flush) {
+    if (t->f[i].kind == KIND_WRITE && t->f[i].dirty && do_flush) {
       flush(&t->f[i]);
     }
     release(&t->f[i]);
@@ -383,10 +414,10 @@ int64_t sysfile_read(uint64_t fd, uint64_t buf, uint64_t len) {
   if (f->kind == KIND_DIR) {
     return SYSCALL_EISDIR;
   }
-  if (f->kind != KIND_READ) {
-    return SYSCALL_EBADF;                       // opened for writing
+  if (f->kind != KIND_READ && !(f->kind == KIND_WRITE && f->readable)) {
+    return SYSCALL_EBADF;                       // opened write-only
   }
-  n = f->len - f->pos;
+  n = f->pos < f->len ? f->len - f->pos : 0;
   if (n > len) {
     n = len;
   }
@@ -404,6 +435,7 @@ int64_t sysfile_read(uint64_t fd, uint64_t buf, uint64_t len) {
 int64_t sysfile_write(uint64_t fd, uint64_t buf, uint64_t len) {
   sysfile_t *f = get_fd(fd);
   uint64_t room;
+  uint64_t end;
 
   if (f == 0 || f->kind != KIND_WRITE) {
     return SYSCALL_EBADF;
@@ -411,21 +443,25 @@ int64_t sysfile_write(uint64_t fd, uint64_t buf, uint64_t len) {
   if (len == 0) {
     return 0;
   }
-  room = SYSFILE_MAX_SIZE - f->len;
-  if (room == 0) {
+  if (f->append) {
+    f->pos = f->len;
+  }
+  if (f->pos >= SYSFILE_MAX_SIZE) {
     return SYSCALL_EFBIG;
   }
+  room = SYSFILE_MAX_SIZE - f->pos;
   if (len > room) {
     len = room;                                 // short write, like a full disk
   }
   if (!paging_user_range_ok(buf, len)) {
     return SYSCALL_EFAULT;
   }
-  if (f->len + len > f->cap) {
+  end = (uint64_t)f->pos + len;
+  if (end > f->cap) {
     uint32_t cap = f->cap != 0 ? f->cap : 4096U;
     uint8_t *bigger;
 
-    while (cap < f->len + len) {
+    while (cap < end) {
       cap *= 2U;
     }
     bigger = (uint8_t *)kmalloc(cap);
@@ -439,9 +475,47 @@ int64_t sysfile_write(uint64_t fd, uint64_t buf, uint64_t len) {
     f->data = bigger;
     f->cap = cap;
   }
-  memcpy(f->data + f->len, (const void *)(uintptr_t)buf, (size_t)len);
-  f->len += (uint32_t)len;
+  if (f->pos > f->len) {
+    memset(f->data + f->len, 0, f->pos - f->len);   // a seek past the end leaves a hole
+  }
+  memcpy(f->data + f->pos, (const void *)(uintptr_t)buf, (size_t)len);
+  f->pos += (uint32_t)len;
+  if (f->pos > f->len) {
+    f->len = f->pos;
+  }
+  f->dirty = 1;
   return (int64_t)len;
+}
+
+int64_t sysfile_lseek(uint64_t fd, int64_t offset, uint64_t whence) {
+  sysfile_t *f = get_fd(fd);
+  int64_t base;
+  int64_t target;
+
+  if (f == 0) {
+    return SYSCALL_EBADF;
+  }
+  if (f->kind == KIND_DIR) {
+    return SYSCALL_EISDIR;
+  }
+  if (whence == SYSFILE_SEEK_SET) {
+    base = 0;
+  } else if (whence == SYSFILE_SEEK_CUR) {
+    base = (int64_t)f->pos;
+  } else if (whence == SYSFILE_SEEK_END) {
+    base = (int64_t)f->len;
+  } else {
+    return SYSCALL_EINVAL;
+  }
+  if (offset > (int64_t)SYSFILE_MAX_SIZE || offset < -(int64_t)SYSFILE_MAX_SIZE) {
+    return SYSCALL_EINVAL;
+  }
+  target = base + offset;
+  if (target < 0 || target > (int64_t)SYSFILE_MAX_SIZE) {
+    return SYSCALL_EINVAL;
+  }
+  f->pos = (uint32_t)target;
+  return target;
 }
 
 int64_t sysfile_readdir(uint64_t fd, uint64_t out_uaddr) {
@@ -474,4 +548,138 @@ int64_t sysfile_readdir(uint64_t fd, uint64_t out_uaddr) {
   str_copy(out.name, ent.name, sizeof(out.name));
   memcpy((void *)(uintptr_t)out_uaddr, &out, sizeof(out));
   return 1;
+}
+
+// ---- stat / unlink / mkdir -----------------------------------------------------
+
+static void fill_stat(sysfile_dirent_t *out, const fat_dirent_t *ent, int is_root) {
+  memset(out, 0, sizeof(*out));
+  if (is_root) {
+    out->attr = FAT_ATTR_DIR;
+    out->name[0] = '/';
+    return;
+  }
+  out->size = ent->size;
+  out->attr = ent->attr;
+  str_copy(out->name, ent->name, sizeof(out->name));
+}
+
+int64_t sysfile_stat(uint64_t path_uaddr, uint64_t out_uaddr) {
+  char path[PATH_MAX];
+  sysfile_dirent_t out;
+  int64_t r;
+  int n;
+
+  if (!paging_user_range_ok(out_uaddr, sizeof(out))) {
+    return SYSCALL_EFAULT;
+  }
+  r = sys_copy_user_string(path_uaddr, path, sizeof(path));
+  if (r < 0) {
+    return r;
+  }
+  r = SYSCALL_ENOENT;
+  scheduler_preempt_disable();
+  for (n = 0; n < fs_volume_count(); ++n) {
+    fat_volume_t *v = volume_at(n);
+    fat_dirent_t ent;
+    int is_root = 0;
+    int found;
+
+    if (v == 0) {
+      break;
+    }
+    io_begin();
+    found = lookup(v, path, &ent, &is_root);
+    io_end();
+    if (found) {
+      fill_stat(&out, &ent, is_root);
+      r = 0;
+      break;
+    }
+  }
+  scheduler_preempt_enable();
+  if (r == 0) {
+    memcpy((void *)(uintptr_t)out_uaddr, &out, sizeof(out));
+  }
+  return r;
+}
+
+int64_t sysfile_unlink(uint64_t path_uaddr) {
+  char path[PATH_MAX];
+  fat_volume_t *v = fs_default_volume();
+  fat_dirent_t ent;
+  int is_root = 0;
+  int64_t r;
+
+  r = sys_copy_user_string(path_uaddr, path, sizeof(path));
+  if (r < 0) {
+    return r;
+  }
+  if (v == 0) {
+    return SYSCALL_ENOENT;
+  }
+  scheduler_preempt_disable();
+  io_begin();
+  if (!lookup(v, path, &ent, &is_root)) {
+    r = SYSCALL_ENOENT;
+  } else if (is_root) {
+    r = SYSCALL_EINVAL;
+  } else if ((ent.attr & FAT_ATTR_READONLY) != 0) {
+    r = SYSCALL_EACCES;
+  } else {
+    int empty = 1;
+
+    if ((ent.attr & FAT_ATTR_DIR) != 0) {
+      fat_iter_t *it = (fat_iter_t *)kmalloc(sizeof(*it));
+      fat_dirent_t child;
+
+      if (it == 0) {
+        empty = -1;
+      } else {
+        fat_iter_open(v, ent.first_cluster, it);
+        empty = fat_iter_next(it, &child) ? 0 : 1;
+        kfree(it);
+      }
+    }
+    if (empty < 0) {
+      r = SYSCALL_ENOMEM;
+    } else if (!empty) {
+      r = SYSCALL_ENOTEMPTY;
+    } else {
+      r = fat_delete(v, &ent) ? 0 : SYSCALL_EIO;
+    }
+  }
+  io_end();
+  scheduler_preempt_enable();
+  return r;
+}
+
+int64_t sysfile_mkdir(uint64_t path_uaddr) {
+  char path[PATH_MAX];
+  char name[FAT_NAME_MAX];
+  fat_volume_t *v = fs_default_volume();
+  fat_dirent_t ent;
+  uint32_t dir;
+  uint32_t cluster = 0;
+  int64_t r;
+
+  r = sys_copy_user_string(path_uaddr, path, sizeof(path));
+  if (r < 0) {
+    return r;
+  }
+  if (v == 0) {
+    return SYSCALL_ENOENT;
+  }
+  scheduler_preempt_disable();
+  io_begin();
+  if (!lookup_parent(v, path, &dir, name)) {
+    r = SYSCALL_ENOENT;
+  } else if (fat_lookup(v, dir, name, &ent)) {
+    r = SYSCALL_EEXIST;
+  } else {
+    r = fat_mkdir(v, dir, name, &cluster) ? 0 : SYSCALL_EIO;
+  }
+  io_end();
+  scheduler_preempt_enable();
+  return r;
 }

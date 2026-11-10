@@ -16,6 +16,10 @@
 #define SYS_OPEN    6
 #define SYS_CLOSE   7
 #define SYS_READDIR 8
+#define SYS_LSEEK   17
+#define SYS_STAT    18
+#define SYS_UNLINK  19
+#define SYS_MKDIR   20
 
 #define SYS_WIN_CREATE 9
 #define SYS_WIN_CLOSE  10
@@ -29,6 +33,12 @@
 
 #define O_RDONLY 0   // file or directory
 #define O_WRONLY 1   // create or truncate; the data is stored by close()
+#define O_RDWR   2   // read and write; keeps the contents, creates the file if missing
+#define O_APPEND 4   // with O_WRONLY or O_RDWR: keep the contents and write at the end
+
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
 
 // What readdir() fills in. attr 0x10 = directory.
 typedef struct {
@@ -69,6 +79,14 @@ static inline long open(const char *path, int flags) { return syscall3(SYS_OPEN,
 static inline long close(int fd) { return syscall3(SYS_CLOSE, fd, 0, 0); }
 // Next entry of an open directory: 1 = stored, 0 = no more, negative = error.
 static inline long readdir(int fd, dirent_t *out) { return syscall3(SYS_READDIR, fd, (long)out, 0); }
+
+// lseek returns the new position. stat fills a dirent_t (size, attr, name) for any path.
+// unlink removes a file or an empty directory; mkdir makes a directory. Both work on
+// the default volume. All return 0 or a negative error (-17 EEXIST, -39 ENOTEMPTY).
+static inline long lseek(int fd, long offset, int whence) { return syscall3(SYS_LSEEK, fd, offset, whence); }
+static inline long stat(const char *path, dirent_t *out) { return syscall3(SYS_STAT, (long)path, (long)out, 0); }
+static inline long unlink(const char *path) { return syscall3(SYS_UNLINK, (long)path, 0, 0); }
+static inline long mkdir(const char *path) { return syscall3(SYS_MKDIR, (long)path, 0, 0); }
 
 // Windows. win_create makes a window whose client area is w x h pixels and returns
 // its id (or a negative error). You draw into a pixel surface (0x00RRGGBB) with

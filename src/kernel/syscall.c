@@ -210,6 +210,14 @@ static int64_t syscall_dispatch_inner(uint64_t nr, uint64_t a1, uint64_t a2, uin
       return sysfile_close(a1);
     case SYS_READDIR:
       return sysfile_readdir(a1, a2);
+    case SYS_LSEEK:
+      return sysfile_lseek(a1, (int64_t)a2, a3);
+    case SYS_STAT:
+      return sysfile_stat(a1, a2);
+    case SYS_UNLINK:
+      return sysfile_unlink(a1);
+    case SYS_MKDIR:
+      return sysfile_mkdir(a1);
     case SYS_WIN_CREATE:
       return syswin_create(a1, a2, a3);
     case SYS_WIN_CLOSE:

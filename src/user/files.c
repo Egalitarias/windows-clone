@@ -136,6 +136,58 @@ int main(void) {
     close((int)fd);
   }
 
+  // lseek, O_RDWR, O_APPEND.
+  fd = open("/SEEK.TXT", O_WRONLY);
+  write((int)fd, "0123456789", 10);
+  check(lseek((int)fd, 0, SEEK_CUR) == 10, 32, "lseek CUR reports the position");
+  check(lseek((int)fd, 2, SEEK_SET) == 2, 33, "lseek SET");
+  write((int)fd, "AB", 2);                         // overwrite in place
+  check(close((int)fd) == 0, 34, "close seek file");
+  fd = open("/SEEK.TXT", O_RDWR);
+  check(fd >= 3, 35, "open O_RDWR");
+  check(read((int)fd, g_in, 20) == 10 && same(g_in, "01AB456789", 10), 36, "in-place write kept the rest");
+  check(lseek((int)fd, -3, SEEK_END) == 7, 37, "lseek END");
+  check(read((int)fd, g_in, 20) == 3 && same(g_in, "789", 3), 38, "read after seek");
+  check(lseek((int)fd, -1, SEEK_SET) == -22, 39, "negative position is EINVAL");
+  check(lseek((int)fd, 0, 9) == -22, 40, "bad whence is EINVAL");
+  lseek((int)fd, 0, SEEK_SET);
+  write((int)fd, "xy", 2);
+  check(close((int)fd) == 0, 41, "close O_RDWR file");
+  fd = open("/SEEK.TXT", O_WRONLY | O_APPEND);
+  check(fd >= 3, 42, "open O_APPEND");
+  lseek((int)fd, 0, SEEK_SET);                    // append ignores the position
+  write((int)fd, "!!", 2);
+  check(close((int)fd) == 0, 43, "close appended file");
+  fd = open("/SEEK.TXT", O_RDONLY);
+  n = read((int)fd, g_in, 40);
+  check(n == 12 && same(g_in, "xyAB456789!!", 12), 44, "append result");
+  check(lseek((int)fd, 0, SEEK_SET) == 0 && read((int)fd, g_in, 2) == 2, 45, "rewind a read file");
+  close((int)fd);
+  fd = open("/NEWRW.TXT", O_RDWR);                // creates when missing
+  check(fd >= 3 && close((int)fd) == 0, 46, "O_RDWR creates a missing file");
+  check(stat("/NEWRW.TXT", &de) == 0 && de.size == 0, 47, "created file is empty");
+  check(open("/SEEK.TXT", O_RDWR | O_WRONLY) == -22, 48, "RDWR|WRONLY is EINVAL");
+
+  // stat, mkdir, unlink.
+  check(stat("/SEEK.TXT", &de) == 0 && de.size == 12 && (de.attr & 0x10) == 0, 49, "stat a file");
+  check(stat("/APPS", &de) == 0 && (de.attr & 0x10) != 0, 50, "stat a directory");
+  check(stat("/", &de) == 0 && (de.attr & 0x10) != 0, 51, "stat the root");
+  check(stat("/NOPE.TXT", &de) == -2, 52, "stat a missing file is ENOENT");
+  check(stat("/SEEK.TXT", (dirent_t *)1) == -14, 53, "stat with a bad buffer is EFAULT");
+  check(mkdir("/NEWDIR") == 0, 54, "mkdir");
+  check(mkdir("/NEWDIR") == -17, 55, "mkdir twice is EEXIST");
+  check(mkdir("/NODIR/SUB") == -2, 56, "mkdir in a missing directory is ENOENT");
+  fd = open("/NEWDIR/IN.TXT", O_WRONLY);
+  write((int)fd, "in", 2);
+  check(close((int)fd) == 0, 57, "file in the new directory");
+  check(unlink("/NEWDIR") == -39, 58, "unlink of a non-empty directory is ENOTEMPTY");
+  check(unlink("/NEWDIR/IN.TXT") == 0, 59, "unlink a file");
+  check(stat("/NEWDIR/IN.TXT", &de) == -2, 60, "unlinked file is gone");
+  check(unlink("/NEWDIR") == 0, 61, "unlink an empty directory");
+  check(unlink("/NEWDIR") == -2, 62, "unlink twice is ENOENT");
+  check(unlink("/") == -22, 63, "unlink of the root is EINVAL");
+  check(unlink("/SEEK.TXT") == 0 && unlink("/NEWRW.TXT") == 0, 64, "clean up");
+
   // Leave a file open for writing: the kernel must store it when the program ends.
   fd = open("/FLUSH.TXT", O_WRONLY);
   write((int)fd, "bye", 3);

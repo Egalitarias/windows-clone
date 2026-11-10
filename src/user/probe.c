@@ -55,11 +55,21 @@ int main(void) {
   if (!fails(win_event(3, (win_event_t *)(void *)g_buf, 0))) return 28;
   if (!fails(win_title(3, "t"))) return 29;
   // unknown syscall numbers
-  if (!is(syscall3(17, 1, 2, 3), ENOSYS)) return 30;
+  if (!is(syscall3(21, 1, 2, 3), ENOSYS)) return 30;
   if (!is(syscall3(99, 0, 0, 0), ENOSYS)) return 31;
   if (!is(syscall3(0x100000000L, 0, 0, 0), ENOSYS)) return 32;    // must not alias SYS_EXIT
   if (!is(syscall3(-1, 0, 0, 0), ENOSYS)) return 33;
   if (!is(syscall3(0x8000000000000000L, 0, 0, 0), ENOSYS)) return 34;
+  // file calls added later: bad paths, buffers and descriptors
+  if (!is(stat(0, (dirent_t *)(void *)g_buf), EFAULT)) return 35;
+  if (!is(stat("/", (dirent_t *)kernel_va), EFAULT)) return 36;
+  if (!is(stat((const char *)kernel_va, (dirent_t *)(void *)g_buf), EFAULT)) return 37;
+  if (!is(unlink(0), EFAULT)) return 38;
+  if (!is(mkdir((const char *)kernel_va), EFAULT)) return 39;
+  if (!fails(unlink("/"))) return 40;
+  if (!is(lseek(77, 0, SEEK_SET), EBADF)) return 41;
+  if (!fails(lseek(1, 0, SEEK_SET))) return 42;
+  if (!fails(open("/APPS/HELLO.BIN", O_RDWR | O_WRONLY))) return 43;
   // The process still works after all that.
   puts("probe: ok\r\n");
   return 0;

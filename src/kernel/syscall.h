@@ -13,7 +13,7 @@
 #define SYS_READ    4   // read(fd, buf, len) -> bytes read; fd 0 is the keyboard, blocks until input (0 = end of input)
 
 #define SYS_SLEEP   5   // sleep(ms) -> ms actually slept (>= ms); other tasks run meanwhile
-#define SYS_OPEN    6   // open(path, flags) -> fd (>= 3); flags 0 = read file or directory, 1 = write (create/truncate on close)
+#define SYS_OPEN    6   // open(path, flags) -> fd (>= 3); flags 0 = read file or directory, 1 = write (create/truncate on close), 2 = read+write, |4 = append
 #define SYS_CLOSE   7   // close(fd) -> 0; a write-opened file is stored now (-EIO if that fails)
 #define SYS_WIN_CREATE 9    // win_create(title, w, h) -> window id; w x h is the client area (see syswin.h)
 #define SYS_WIN_CLOSE  10   // win_close(id)
@@ -23,6 +23,10 @@
 #define SYS_WIN_EVENT  14   // win_event(id, syswin_event_t *, block) -> 1 event stored, 0 none
 #define SYS_GETARG     15   // getarg(buf, len) -> length of the argument string; copies it, NUL-terminated
 #define SYS_WIN_TITLE  16   // win_title(id, title)  change the window title
+#define SYS_LSEEK   17  // lseek(fd, offset, whence 0=SET 1=CUR 2=END) -> new position
+#define SYS_STAT    18  // stat(path, sysfile_dirent_t *out) -> 0
+#define SYS_UNLINK  19  // unlink(path) -> 0; a file or an empty directory on the default volume
+#define SYS_MKDIR   20  // mkdir(path) -> 0; on the default volume
 #define SYS_READDIR 8   // readdir(fd, sysfile_dirent_t *out) -> 1 entry stored, 0 at the end
                         // read(fd, ...) and write(fd, ...) also take file descriptors (see sysfile.h)
 
@@ -36,6 +40,8 @@
 #define SYSCALL_EACCES  (-13)
 #define SYSCALL_ENODEV  (-19)
 #define SYSCALL_EFAULT  (-14)
+#define SYSCALL_EEXIST  (-17)
+#define SYSCALL_ENOTEMPTY (-39)
 #define SYSCALL_ENOTDIR (-20)
 #define SYSCALL_EISDIR  (-21)
 #define SYSCALL_EBADF   (-9)
