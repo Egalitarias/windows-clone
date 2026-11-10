@@ -75,6 +75,53 @@ static int serial_is_transmit_empty(void) {
   return (inb(COM1_PORT + 5U) & 0x20U) != 0;
 }
 
+// ---- On-screen log ----------------------------------------------------------
+// A ring of the most recent output. Writers (any task, with preemption off) only
+// store the byte and then advance the count, so a reader sees complete bytes.
+static char g_log[CONSOLE_LOG_SIZE];
+static volatile uint64_t g_log_total = 0;
+static volatile uint64_t g_log_floor = 0;     // bytes before this were cleared
+
+static void log_put(char c) {
+  g_log[g_log_total % CONSOLE_LOG_SIZE] = c;
+  g_log_total = g_log_total + 1;
+}
+
+uint64_t console_log_total(void) {
+  return g_log_total;
+}
+
+uint64_t console_log_read(uint64_t from, char *buf, uint64_t max, uint64_t *actual_from) {
+  uint64_t total = g_log_total;
+  uint64_t oldest = total > CONSOLE_LOG_SIZE ? total - CONSOLE_LOG_SIZE : 0;
+  uint64_t n, i;
+
+  if (oldest < g_log_floor) {
+    oldest = g_log_floor;
+  }
+  if (from < oldest) {
+    from = oldest;
+  }
+  if (from > total) {
+    from = total;
+  }
+  n = total - from;
+  if (n > max) {
+    n = max;
+  }
+  for (i = 0; i < n; i++) {
+    buf[i] = g_log[(from + i) % CONSOLE_LOG_SIZE];
+  }
+  if (actual_from != 0) {
+    *actual_from = from;
+  }
+  return n;
+}
+
+void console_log_clear(void) {
+  g_log_floor = g_log_total;
+}
+
 static void serial_write_char(char c) {
   if (!g_serial_ready) {
     return;
@@ -132,6 +179,7 @@ void console_write_string(const char *str) {
 
   original = str;
   while (*str) {
+    log_put(*str);
     serial_write_char(*str++);
   }
 

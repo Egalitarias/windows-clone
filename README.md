@@ -24,7 +24,7 @@ About (user programs in `\APPS`) and Setup.
 ## Roadmap
 
 1. Build and boot on Windows 11 (done, see `INSTALL.md`)
-2. UEFI GOP framebuffer and text drawing (done); on-screen text console still to do
+2. UEFI GOP framebuffer and text drawing (done); on-screen kernel log window "Console" in the Start menu (done); an interactive command prompt still to do
 3. Keyboard and mouse input (PS/2 interrupt-driven, done; USB still to do), timer and clock (done)
 4. Syscalls and user mode (done: processes with their own address spaces, file and window syscalls, Notes as a user program; see `docs/SYSCALL_PLAN.md`); user-space library and ELF loader done (programs are ELF64 executables, see `docs/SYSCALL_PLAN.md`); a high-half kernel still to do
 5. Storage and filesystem (AHCI, NVMe, FAT16/FAT32 done, see `docs/STORAGE.md`); USB storage, exFAT/NTFS and our own filesystem still to do

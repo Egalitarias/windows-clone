@@ -21,6 +21,9 @@ void app_message_open(const char *title, const char *line1, const char *line2, c
 void app_programs_open(void);
 void app_programs_run(const char *path);   // open the window and start `path`
 void app_programs_poll(void);              // called by the desktop loop
+// Console: a window showing the kernel log (what console_printf prints).
+void app_console_open(void);
+void app_console_poll(void);               // called by the desktop loop
 // Installer: partitions and formats a disk and copies the boot files onto it.
 void app_setup_open(void);
 
