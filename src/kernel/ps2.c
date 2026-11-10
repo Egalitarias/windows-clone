@@ -181,6 +181,7 @@ static int g_shift = 0;
 static int g_caps = 0;
 static int g_extended = 0;
 static int g_ctrl = 0;
+static int g_alt = 0;
 
 static int decode_key(uint8_t code, ps2_event_t *ev) {
   int pressed = !(code & 0x80);
@@ -197,7 +198,15 @@ static int decode_key(uint8_t code, ps2_event_t *ev) {
       g_ctrl = pressed;
       return 0;
     }
+    if (key == 0x38) {                 // right alt (AltGr)
+      g_alt = pressed;
+      return 0;
+    }
     switch (key) {
+      case 0x47: ch = PS2_KEY_HOME; break;
+      case 0x4F: ch = PS2_KEY_END; break;
+      case 0x49: ch = PS2_KEY_PGUP; break;
+      case 0x51: ch = PS2_KEY_PGDN; break;
       case 0x48: ch = PS2_KEY_UP; break;
       case 0x50: ch = PS2_KEY_DOWN; break;
       case 0x4B: ch = PS2_KEY_LEFT; break;
@@ -212,6 +221,10 @@ static int decode_key(uint8_t code, ps2_event_t *ev) {
   }
   if (key == 0x1D) {                   // left ctrl
     g_ctrl = pressed;
+    return 0;
+  }
+  if (key == 0x38) {                   // left alt
+    g_alt = pressed;
     return 0;
   }
   if (key == 0x2A || key == 0x36) {  // left / right shift
@@ -277,6 +290,7 @@ int ps2_poll(ps2_event_t *ev) {
     ev->type = PS2_EVENT_NONE;
     ev->ch = 0;
     ev->pressed = 0;
+    ev->mods = 0;
     ev->dx = 0;
     ev->dy = 0;
     ev->buttons = 0;
@@ -285,6 +299,7 @@ int ps2_poll(ps2_event_t *ev) {
         return 1;
       }
     } else if (decode_key(byte, ev)) {
+      ev->mods = (g_shift ? PS2_MOD_SHIFT : 0U) | (g_ctrl ? PS2_MOD_CTRL : 0U) | (g_alt ? PS2_MOD_ALT : 0U);
       return 1;
     }
   }

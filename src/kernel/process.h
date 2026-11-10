@@ -73,6 +73,10 @@ int process_spawn(const char *path);
 // Same, with an argument string (at most PROCESS_ARG_MAX - 1 characters) the program
 // reads with the getarg syscall - e.g. the file to open.
 int process_spawn_arg(const char *path, const char *arg);
+// Start a program nobody will wait for: its slot is released when it ends. Returns 0 or a
+// negative PROCESS_ERR_* code (PROCESS_ERR_NOMEM when no slot or task is free). A path
+// that does not load is only reported on the kernel console.
+int process_spawn_detached(const char *path, const char *arg);
 #define PROCESS_ARG_MAX 64
 
 // Wait (from a scheduler task) until the spawned program has finished. Stores

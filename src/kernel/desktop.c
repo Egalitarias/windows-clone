@@ -467,6 +467,7 @@ static __attribute__((noreturn)) void desktop_run(void) {
         if (ev.pressed && ev.ch == 27) {
           close_menu();
         } else if (ev.pressed && ev.ch != 0) {
+          wm_set_key_mods(ev.mods);
           wm_key(ev.ch);
         }
       } else if (ev.type == PS2_EVENT_MOUSE) {

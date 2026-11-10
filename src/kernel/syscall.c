@@ -252,6 +252,29 @@ static int64_t syscall_dispatch_inner(uint64_t nr, uint64_t a1, uint64_t a2, uin
     }
     case SYS_WIN_TITLE:
       return syswin_title(a1, a2);
+    case SYS_VOLINFO:
+      return sysfile_volinfo(a1, a2);
+    case SYS_SPAWN: {
+      char path[64];
+      char arg[PROCESS_ARG_MAX];
+      int64_t r = sys_copy_user_string(a1, path, sizeof(path));
+
+      if (r < 0) {
+        return r;
+      }
+      arg[0] = 0;
+      if (a2 != 0) {
+        r = sys_copy_user_string(a2, arg, sizeof(arg));
+        if (r < 0) {
+          return r;
+        }
+      }
+      return process_spawn_detached(path, arg) == PROCESS_OK ? 0 : SYSCALL_ENOMEM;
+    }
+    case SYS_CLIP_SET:
+      return syswin_clip_set(a1, a2);
+    case SYS_CLIP_GET:
+      return syswin_clip_get(a1, a2);
     case SYS_WIN_WAIT:
       return syswin_wait(a1, a2, a3);
     case SYS_WIN_MOVE:

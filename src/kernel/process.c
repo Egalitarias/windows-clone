@@ -374,6 +374,7 @@ typedef struct {
   volatile int done;
   proc_io_t io;
   int error;
+  int detached;                   // nobody waits: release the slot when the program ends
   uint64_t exit_code;
   char path[64];
   char arg[PROCESS_ARG_MAX];
@@ -403,6 +404,10 @@ static int spawn_task(void *arg) {
     s->error = rc;
     s->exit_code = (uint64_t)-1;
     s->done = 1;
+    if (s->detached) {
+      console_printf("[PROC] %s did not load (error %d)\r\n", s->path, rc);
+      s->used = 0;
+    }
     return 0;
   }
 
@@ -417,6 +422,9 @@ static int spawn_task(void *arg) {
   process_destroy(&p);
   s->error = PROCESS_OK;
   s->done = 1;
+  if (s->detached) {
+    s->used = 0;
+  }
   return 0;
 }
 
@@ -424,7 +432,19 @@ int process_spawn(const char *path) {
   return process_spawn_arg(path, 0);
 }
 
+static int spawn_common(const char *path, const char *arg, int detached);
+
 int process_spawn_arg(const char *path, const char *arg) {
+  return spawn_common(path, arg, 0);
+}
+
+int process_spawn_detached(const char *path, const char *arg) {
+  int h = spawn_common(path, arg, 1);
+
+  return h < 0 ? h : 0;
+}
+
+static int spawn_common(const char *path, const char *arg, int detached) {
   int i;
   int handle = -1;
   uint64_t flags;
@@ -451,6 +471,7 @@ int process_spawn_arg(const char *path, const char *arg) {
     str_copy(s->path, path, sizeof(s->path));
     str_copy(s->arg, arg != 0 ? arg : "", sizeof(s->arg));
     s->done = 0;
+    s->detached = detached;
     s->io.out_total = 0;
     s->io.in_head = 0;
     s->io.in_tail = 0;
@@ -869,7 +890,7 @@ static int file_supervisor_task(void *arg) {
   failures += file_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && (code == 0 || code == 50),
                           "first run: every check passed");
   console_printf("[FILE] first run exit code %llu\r\n", code);
-  h = process_spawn("/APPS/FILES.BIN");
+  h = process_spawn_arg("/APPS/FILES.BIN", "spawn");      // this run also spawns a program
   failures += file_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
                           "second run: file left open was stored at exit");
   {
@@ -888,7 +909,10 @@ static int file_supervisor_task(void *arg) {
     }
   }
   failures += file_expect(i == 6, "six more runs (descriptor tables and buffers freed)");
-  failures += file_expect(process_live_count() == 0, "nothing leaked at the end");
+  for (i = 0; i < 500 && process_live_count() != 0; ++i) {
+    wait_one_tick();                                          // the detached HELLO.BIN finishes
+  }
+  failures += file_expect(process_live_count() == 0, "nothing leaked at the end (detached spawn finished)");
 
   if (failures == 0) {
     console_write_string("[FILE] PASS: file syscalls\r\n");
@@ -922,6 +946,22 @@ static int wait_for(int (*cond)(void), int ticks) {
 
 static int cond_has_window(void) { return syswin_test_active() > 0; }
 static int cond_no_windows(void) { return syswin_test_used() == 0; }
+
+static int name_before(const char *a, const char *b) {   // case-insensitive a < b
+  while (*a != 0 && *b != 0 && char_upper(*a) == char_upper(*b)) {
+    ++a;
+    ++b;
+  }
+  return char_upper(*a) < char_upper(*b);
+}
+
+static int cond_explorer_folder(void) {
+  fat_volume_t *v = fs_volume(0);
+  fat_dirent_t e;
+
+  return v != 0 && fat_lookup(v, v->root_cluster, "New Folder", &e);
+}
+static int cond_explorer_folder_gone(void) { return !cond_explorer_folder(); }
 
 static int window_supervisor_task(void *arg) {
   int failures = 0;
@@ -1021,6 +1061,69 @@ static int window_supervisor_task(void *arg) {
            fat_read_file(v, &ent, buf, sizeof(buf), &got) && got == sizeof(expect3) - 1 &&
            memcmp(buf, expect3, got) == 0;
       failures += win_expect(ok, "notes: arrow keys, insert and Delete edited the text in place");
+      wait_for(cond_no_windows, 500);
+    }
+
+    // Selection and clipboard. The file is "hX\nyoZ!". Shift+Left x2 selects "Z!", Ctrl+C
+    // copies, Home goes to the row start, Ctrl+V pastes there, End goes to the end, '?'
+    // is typed, Ctrl+Home goes to the top, 'A' is typed, Shift+Right selects the 'h',
+    // Ctrl+X cuts it, Ctrl+End goes to the end and Ctrl+V pastes it back.
+    {
+      static const char expect4[] = "AX\r\nZ!yoZ!?h";
+      static const struct { unsigned char ch; unsigned char mods; } keys4[] = {
+        {0x1C, 1}, {0x1C, 1}, {0x03, 2}, {0x80, 0}, {0x16, 2}, {0x81, 0}, {'?', 0},
+        {0x80, 2}, {'A', 0}, {0x1D, 1}, {0x18, 2}, {0x81, 2}, {0x16, 2}, {0x13, 2}};
+      unsigned int k;
+
+      h = process_spawn_arg("/APPS/NOTES.BIN", "/NTEST.TXT");
+      failures += win_expect(h >= 0 && wait_for(cond_has_window, 500), "notes: window appeared a fourth time");
+      for (k = 0; k < sizeof(keys4) / sizeof(keys4[0]); ++k) {
+        syswin_test_inject(SYSWIN_EV_KEY, keys4[k].mods, 0, keys4[k].ch);
+      }
+      syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
+      failures += win_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0, "notes: fourth run exited cleanly");
+      got = 0;
+      ok = v != 0 && fat_lookup(v, v->root_cluster, "NTEST.TXT", &ent) && ent.size == sizeof(expect4) - 1 &&
+           fat_read_file(v, &ent, buf, sizeof(buf), &got) && got == sizeof(expect4) - 1 &&
+           memcmp(buf, expect4, got) == 0;
+      failures += win_expect(ok, "notes: selection, copy, cut and paste worked");
+      wait_for(cond_no_windows, 500);
+    }
+
+    // Explorer: Enter opens drive 0, a click on "New Folder" makes a folder in its root,
+    // Down (as many times as the folder sorts after the others) plus Delete removes it.
+    {
+      fat_volume_t *v0 = fs_volume(0);
+      fat_iter_t *it = (fat_iter_t *)kmalloc(sizeof(*it));
+      fat_dirent_t e2;
+      int before = 0;
+      int k;
+
+      h = process_spawn("/APPS/EXPLORER.BIN");
+      failures += win_expect(h >= 0 && wait_for(cond_has_window, 500), "explorer: window appeared");
+      syswin_test_inject(SYSWIN_EV_KEY, 0, 0, '\n');            // open the first drive
+      syswin_test_inject(SYSWIN_EV_MOUSE_DOWN, 60, 12, 0);      // New Folder
+      failures += win_expect(v0 != 0 && it != 0 && wait_for(cond_explorer_folder, 500),
+                             "explorer: New Folder created a folder on drive 0");
+      if (v0 != 0 && it != 0) {
+        fat_iter_open(v0, v0->root_cluster, it);
+        while (fat_iter_next(it, &e2)) {            // folders that sort before "New Folder"
+          if ((e2.attr & FAT_ATTR_DIR) != 0 && !str_eq_nocase(e2.name, "New Folder") &&
+              name_before(e2.name, "New Folder")) {
+            ++before;
+          }
+        }
+      }
+      if (it != 0) {
+        kfree(it);
+      }
+      for (k = 0; k < before; ++k) {
+        syswin_test_inject(SYSWIN_EV_KEY, 0, 0, SYSWIN_KEY_DOWN);
+      }
+      syswin_test_inject(SYSWIN_EV_KEY, 0, 0, SYSWIN_KEY_DELETE);
+      failures += win_expect(wait_for(cond_explorer_folder_gone, 500), "explorer: Delete removed the folder");
+      syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
+      failures += win_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0, "explorer: exited cleanly");
       wait_for(cond_no_windows, 500);
     }
   }

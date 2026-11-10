@@ -30,6 +30,10 @@
 #define SYS_WIN_WAIT   21   // win_wait(id, syswin_event_t *, timeout_ms) -> 1 event stored, 0 timed out
 #define SYS_WIN_MOVE   22   // win_move(id, x, y)  move the window (screen coordinates of its top-left corner)
 #define SYS_WIN_RESIZE 23   // win_resize(id, w, h)  new client size; the surface is cleared
+#define SYS_CLIP_SET   24   // clip_set(buf, len)  replace the system clipboard (max 4096 bytes)
+#define SYS_CLIP_GET   25   // clip_get(buf, max) -> bytes copied out of the clipboard
+#define SYS_VOLINFO    26   // volinfo(index, dirent_t *out) -> 0; name, size in MB, attr = directory; -ENOENT past the last
+#define SYS_SPAWN      27   // spawn(path, arg) -> 0; starts a program (arg may be 0), nobody waits for it
 #define SYS_READDIR 8   // readdir(fd, sysfile_dirent_t *out) -> 1 entry stored, 0 at the end
                         // read(fd, ...) and write(fd, ...) also take file descriptors (see sysfile.h)
 

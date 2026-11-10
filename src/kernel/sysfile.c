@@ -186,6 +186,31 @@ static fat_volume_t *volume_at(int n) {
   return 0;
 }
 
+// "/@N/rest" names volume N (the index fs_volume() uses, see volinfo) exactly, for
+// every call that takes a path. Without the prefix, reads search the default volume
+// first and writes go to it. Returns the part after the prefix; *pinned is the volume
+// (0 when there is no prefix) and *bad is set when N does not exist.
+static const char *split_volume(const char *path, fat_volume_t **pinned, int *bad) {
+  int n = 0;
+  int i = 2;
+
+  *pinned = 0;
+  *bad = 0;
+  if (path[0] != '/' || path[1] != '@' || path[2] < '0' || path[2] > '9') {
+    return path;
+  }
+  while (path[i] >= '0' && path[i] <= '9' && n < 1000) {
+    n = n * 10 + (path[i] - '0');
+    ++i;
+  }
+  if (path[i] != 0 && path[i] != '/') {
+    return path;                                // "/@12x": an ordinary (unlikely) name
+  }
+  *pinned = n < fs_volume_count() ? fs_volume(n) : 0;
+  *bad = *pinned == 0;
+  return path + i;
+}
+
 // ---- open / close ------------------------------------------------------------
 
 static void release(sysfile_t *f) {
@@ -235,11 +260,14 @@ static int64_t load_file(sysfile_t *f, fat_volume_t *v, const fat_dirent_t *ent)
   return 0;
 }
 
-static int64_t open_read(sysfile_t *f, const char *path) {
+static int64_t open_read(sysfile_t *f, const char *path, fat_volume_t *pinned, int bad) {
   int n;
 
+  if (bad) {
+    return SYSCALL_ENOENT;
+  }
   for (n = 0; n < fs_volume_count(); ++n) {
-    fat_volume_t *v = volume_at(n);
+    fat_volume_t *v = pinned != 0 ? pinned : volume_at(n);
     fat_dirent_t ent;
     int is_root = 0;
     int found;
@@ -251,6 +279,9 @@ static int64_t open_read(sysfile_t *f, const char *path) {
     found = lookup(v, path, &ent, &is_root);
     io_end();
     if (!found) {
+      if (pinned != 0) {
+        break;
+      }
       continue;
     }
     f->v = v;
@@ -279,13 +310,13 @@ static int64_t open_read(sysfile_t *f, const char *path) {
   return SYSCALL_ENOENT;
 }
 
-static int64_t open_write(sysfile_t *f, const char *path, uint64_t flags) {
-  fat_volume_t *v = fs_default_volume();
+static int64_t open_write(sysfile_t *f, const char *path, uint64_t flags, fat_volume_t *pinned, int bad) {
+  fat_volume_t *v = pinned != 0 ? pinned : fs_default_volume();
   fat_dirent_t ent;
   int found;
   int ok;
 
-  if (v == 0) {
+  if (v == 0 || bad) {
     return SYSCALL_ENOENT;
   }
   io_begin();
@@ -334,6 +365,9 @@ int64_t sysfile_open(uint64_t path_uaddr, uint64_t flags) {
   char path[PATH_MAX];
   sysfile_table_t *t;
   sysfile_t *f = 0;
+  fat_volume_t *pinned;
+  const char *rest;
+  int bad;
   int64_t r;
   int i;
 
@@ -346,6 +380,7 @@ int64_t sysfile_open(uint64_t path_uaddr, uint64_t flags) {
   if (r < 0) {
     return r;
   }
+  rest = split_volume(path, &pinned, &bad);
   t = table(1);
   if (t == 0) {
     return SYSCALL_ENOMEM;
@@ -363,7 +398,7 @@ int64_t sysfile_open(uint64_t path_uaddr, uint64_t flags) {
   // (or a parent lookup followed by a name lookup). Keep other tasks from switching in
   // between so the directory cannot change under us.
   scheduler_preempt_disable();
-  r = (flags != SYSFILE_O_RDONLY) ? open_write(f, path, flags) : open_read(f, path);
+  r = (flags != SYSFILE_O_RDONLY) ? open_write(f, rest, flags, pinned, bad) : open_read(f, rest, pinned, bad);
   scheduler_preempt_enable();
   if (r < 0) {
     release(f);
@@ -567,6 +602,9 @@ static void fill_stat(sysfile_dirent_t *out, const fat_dirent_t *ent, int is_roo
 int64_t sysfile_stat(uint64_t path_uaddr, uint64_t out_uaddr) {
   char path[PATH_MAX];
   sysfile_dirent_t out;
+  fat_volume_t *pinned;
+  const char *rest;
+  int bad;
   int64_t r;
   int n;
 
@@ -577,10 +615,11 @@ int64_t sysfile_stat(uint64_t path_uaddr, uint64_t out_uaddr) {
   if (r < 0) {
     return r;
   }
+  rest = split_volume(path, &pinned, &bad);
   r = SYSCALL_ENOENT;
   scheduler_preempt_disable();
-  for (n = 0; n < fs_volume_count(); ++n) {
-    fat_volume_t *v = volume_at(n);
+  for (n = 0; n < fs_volume_count() && !bad; ++n) {
+    fat_volume_t *v = pinned != 0 ? pinned : volume_at(n);
     fat_dirent_t ent;
     int is_root = 0;
     int found;
@@ -589,11 +628,14 @@ int64_t sysfile_stat(uint64_t path_uaddr, uint64_t out_uaddr) {
       break;
     }
     io_begin();
-    found = lookup(v, path, &ent, &is_root);
+    found = lookup(v, rest, &ent, &is_root);
     io_end();
     if (found) {
       fill_stat(&out, &ent, is_root);
       r = 0;
+      break;
+    }
+    if (pinned != 0) {
       break;
     }
   }
@@ -606,21 +648,27 @@ int64_t sysfile_stat(uint64_t path_uaddr, uint64_t out_uaddr) {
 
 int64_t sysfile_unlink(uint64_t path_uaddr) {
   char path[PATH_MAX];
-  fat_volume_t *v = fs_default_volume();
+  fat_volume_t *v;
   fat_dirent_t ent;
+  const char *rest;
   int is_root = 0;
+  int bad;
   int64_t r;
 
   r = sys_copy_user_string(path_uaddr, path, sizeof(path));
   if (r < 0) {
     return r;
   }
-  if (v == 0) {
+  rest = split_volume(path, &v, &bad);
+  if (v == 0 && !bad) {
+    v = fs_default_volume();
+  }
+  if (v == 0 || bad) {
     return SYSCALL_ENOENT;
   }
   scheduler_preempt_disable();
   io_begin();
-  if (!lookup(v, path, &ent, &is_root)) {
+  if (!lookup(v, rest, &ent, &is_root)) {
     r = SYSCALL_ENOENT;
   } else if (is_root) {
     r = SYSCALL_EINVAL;
@@ -657,22 +705,28 @@ int64_t sysfile_unlink(uint64_t path_uaddr) {
 int64_t sysfile_mkdir(uint64_t path_uaddr) {
   char path[PATH_MAX];
   char name[FAT_NAME_MAX];
-  fat_volume_t *v = fs_default_volume();
+  fat_volume_t *v;
   fat_dirent_t ent;
+  const char *rest;
   uint32_t dir;
   uint32_t cluster = 0;
+  int bad;
   int64_t r;
 
   r = sys_copy_user_string(path_uaddr, path, sizeof(path));
   if (r < 0) {
     return r;
   }
-  if (v == 0) {
+  rest = split_volume(path, &v, &bad);
+  if (v == 0 && !bad) {
+    v = fs_default_volume();
+  }
+  if (v == 0 || bad) {
     return SYSCALL_ENOENT;
   }
   scheduler_preempt_disable();
   io_begin();
-  if (!lookup_parent(v, path, &dir, name)) {
+  if (!lookup_parent(v, rest, &dir, name)) {
     r = SYSCALL_ENOENT;
   } else if (fat_lookup(v, dir, name, &ent)) {
     r = SYSCALL_EEXIST;
@@ -682,4 +736,28 @@ int64_t sysfile_mkdir(uint64_t path_uaddr) {
   io_end();
   scheduler_preempt_enable();
   return r;
+}
+
+// Volume `index` as a directory entry: name = its label (or "Disk N"), size = megabytes,
+// attr = directory. Use "/@index/..." in paths to reach it. -ENOENT past the last one.
+int64_t sysfile_volinfo(uint64_t index, uint64_t out_uaddr) {
+  sysfile_dirent_t out;
+  fat_volume_t *v;
+
+  if (!paging_user_range_ok(out_uaddr, sizeof(out))) {
+    return SYSCALL_EFAULT;
+  }
+  if (index >= (uint64_t)fs_volume_count()) {
+    return SYSCALL_ENOENT;
+  }
+  v = fs_volume((int)index);
+  if (v == 0) {
+    return SYSCALL_ENOENT;
+  }
+  memset(&out, 0, sizeof(out));
+  out.size = v->total_sectors / 2048U;
+  out.attr = FAT_ATTR_DIR;
+  str_copy(out.name, fs_volume_name((int)index), sizeof(out.name));
+  memcpy((void *)(uintptr_t)out_uaddr, &out, sizeof(out));
+  return 0;
 }

@@ -94,5 +94,9 @@ int wm_mouse_down(int x, int y, int double_click);
 void wm_mouse_move(int x, int y, unsigned int buttons);
 void wm_mouse_up(int x, int y);
 void wm_key(char ch);
+// Modifier bits (PS2_MOD_*) of the key about to be delivered by wm_key(); a key
+// callback may read them with wm_key_mods(). The shell sets them before each wm_key().
+void wm_set_key_mods(unsigned int mods);
+unsigned int wm_key_mods(void);
 
 #endif // KERNEL_WM_H

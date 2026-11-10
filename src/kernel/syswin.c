@@ -99,7 +99,7 @@ static void uw_key(wm_window_t *win, char c) {
   uwin_t *u = (uwin_t *)win->data;
 
   if (u->state == UW_ACTIVE) {
-    ev_push(u, SYSWIN_EV_KEY, 0, 0, (uint32_t)(unsigned char)c);
+    ev_push(u, SYSWIN_EV_KEY, (int)wm_key_mods(), 0, (uint32_t)(unsigned char)c);
   }
 }
 
@@ -116,6 +116,8 @@ static void uw_mouse(wm_window_t *win, int lx, int ly, int event) {
     type = SYSWIN_EV_MOUSE_MOVE;
   } else if (event == WM_MOUSE_UP) {
     type = SYSWIN_EV_MOUSE_UP;
+  } else if (event == WM_MOUSE_DOUBLE) {
+    type = SYSWIN_EV_MOUSE_DOUBLE;
   } else {
     return;
   }
@@ -575,6 +577,35 @@ int64_t syswin_wait(uint64_t id, uint64_t out_uaddr, uint64_t timeout_ms) {
     return event_wait(id, out_uaddr, 0, 0);         // a poll
   }
   return event_wait(id, out_uaddr, 1, timeout_ms);
+}
+
+static uint8_t g_clip[SYSWIN_CLIP_MAX];
+static uint32_t g_clip_len;
+
+int64_t syswin_clip_set(uint64_t buf_uaddr, uint64_t len) {
+  if (len > SYSWIN_CLIP_MAX) {
+    return SYSCALL_EFBIG;
+  }
+  if (len != 0 && !paging_user_range_ok(buf_uaddr, len)) {
+    return SYSCALL_EFAULT;
+  }
+  if (len != 0) {
+    memcpy(g_clip, (const void *)(uintptr_t)buf_uaddr, (size_t)len);
+  }
+  g_clip_len = (uint32_t)len;
+  return 0;
+}
+
+int64_t syswin_clip_get(uint64_t buf_uaddr, uint64_t max) {
+  uint64_t n = g_clip_len < max ? g_clip_len : max;
+
+  if (n != 0 && !paging_user_range_ok(buf_uaddr, n)) {
+    return SYSCALL_EFAULT;
+  }
+  if (n != 0) {
+    memcpy((void *)(uintptr_t)buf_uaddr, g_clip, (size_t)n);
+  }
+  return (int64_t)n;
 }
 
 int64_t syswin_move(uint64_t id, int64_t x, int64_t y) {

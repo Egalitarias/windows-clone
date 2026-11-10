@@ -31,6 +31,10 @@
 #define SYS_GETARG    15
 #define SYS_WIN_TITLE 16
 #define SYS_WIN_WAIT   21
+#define SYS_CLIP_SET   24
+#define SYS_VOLINFO    26
+#define SYS_SPAWN      27
+#define SYS_CLIP_GET   25
 #define SYS_WIN_MOVE   22
 #define SYS_WIN_RESIZE 23
 
@@ -83,6 +87,16 @@ static inline long close(int fd) { return syscall3(SYS_CLOSE, fd, 0, 0); }
 // Next entry of an open directory: 1 = stored, 0 = no more, negative = error.
 static inline long readdir(int fd, dirent_t *out) { return syscall3(SYS_READDIR, fd, (long)out, 0); }
 
+// Volumes: volinfo(i, &d) fills d.name (label or "Disk N"), d.size (megabytes) and
+// d.attr for volume i, 0 when there is one, negative past the last. A path starting
+// with "/@i" names volume i exactly: "/@1/DOCS/A.TXT"; "/@1" is its root. Without
+// the prefix reads search the default volume first and writes go to it.
+static inline long volinfo(int index, dirent_t *out) { return syscall3(SYS_VOLINFO, index, (long)out, 0); }
+// Start a program (arg may be 0) and carry on; nobody waits for it. Returns 0, or a
+// negative error when there is no free slot. A program that does not exist is only
+// reported on the kernel console, so stat() the path first.
+static inline long spawn(const char *path, const char *arg) { return syscall3(SYS_SPAWN, (long)path, (long)arg, 0); }
+
 // lseek returns the new position. stat fills a dirent_t (size, attr, name) for any path.
 // unlink removes a file or an empty directory; mkdir makes a directory. Both work on
 // the default volume. All return 0 or a negative error (-17 EEXIST, -39 ENOTEMPTY).
@@ -100,6 +114,7 @@ static inline long mkdir(const char *path) { return syscall3(SYS_MKDIR, (long)pa
 #define EV_MOUSE_MOVE 3   // only while the button is held
 #define EV_MOUSE_UP   4
 #define EV_CLOSE      5   // the user closed the window; call win_close() and exit
+#define EV_MOUSE_DOUBLE 6 // x, y: right after the EV_MOUSE_DOWN of a double click
 
 // Non-printing keys arrive as EV_KEY with these values in ch.
 #define KEY_LEFT   0x1C
@@ -107,6 +122,14 @@ static inline long mkdir(const char *path) { return syscall3(SYS_MKDIR, (long)pa
 #define KEY_UP     0x1E
 #define KEY_DOWN   0x1F
 #define KEY_DELETE 0x7F
+#define KEY_HOME   0x80
+#define KEY_END    0x81
+#define KEY_PGUP   0x82
+#define KEY_PGDN   0x83
+// For EV_KEY, win_event_t.x holds the modifiers that were down:
+#define MOD_SHIFT  0x1
+#define MOD_CTRL   0x2
+#define MOD_ALT    0x4
 // Ctrl+letter arrives as the usual control code (Ctrl+S = 0x13).
 
 typedef struct {
@@ -153,6 +176,12 @@ static inline long win_resize(int id, int w, int h) { return syscall3(SYS_WIN_RE
 // The argument string the program was started with (empty if none). Returns its length.
 static inline long getarg(char *buf, unsigned long len) { return syscall3(SYS_GETARG, (long)buf, (long)len, 0); }
 static inline long win_title(int id, const char *title) { return syscall3(SYS_WIN_TITLE, id, (long)title, 0); }
+
+// System clipboard, shared by all programs: up to 4096 bytes of plain text.
+// clip_set replaces it (0 or a negative error); clip_get copies up to max bytes and
+// returns how many.
+static inline long clip_set(const void *buf, unsigned long len) { return syscall3(SYS_CLIP_SET, (long)buf, (long)len, 0); }
+static inline long clip_get(void *buf, unsigned long max) { return syscall3(SYS_CLIP_GET, (long)buf, (long)max, 0); }
 
 // Sleep for at least `ms` milliseconds; returns the time actually slept.
 static inline long sleep_ms(unsigned long ms) { return syscall3(SYS_SLEEP, (long)ms, 0, 0); }

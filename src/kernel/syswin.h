@@ -27,6 +27,7 @@
 #define SYSWIN_EV_MOUSE_MOVE 3         // only while the button is held
 #define SYSWIN_EV_MOUSE_UP   4
 #define SYSWIN_EV_CLOSE      5         // the user closed the window; call win_close()
+#define SYSWIN_EV_MOUSE_DOUBLE 6       // x, y; sent right after the MOUSE_DOWN of a double click
 
 // Non-printing keys arrive as EV_KEY with these codes in ch (same values as PS2_KEY_*).
 #define SYSWIN_KEY_LEFT   0x1C
@@ -34,6 +35,16 @@
 #define SYSWIN_KEY_UP     0x1E
 #define SYSWIN_KEY_DOWN   0x1F
 #define SYSWIN_KEY_DELETE 0x7F
+#define SYSWIN_KEY_HOME   0x80
+#define SYSWIN_KEY_END    0x81
+#define SYSWIN_KEY_PGUP   0x82
+#define SYSWIN_KEY_PGDN   0x83
+// For EV_KEY, x holds the modifier bits that were down:
+#define SYSWIN_MOD_SHIFT  0x1
+#define SYSWIN_MOD_CTRL   0x2
+#define SYSWIN_MOD_ALT    0x4
+
+#define SYSWIN_CLIP_MAX   4096          // clipboard size in bytes
 
 #define SYSWIN_WAIT_MAX_MS 3600000ULL
 
@@ -72,6 +83,11 @@ int64_t syswin_move(uint64_t id, int64_t x, int64_t y);
 // New client size (same limits as create). The surface is replaced by a cleared one, so
 // the program must redraw. Returns once the desktop has applied it.
 int64_t syswin_resize(uint64_t id, uint64_t w, uint64_t h);
+
+// System clipboard (plain bytes, shared by all programs). set replaces it; get copies up
+// to max bytes and returns how many it copied (the clipboard may be longer).
+int64_t syswin_clip_set(uint64_t buf_uaddr, uint64_t len);
+int64_t syswin_clip_get(uint64_t buf_uaddr, uint64_t max);
 
 // The program with this pid is gone: release its windows (closed by syswin_poll).
 void syswin_process_exit(uint64_t pid);

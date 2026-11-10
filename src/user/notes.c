@@ -1,12 +1,17 @@
 #include "user.h"
 
 // Notes as a real user program: a text editor in its own window.
-//   - type to insert text at the cursor; arrows move it (Up/Down keep the column), a
-//     click places it, Ctrl+A / Ctrl+E jump to the start / end of the row; Backspace and
-//     Delete remove text; Ctrl+S saves; closing the window quits
+//   - type to insert text at the cursor; Backspace and Delete remove text
+//   - arrows move the cursor (Up/Down keep the column), Home / End go to the start / end
+//     of the row (with Ctrl: of the text), PageUp / PageDown move a page, a click places
+//     the cursor and dragging selects
+//   - Shift with any movement key selects; Ctrl+A selects all; Ctrl+C / Ctrl+X / Ctrl+V
+//     copy, cut and paste through the system clipboard (shared with other programs);
+//     typing or pasting replaces the selection
+//   - Ctrl+S saves; closing the window quits
 //   - started with an argument (a file path) it opens that file and saves back to
 //     it; without one it saves to the first free /NOTEn.TXT
-// It uses only the window syscalls (win_*) and the file syscalls (open/read/write/close).
+// It uses only the window syscalls (win_*), the clipboard and the file syscalls.
 
 #define W        480
 #define H        300
@@ -19,6 +24,7 @@
 #define COL_PAPER  0x00FFFFFF
 #define COL_TEXT   0x001E1E1E
 #define COL_CURSOR 0x002850BE
+#define COL_SEL    0x00B4D2FF
 #define COL_BAR    0x00E4E6EE
 #define COL_BARTXT 0x00464B5F
 
@@ -75,6 +81,8 @@ static int g_nrows;
 static int g_cur;                                   // cursor: index into g_text, 0..g_len
 static int g_want;                                  // column Up/Down try to keep
 static int g_top;                                   // first visible row
+static int g_anchor = -1;                           // selection start (-1 = none); the cursor is the other end
+static char g_clip[MAX + 1];
 
 static void build_rows(void) {
   int i = 0;
@@ -138,21 +146,37 @@ static void set_cursor(int pos) {
   g_want = g_cur - g_rs[row_of(g_cur)];
 }
 
-static void move_row(int delta) {                   // Up (-1) / Down (+1), keeping the column
+static void move_row(int delta) {                   // Up / Down by delta rows, keeping the column
   int r;
   int len;
 
   build_rows();
   r = row_of(g_cur) + delta;
-  if (r < 0 || r >= g_nrows) {
+  if (r < 0) {
+    g_cur = 0;                                      // Up on the first row: start of the text
+    return;
+  }
+  if (r >= g_nrows) {
+    g_cur = g_len;                                  // Down on the last row: end of the text
     return;
   }
   len = row_len(r);
   g_cur = g_rs[r] + (g_want < len ? g_want : len);
 }
 
+// The selection as [*a, *b); returns 0 when nothing is selected.
+static int sel_range(int *a, int *b) {
+  if (g_anchor < 0 || g_anchor == g_cur) {
+    return 0;
+  }
+  *a = g_anchor < g_cur ? g_anchor : g_cur;
+  *b = g_anchor < g_cur ? g_cur : g_anchor;
+  return 1;
+}
+
 static void redraw(void) {
-  int cr, cc, r, x, y;
+  int cr, cc, r, x, y, sa, sb;
+  int has_sel;
   char line[COLS + 1];
 
   build_rows();
@@ -164,11 +188,23 @@ static void redraw(void) {
   if (cr >= g_top + ROWS) {
     g_top = cr - ROWS + 1;
   }
+  has_sel = sel_range(&sa, &sb);
   win_fill((int)g_win, 0, 0, W, H - STATUS_H, COL_PAPER);
   for (r = g_top; r < g_nrows && r < g_top + ROWS; ++r) {
     int n = row_len(r);
     int i;
 
+    if (has_sel) {                                  // highlight behind the text
+      int lo = sa > g_rs[r] ? sa : g_rs[r];
+      int hi = sb < g_rs[r] + n ? sb : g_rs[r] + n;
+      int nl = sb > g_rs[r] + n && sa <= g_rs[r] + n && g_rs[r] + n < g_len && g_text[g_rs[r] + n] == '\n';
+
+      if (hi > lo || nl) {
+        int w = (hi > lo ? hi - lo : 0) * 8 + (nl ? 4 : 0);
+
+        win_fill((int)g_win, 8 + (hi > lo ? lo - g_rs[r] : n) * 8, 6 + (r - g_top) * ROW_H - 1, w, ROW_H, COL_SEL);
+      }
+    }
     for (i = 0; i < n && i < COLS; ++i) {
       line[i] = g_text[g_rs[r] + i];
     }
@@ -199,17 +235,89 @@ static void insert_char(char c) {
   set_cursor(g_cur + 1);
 }
 
-static void delete_at(int pos) {                    // remove the character at pos
+static void delete_range(int a, int b) {            // remove g_text[a..b)
   int i;
 
-  if (pos < 0 || pos >= g_len) {
+  if (a < 0 || b > g_len || a >= b) {
     return;
   }
-  for (i = pos; i < g_len - 1; ++i) {
-    g_text[i] = g_text[i + 1];
+  for (i = a; i + (b - a) < g_len; ++i) {
+    g_text[i] = g_text[i + (b - a)];
   }
-  --g_len;
+  g_len -= b - a;
   g_text[g_len] = 0;
+}
+
+// Delete the selection, leaving the cursor where it was. Returns 1 if there was one.
+static int delete_selection(void) {
+  int a, b;
+
+  if (!sel_range(&a, &b)) {
+    g_anchor = -1;
+    return 0;
+  }
+  delete_range(a, b);
+  g_anchor = -1;
+  set_cursor(a);
+  return 1;
+}
+
+// Called before a movement key: with Shift start (or keep) a selection, else drop it.
+static void begin_move(int shift) {
+  if (shift) {
+    if (g_anchor < 0) {
+      g_anchor = g_cur;
+    }
+  } else {
+    g_anchor = -1;
+  }
+}
+
+// Text position under a point in the window.
+static int pos_at(int x, int y) {
+  int r = y < 6 ? g_top : g_top + (y - 6) / ROW_H;
+  int c = (x - 8 + 4) / 8;
+
+  build_rows();
+  if (r >= g_nrows) {
+    r = g_nrows - 1;
+  }
+  if (c < 0) {
+    c = 0;
+  }
+  if (c > row_len(r)) {
+    c = row_len(r);
+  }
+  return g_rs[r] + c;
+}
+
+static void copy_selection(void) {
+  int a, b;
+
+  if (sel_range(&a, &b)) {
+    clip_set(g_text + a, (unsigned long)(b - a));
+    set_status("Copied", 0);
+  }
+}
+
+static void paste(void) {
+  long n = clip_get(g_clip, MAX);
+  long i;
+
+  if (n <= 0) {
+    return;
+  }
+  delete_selection();
+  for (i = 0; i < n && g_len < MAX; ++i) {
+    unsigned char c = (unsigned char)g_clip[i];
+
+    if (c == '\n' || (c >= 0x20 && c <= 0x7E)) {
+      insert_char((char)c);
+    } else if (c == '\t') {
+      insert_char(' ');
+    }
+  }
+  g_status[0] = 0;
 }
 
 static void load(void) {
@@ -331,68 +439,109 @@ int main(void) {
     load();
     set_title();
   }
-  set_cursor(g_len);                              // start at the end of the text
+  set_cursor(g_len);                                // start at the end of the text
   redraw();
 
   for (;;) {
     long n = win_event((int)g_win, &ev, 1);
+    int shift = (ev.x & MOD_SHIFT) != 0;
+    int ctrl = (ev.x & MOD_CTRL) != 0;
+    int a, b;
 
     if (n != 1 || ev.type == EV_CLOSE) {
       break;
     }
-    if (ev.type == EV_MOUSE_DOWN) {                 // click: put the cursor there
-      int r, c;
-
-      build_rows();
-      r = ev.y < 6 ? g_top : g_top + (ev.y - 6) / ROW_H;
-      c = (ev.x - 8 + 4) / 8;
-      if (r >= g_nrows) {
-        r = g_nrows - 1;
-      }
-      if (c < 0) {
-        c = 0;
-      }
-      if (c > row_len(r)) {
-        c = row_len(r);
-      }
-      set_cursor(g_rs[r] + c);
+    if (ev.type == EV_MOUSE_DOWN) {                 // click: place the cursor; drag selects
+      set_cursor(pos_at(ev.x, ev.y));
+      g_anchor = g_cur;
       g_status[0] = 0;
       redraw();
+      continue;
+    }
+    if (ev.type == EV_MOUSE_MOVE) {
+      if (g_anchor >= 0) {
+        set_cursor(pos_at(ev.x, ev.y));
+        redraw();
+      }
+      continue;
+    }
+    if (ev.type == EV_MOUSE_UP) {
+      if (g_anchor == g_cur) {
+        g_anchor = -1;
+      }
       continue;
     }
     if (ev.type != EV_KEY) {
       continue;
     }
+    shift = (ev.x & MOD_SHIFT) != 0;
+    ctrl = (ev.x & MOD_CTRL) != 0;
+
     if (ev.ch == 0x13) {                            // Ctrl+S
       save();
     } else if (ev.ch == KEY_LEFT) {
-      set_cursor(g_cur - 1);
+      if (!shift && sel_range(&a, &b)) {
+        g_anchor = -1;
+        set_cursor(a);
+      } else {
+        begin_move(shift);
+        set_cursor(g_cur - 1);
+      }
     } else if (ev.ch == KEY_RIGHT) {
-      set_cursor(g_cur + 1);
+      if (!shift && sel_range(&a, &b)) {
+        g_anchor = -1;
+        set_cursor(b);
+      } else {
+        begin_move(shift);
+        set_cursor(g_cur + 1);
+      }
     } else if (ev.ch == KEY_UP) {
+      begin_move(shift);
       move_row(-1);
     } else if (ev.ch == KEY_DOWN) {
+      begin_move(shift);
       move_row(1);
-    } else if (ev.ch == 0x01) {                     // Ctrl+A: start of the row
+    } else if (ev.ch == KEY_PGUP) {
+      begin_move(shift);
+      move_row(-(ROWS - 1));
+    } else if (ev.ch == KEY_PGDN) {
+      begin_move(shift);
+      move_row(ROWS - 1);
+    } else if (ev.ch == KEY_HOME) {
+      begin_move(shift);
       build_rows();
-      set_cursor(g_rs[row_of(g_cur)]);
-    } else if (ev.ch == 0x05) {                     // Ctrl+E: end of the row
+      set_cursor(ctrl ? 0 : g_rs[row_of(g_cur)]);
+    } else if (ev.ch == KEY_END) {
       int r;
 
+      begin_move(shift);
       build_rows();
       r = row_of(g_cur);
-      set_cursor(g_rs[r] + row_len(r));
+      set_cursor(ctrl ? g_len : g_rs[r] + row_len(r));
+    } else if (ev.ch == 0x01) {                     // Ctrl+A: select all
+      g_anchor = 0;
+      set_cursor(g_len);
+    } else if (ev.ch == 0x03) {                     // Ctrl+C
+      copy_selection();
+    } else if (ev.ch == 0x18) {                     // Ctrl+X
+      copy_selection();
+      delete_selection();
+    } else if (ev.ch == 0x16) {                     // Ctrl+V
+      paste();
     } else if (ev.ch == '\b') {
-      if (g_cur > 0) {
-        delete_at(g_cur - 1);
+      if (!delete_selection() && g_cur > 0) {
+        delete_range(g_cur - 1, g_cur);
         set_cursor(g_cur - 1);
       }
       g_status[0] = 0;
     } else if (ev.ch == KEY_DELETE) {
-      delete_at(g_cur);
-      set_cursor(g_cur);
+      if (!delete_selection()) {
+        delete_range(g_cur, g_cur + 1);
+        set_cursor(g_cur);
+      }
       g_status[0] = 0;
-    } else if ((ev.ch == '\n' || (ev.ch >= 0x20 && ev.ch <= 0x7E)) && g_len < MAX) {
+    } else if (ev.ch == '\n' || (ev.ch >= 0x20 && ev.ch <= 0x7E)) {
+      delete_selection();
       insert_char((char)ev.ch);
       g_status[0] = 0;
     } else {

@@ -188,6 +188,37 @@ int main(void) {
   check(unlink("/") == -22, 63, "unlink of the root is EINVAL");
   check(unlink("/SEEK.TXT") == 0 && unlink("/NEWRW.TXT") == 0, 64, "clean up");
 
+  // Volumes and "/@N" paths.
+  check(volinfo(0, &de) == 0 && (de.attr & 0x10) != 0 && de.name[0] != 0, 65, "volinfo of the first volume");
+  check(volinfo(99, &de) == -2, 66, "volinfo past the last volume is ENOENT");
+  check(volinfo(0, (dirent_t *)1) == -14, 67, "volinfo with a bad buffer is EFAULT");
+  check(stat("/@99", &de) == -2, 68, "stat of a missing volume is ENOENT");
+  check(open("/@99/X.TXT", O_RDONLY) == -2 && open("/@99/X.TXT", O_WRONLY) == -2, 69, "open on a missing volume is ENOENT");
+  check(mkdir("/@99/D") == -2 && unlink("/@99/X") == -2, 70, "mkdir and unlink on a missing volume are ENOENT");
+  for (i = 0; i < 8 && volinfo(i, &de) == 0; ++i) {
+    char pin[32] = "/@0/PIN.TXT";
+    char root[8] = "/@0";
+
+    pin[2] = (char)('0' + i);
+    root[2] = (char)('0' + i);
+    check(stat(root, &de) == 0 && (de.attr & 0x10) != 0, 71, "stat of /@N is a directory");
+    fd = open(pin, O_WRONLY);
+    check(fd >= 3 && write((int)fd, "pin", 3) == 3 && close((int)fd) == 0, 72, "write into a pinned volume");
+    check(stat(pin, &de) == 0 && de.size == 3, 73, "stat of the pinned file");
+    fd = open(pin, O_RDONLY);
+    check(fd >= 3 && read((int)fd, g_in, 8) == 3 && same(g_in, "pin", 3), 74, "read it back from the pinned volume");
+    close((int)fd);
+    check(unlink(pin) == 0 && stat(pin, &de) == -2, 75, "unlink it again");
+  }
+  check(spawn(0, 0) == -14 && spawn((const char *)1, 0) == -14, 76, "spawn with a bad path is EFAULT");
+  {
+    char arg[8];
+
+    if (getarg(arg, sizeof(arg)) > 0 && arg[0] == 's') {   // the supervisor asks for a real spawn once
+      check(spawn("/APPS/HELLO.BIN", 0) == 0, 77, "spawn a program");
+    }
+  }
+
   // Leave a file open for writing: the kernel must store it when the program ends.
   fd = open("/FLUSH.TXT", O_WRONLY);
   write((int)fd, "bye", 3);

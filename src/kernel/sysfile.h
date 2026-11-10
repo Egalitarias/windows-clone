@@ -17,6 +17,10 @@
 // then land at the current position (lseek moves it) and close() stores the file only if
 // something was written.
 //
+// A path may start with "/@N" (N = a volume index, see volinfo) to name one volume
+// exactly: "/@1/DOCS/A.TXT". Reads, writes, stat, unlink and mkdir then use that volume
+// only. "/@N" alone is the root of volume N.
+//
 // Descriptors 0, 1 and 2 are the program's console; files start at 3.
 
 #define SYSFILE_FIRST_FD 3
@@ -51,6 +55,7 @@ int64_t sysfile_lseek(uint64_t fd, int64_t offset, uint64_t whence);   // -> new
 int64_t sysfile_stat(uint64_t path_uaddr, uint64_t out_uaddr);         // fills a sysfile_dirent_t
 int64_t sysfile_unlink(uint64_t path_uaddr);                           // file or empty directory
 int64_t sysfile_mkdir(uint64_t path_uaddr);
+int64_t sysfile_volinfo(uint64_t index, uint64_t out_uaddr);           // volume `index` as a sysfile_dirent_t
 
 // Close every file a process left open (flushing pending writes if `flush`).
 void sysfile_close_all(void *table, int flush);

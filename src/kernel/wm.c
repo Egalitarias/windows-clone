@@ -544,6 +544,11 @@ void wm_mouse_up(int x, int y) {
   g_cap_win = 0;
 }
 
+static unsigned int g_key_mods = 0;
+
+void wm_set_key_mods(unsigned int mods) { g_key_mods = mods; }
+unsigned int wm_key_mods(void) { return g_key_mods; }
+
 void wm_key(char ch) {
   wm_window_t *win = wm_focused();
   if (win && win->key) {

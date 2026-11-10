@@ -75,6 +75,10 @@ int main(void) {
   if (!fails(win_move(3, 0, 0))) return 45;
   if (!fails(win_resize(3, 100, 100))) return 46;
   if (!fails(win_resize(3, 5, 5))) return 47;
+  if (!is(clip_set((const void *)kernel_va, 8), EFAULT)) return 48;
+  if (!is(clip_set(g_buf, 4), 0)) return 51;                     // something to copy out
+  if (!is(clip_get((void *)kernel_va, 8), EFAULT)) return 49;
+  if (!fails(clip_set(g_buf, 100000))) return 50;
   // The process still works after all that.
   puts("probe: ok\r\n");
   return 0;
