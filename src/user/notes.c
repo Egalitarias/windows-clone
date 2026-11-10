@@ -1,7 +1,9 @@
 #include "user.h"
 
 // Notes as a real user program: a text editor in its own window.
-//   - type to add text, Backspace deletes, Ctrl+S saves, closing the window quits
+//   - type to insert text at the cursor; arrows move it (Up/Down keep the column), a
+//     click places it, Ctrl+A / Ctrl+E jump to the start / end of the row; Backspace and
+//     Delete remove text; Ctrl+S saves; closing the window quits
 //   - started with an argument (a file path) it opens that file and saves back to
 //     it; without one it saves to the first free /NOTEn.TXT
 // It uses only the window syscalls (win_*) and the file syscalls (open/read/write/close).
@@ -63,59 +65,151 @@ static void set_title(void) {
   win_title((int)g_win, title);
 }
 
-// Lay the text out in rows of COLS characters. With draw set, rows from `skip`
-// on are drawn. Returns the number of rows; *cur_row / *cur_col get the cursor cell.
-static int layout(int skip, int draw, int *cur_row, int *cur_col) {
-  char line[COLS + 1];
-  int row = 0;
-  int col = 0;
-  int i;
+// ---- layout --------------------------------------------------------------------
+// The text is shown in rows of at most COLS characters; a newline ends a row (and
+// belongs to it, but is not drawn). g_rs[r] is the index of the first character of
+// row r. A cursor at index p is on the last row that starts at or before p.
 
-#define FLUSH_ROW()                                                              \
-  do {                                                                           \
-    if (draw && row >= skip && row - skip < ROWS && col > 0) {                   \
-      line[col] = 0;                                                             \
-      win_text((int)g_win, 8, 6 + (row - skip) * ROW_H, line, COL_TEXT, 1);      \
-    }                                                                            \
-  } while (0)
+static int g_rs[MAX + 3];
+static int g_nrows;
+static int g_cur;                                   // cursor: index into g_text, 0..g_len
+static int g_want;                                  // column Up/Down try to keep
+static int g_top;                                   // first visible row
 
-  for (i = 0; i < g_len; ++i) {
-    char c = g_text[i];
+static void build_rows(void) {
+  int i = 0;
 
-    if (c == '\n') {
-      FLUSH_ROW();
-      ++row;
-      col = 0;
-      continue;
+  g_nrows = 0;
+  for (;;) {
+    int col = 0;
+    int cont = 0;                                   // 1 = another row follows, even at the end of the text
+
+    g_rs[g_nrows++] = i;
+    while (i < g_len) {
+      char c = g_text[i];
+
+      if (c == '\n') {
+        ++i;
+        cont = 1;
+        break;
+      }
+      if (col >= COLS) {
+        cont = 1;
+        break;
+      }
+      ++col;
+      ++i;
     }
-    if (col >= COLS) {
-      FLUSH_ROW();
-      ++row;
-      col = 0;
+    if (i >= g_len && col >= COLS) {
+      cont = 1;
     }
-    line[col++] = c;
+    if (!cont) {
+      break;
+    }
+    if (i >= g_len) {                               // empty last row (after a newline or a full row)
+      g_rs[g_nrows++] = i;
+      break;
+    }
   }
-  FLUSH_ROW();
-#undef FLUSH_ROW
-  if (col >= COLS) {
-    ++row;
-    col = 0;
+}
+
+static int row_of(int pos) {
+  int r = 0;
+
+  while (r + 1 < g_nrows && g_rs[r + 1] <= pos) {
+    ++r;
   }
-  *cur_row = row;
-  *cur_col = col;
-  return row + 1;
+  return r;
+}
+
+static int row_len(int r) {                         // characters shown on row r
+  int end = (r + 1 < g_nrows) ? g_rs[r + 1] : g_len;
+  int n = end - g_rs[r];
+
+  if (n > 0 && g_text[end - 1] == '\n') {
+    --n;
+  }
+  return n;
+}
+
+static void set_cursor(int pos) {
+  build_rows();
+  g_cur = pos < 0 ? 0 : (pos > g_len ? g_len : pos);
+  g_want = g_cur - g_rs[row_of(g_cur)];
+}
+
+static void move_row(int delta) {                   // Up (-1) / Down (+1), keeping the column
+  int r;
+  int len;
+
+  build_rows();
+  r = row_of(g_cur) + delta;
+  if (r < 0 || r >= g_nrows) {
+    return;
+  }
+  len = row_len(r);
+  g_cur = g_rs[r] + (g_want < len ? g_want : len);
 }
 
 static void redraw(void) {
-  int cur_row, cur_col, total, skip;
+  int cr, cc, r, x, y;
+  char line[COLS + 1];
 
-  total = layout(0, 0, &cur_row, &cur_col);
-  skip = total > ROWS ? total - ROWS : 0;          // keep the cursor row visible
+  build_rows();
+  cr = row_of(g_cur);
+  cc = g_cur - g_rs[cr];
+  if (cr < g_top) {
+    g_top = cr;
+  }
+  if (cr >= g_top + ROWS) {
+    g_top = cr - ROWS + 1;
+  }
   win_fill((int)g_win, 0, 0, W, H - STATUS_H, COL_PAPER);
-  layout(skip, 1, &cur_row, &cur_col);
-  win_text((int)g_win, 8 + cur_col * 8, 6 + (cur_row - skip) * ROW_H, "_", COL_CURSOR, 1);
+  for (r = g_top; r < g_nrows && r < g_top + ROWS; ++r) {
+    int n = row_len(r);
+    int i;
+
+    for (i = 0; i < n && i < COLS; ++i) {
+      line[i] = g_text[g_rs[r] + i];
+    }
+    line[i] = 0;
+    if (n > 0) {
+      win_text((int)g_win, 8, 6 + (r - g_top) * ROW_H, line, COL_TEXT, 1);
+    }
+  }
+  x = 8 + cc * 8;
+  y = 6 + (cr - g_top) * ROW_H;
+  win_fill((int)g_win, x, y - 1, 2, ROW_H, COL_CURSOR);
   win_fill((int)g_win, 0, H - STATUS_H, W, STATUS_H, COL_BAR);
   win_text((int)g_win, 6, H - STATUS_H + 4, g_status[0] ? g_status : "Ctrl+S saves", COL_BARTXT, 1);
+}
+
+static void insert_char(char c) {
+  int i;
+
+  if (g_len >= MAX) {
+    return;
+  }
+  for (i = g_len; i > g_cur; --i) {
+    g_text[i] = g_text[i - 1];
+  }
+  g_text[g_cur] = c;
+  ++g_len;
+  g_text[g_len] = 0;
+  set_cursor(g_cur + 1);
+}
+
+static void delete_at(int pos) {                    // remove the character at pos
+  int i;
+
+  if (pos < 0 || pos >= g_len) {
+    return;
+  }
+  for (i = pos; i < g_len - 1; ++i) {
+    g_text[i] = g_text[i + 1];
+  }
+  --g_len;
+  g_text[g_len] = 0;
 }
 
 static void load(void) {
@@ -237,6 +331,7 @@ int main(void) {
     load();
     set_title();
   }
+  set_cursor(g_len);                              // start at the end of the text
   redraw();
 
   for (;;) {
@@ -245,19 +340,60 @@ int main(void) {
     if (n != 1 || ev.type == EV_CLOSE) {
       break;
     }
+    if (ev.type == EV_MOUSE_DOWN) {                 // click: put the cursor there
+      int r, c;
+
+      build_rows();
+      r = ev.y < 6 ? g_top : g_top + (ev.y - 6) / ROW_H;
+      c = (ev.x - 8 + 4) / 8;
+      if (r >= g_nrows) {
+        r = g_nrows - 1;
+      }
+      if (c < 0) {
+        c = 0;
+      }
+      if (c > row_len(r)) {
+        c = row_len(r);
+      }
+      set_cursor(g_rs[r] + c);
+      g_status[0] = 0;
+      redraw();
+      continue;
+    }
     if (ev.type != EV_KEY) {
       continue;
     }
     if (ev.ch == 0x13) {                            // Ctrl+S
       save();
+    } else if (ev.ch == KEY_LEFT) {
+      set_cursor(g_cur - 1);
+    } else if (ev.ch == KEY_RIGHT) {
+      set_cursor(g_cur + 1);
+    } else if (ev.ch == KEY_UP) {
+      move_row(-1);
+    } else if (ev.ch == KEY_DOWN) {
+      move_row(1);
+    } else if (ev.ch == 0x01) {                     // Ctrl+A: start of the row
+      build_rows();
+      set_cursor(g_rs[row_of(g_cur)]);
+    } else if (ev.ch == 0x05) {                     // Ctrl+E: end of the row
+      int r;
+
+      build_rows();
+      r = row_of(g_cur);
+      set_cursor(g_rs[r] + row_len(r));
     } else if (ev.ch == '\b') {
-      if (g_len > 0) {
-        g_text[--g_len] = 0;
+      if (g_cur > 0) {
+        delete_at(g_cur - 1);
+        set_cursor(g_cur - 1);
       }
       g_status[0] = 0;
+    } else if (ev.ch == KEY_DELETE) {
+      delete_at(g_cur);
+      set_cursor(g_cur);
+      g_status[0] = 0;
     } else if ((ev.ch == '\n' || (ev.ch >= 0x20 && ev.ch <= 0x7E)) && g_len < MAX) {
-      g_text[g_len++] = (char)ev.ch;
-      g_text[g_len] = 0;
+      insert_char((char)ev.ch);
       g_status[0] = 0;
     } else {
       continue;

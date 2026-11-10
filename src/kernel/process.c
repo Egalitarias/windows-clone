@@ -1001,6 +1001,28 @@ static int window_supervisor_task(void *arg) {
          memcmp(buf, expect2, got) == 0;
     failures += win_expect(ok, "notes: second run loaded the file and appended to it");
     wait_for(cond_no_windows, 500);
+
+    // Cursor movement: the file is "hi\nyo!". Up, Left, 'X', Delete, Down, 'Z' must give
+    // "hX\nyoZ!" (Up keeps the column but clamps it to the short row).
+    {
+      static const char expect3[] = "hX\r\nyoZ!";
+      static const unsigned char keys3[] = {0x1E, 0x1C, 'X', 0x7F, 0x1F, 'Z', 0x13};
+      unsigned int k;
+
+      h = process_spawn_arg("/APPS/NOTES.BIN", "/NTEST.TXT");
+      failures += win_expect(h >= 0 && wait_for(cond_has_window, 500), "notes: window appeared a third time");
+      for (k = 0; k < sizeof(keys3); ++k) {
+        syswin_test_inject(SYSWIN_EV_KEY, 0, 0, keys3[k]);
+      }
+      syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
+      failures += win_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0, "notes: third run exited cleanly");
+      got = 0;
+      ok = v != 0 && fat_lookup(v, v->root_cluster, "NTEST.TXT", &ent) && ent.size == sizeof(expect3) - 1 &&
+           fat_read_file(v, &ent, buf, sizeof(buf), &got) && got == sizeof(expect3) - 1 &&
+           memcmp(buf, expect3, got) == 0;
+      failures += win_expect(ok, "notes: arrow keys, insert and Delete edited the text in place");
+      wait_for(cond_no_windows, 500);
+    }
   }
   failures += win_expect(wait_for(cond_no_windows, 500), "no windows left at the end");
   failures += win_expect(process_live_count() == 0, "no processes left at the end");
