@@ -61,6 +61,10 @@ static int g_tz_dirty = 0;          // changed since it was last saved
 static uint64_t g_tz_changed_ms = 0;
 static void update_clock(void);
 
+int desktop_tz_offset_min(void) {
+  return g_tz_offset_min;
+}
+
 // ---- time zone setting -----------------------------------------------------
 // Kept as text ("60" = UTC+01:00, the offset in minutes) in TZ.CFG on the default
 // volume. Saving waits until the clicks stop, so stepping through several zones
@@ -281,7 +285,7 @@ static void cursor_restore(void) {
 
 // ---- actions ---------------------------------------------------------------
 
-static __attribute__((noreturn)) void shut_down(void) {
+__attribute__((noreturn)) void desktop_shut_down(void) {
   fb_set_buffered(0);                               // draw straight on the screen again
   fb_reset_clip();
   fb_clear(FB_RGB(0, 0, 0));
@@ -386,7 +390,7 @@ static void handle_click(int x, int y, int double_click) {
       if (in_rect(x, y, menu_x(), menu_y() + i * MENU_ITEM_H, MENU_W, MENU_ITEM_H)) {
         close_menu();
         if (i == MENU_COUNT - 1) {
-          shut_down();
+          desktop_shut_down();
         }
         launch(i);
         return;

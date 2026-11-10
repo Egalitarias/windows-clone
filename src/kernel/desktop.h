@@ -14,4 +14,10 @@ uint64_t desktop_loop_count(void);
 // call this between steps so progress shows on screen.
 void desktop_pump(void);
 
+// The clock's time zone: minutes to add to the RTC (UTC) for local time.
+int desktop_tz_offset_min(void);
+
+// Clear the screen and halt (the Start menu's "Shut down"). Does not return.
+__attribute__((noreturn)) void desktop_shut_down(void);
+
 #endif // KERNEL_DESKTOP_H

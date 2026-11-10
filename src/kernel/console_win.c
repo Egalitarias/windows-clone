@@ -1,13 +1,16 @@
 #include "apps.h"
 #include "console.h"
 #include "fb.h"
+#include "shell.h"
+#include "string.h"
 #include "timer.h"
 #include "wm.h"
 
 // Console: an on-screen view of the kernel log (everything printed with
-// console_printf, which also goes to the serial port). It follows the newest output
-// unless scrolled back, and wraps long lines to the window width. The log itself
-// lives in console.c; this file only draws it.
+// console_printf, which also goes to the serial port) with a command prompt at the
+// bottom (see shell.c for the commands). It follows the newest output unless scrolled
+// back, and wraps long lines to the window width. The log itself lives in console.c;
+// this file only draws it and collects the typed line.
 
 #define TOOL_H       26
 #define BTN_W        52
@@ -17,6 +20,7 @@
 #define PAD          6
 #define MAX_LINES    4096          // most lines kept in view for scrolling
 #define REFRESH_MS   100
+#define INPUT_MAX    120
 
 #define COL_BG       FB_RGB(16, 18, 26)
 #define COL_TEXT     FB_RGB(205, 222, 205)
@@ -28,6 +32,8 @@ static int g_scroll = 0;                    // lines above the newest (0 = follo
 static uint64_t g_seen_total = 0;
 static uint64_t g_last_refresh_ms = 0;
 static int g_page_rows = 10;                // rows in view at the last paint
+static char g_input[INPUT_MAX + 1];         // the line being typed
+static int g_input_len = 0;
 
 static char g_snap[CONSOLE_LOG_SIZE];       // copy of the log being drawn
 static int g_line_start[MAX_LINES];         // ring of the last MAX_LINES lines
@@ -94,7 +100,7 @@ static void console_paint(wm_window_t *win, int cx, int cy, int cw, int ch) {
   // Text area
   fb_fill_rect(cx, cy + TOOL_H, cw, ch - TOOL_H, COL_BG);
   cols = (cw - 2 * PAD) / 8;
-  rows = (ch - TOOL_H - PAD) / ROW_H;
+  rows = (ch - TOOL_H - PAD - ROW_H - 4) / ROW_H;     // the last row is the prompt
   if (cols < 8 || rows < 1) {
     return;
   }
@@ -135,6 +141,23 @@ static void console_paint(wm_window_t *win, int cx, int cy, int cw, int ch) {
                             (n > 6 && line[1] == 'P' && line[2] == 'R' && line[3] == 'O' && line[4] == 'C')))
                      ? COL_WARN : COL_TEXT, 1);
   }
+
+  // Prompt: "folder> typed text_", scrolled left when it does not fit.
+  {
+    char prompt[sizeof(line) + INPUT_MAX + 8];
+    int n = (int)str_copy(prompt, shell_cwd(), sizeof(prompt));
+    int skip = 0;
+
+    n += (int)str_copy(prompt + n, "> ", sizeof(prompt) - (size_t)n);
+    n += (int)str_copy(prompt + n, g_input, sizeof(prompt) - (size_t)n);
+    prompt[n++] = '_';
+    prompt[n] = 0;
+    if (n > cols) {
+      skip = n - cols;
+    }
+    fb_fill_rect(cx, cy + ch - ROW_H - 4, cw, 1, FB_RGB(60, 66, 90));
+    fb_draw_text(cx + PAD, cy + ch - ROW_H - 1, prompt + skip, FB_RGB(150, 235, 170), 1);
+  }
 }
 
 static void console_mouse(wm_window_t *win, int lx, int ly, int event) {
@@ -159,15 +182,26 @@ static void console_mouse(wm_window_t *win, int lx, int ly, int event) {
   wm_invalidate_window(win);
 }
 
-// Printable keys scroll too: 'u' / 'd' by a page, 'e' to the end.
+// Typing: printable characters build the line, Backspace edits it, Enter runs it.
 static void console_key(wm_window_t *win, char ch) {
-  int step = g_page_rows > 2 ? g_page_rows - 1 : 1;
+  if (ch == '\n' || ch == '\r') {
+    char cmd[INPUT_MAX + 1];
 
-  if (ch == 'u' || ch == 'U') {
-    g_scroll += step;
-  } else if (ch == 'd' || ch == 'D') {
-    g_scroll -= step;
-  } else if (ch == 'e' || ch == 'E') {
+    str_copy(cmd, g_input, sizeof(cmd));
+    g_input_len = 0;
+    g_input[0] = 0;
+    g_scroll = 0;
+    console_printf("%s> %s\r\n", shell_cwd(), cmd);
+    shell_exec(cmd);
+  } else if (ch == '\b' || ch == 127) {
+    if (g_input_len > 0) {
+      g_input[--g_input_len] = 0;
+    }
+  } else if (ch >= 32 && ch < 127) {
+    if (g_input_len < INPUT_MAX) {
+      g_input[g_input_len++] = ch;
+      g_input[g_input_len] = 0;
+    }
     g_scroll = 0;
   } else {
     return;
