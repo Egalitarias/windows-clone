@@ -36,6 +36,7 @@ typedef struct {
   volatile int move_dirty;              // a new position waits for the desktop
   int move_x, move_y;
   volatile int resize_pending;          // a new surface waits for the desktop
+  volatile int resizable;               // the user may resize it (surface follows, EV_RESIZE)
   int rs_w, rs_h;
   uint64_t rs_phys;
   uint64_t rs_pages;
@@ -45,6 +46,8 @@ typedef struct {
 } uwin_t;
 
 static uwin_t g_uw[SYSWIN_MAX];
+
+static void uw_resized(wm_window_t *win);
 
 static int cas_state(uwin_t *u, int from, int to) {
   return __sync_bool_compare_and_swap(&u->state, from, to);
@@ -158,8 +161,32 @@ static void release_surface(uwin_t *u) {
   u->resize_pending = 0;
 }
 
+#ifdef KERNEL_USER_SELFTEST
+static volatile int g_test_rs_w;
+static volatile int g_test_rs_h;
+#endif
+
 void syswin_poll(void) {
   int i;
+
+#ifdef KERNEL_USER_SELFTEST
+  if (g_test_rs_w != 0) {
+    int tw = g_test_rs_w;
+    int th = g_test_rs_h;
+    int applied = 0;
+
+    for (i = 0; i < SYSWIN_MAX; ++i) {
+      if (g_uw[i].state == UW_ACTIVE && g_uw[i].resizable && g_uw[i].win != 0) {
+        wm_set_client_size(g_uw[i].win, tw, th);
+        uw_resized(g_uw[i].win);
+        applied = 1;
+      }
+    }
+    if (applied) {
+      g_test_rs_w = 0;                              // otherwise keep trying until a window opts in
+    }
+  }
+#endif
 
   for (i = 0; i < SYSWIN_MAX; ++i) {
     uwin_t *u = &g_uw[i];
@@ -174,6 +201,7 @@ void syswin_poll(void) {
         win->key = uw_key;
         win->mouse = uw_mouse;
         win->closing = uw_closing;
+        win->resized = uw_resized;
         u->win = win;
       }
       if (win == 0) {
@@ -272,6 +300,53 @@ static int surf_alloc(uint64_t w, uint64_t h, uint64_t *phys, uint64_t *pages) {
   return 1;
 }
 
+// The user finished resizing the window (or maximized / restored it): give the program a
+// surface of the new client size. Desktop task only. The old surface stays if memory is short.
+static void uw_resized(wm_window_t *win) {
+  uwin_t *u = (uwin_t *)win->data;
+  uint64_t phys, pages, old_phys, old_pages, f;
+  int cx, cy, cw, ch;
+
+  if (u == 0 || !u->resizable || u->state != UW_ACTIVE || u->resize_pending) {
+    return;
+  }
+  wm_client_rect(win, &cx, &cy, &cw, &ch);
+  cw = cw < SYSWIN_MIN_SIZE ? SYSWIN_MIN_SIZE : (cw > SYSWIN_MAX_W ? SYSWIN_MAX_W : cw);
+  ch = ch < SYSWIN_MIN_SIZE ? SYSWIN_MIN_SIZE : (ch > SYSWIN_MAX_H ? SYSWIN_MAX_H : ch);
+  if (!win->maximized) {
+    wm_set_client_size(win, cw, ch);                // a frame beyond the limits shrinks back
+  }
+  if (cw == u->w && ch == u->h) {
+    return;
+  }
+  if (!surf_alloc((uint64_t)cw, (uint64_t)ch, &phys, &pages)) {
+    return;
+  }
+  f = irq_save();                                   // no drawing syscall may see a half-swapped surface
+  old_phys = u->surf_phys;
+  old_pages = u->surf_pages;
+  u->surf_phys = phys;
+  u->surf_pages = pages;
+  u->surf = (uint32_t *)(uintptr_t)phys;
+  u->w = cw;
+  u->h = ch;
+  irq_restore(f);
+  free_pages(old_phys, old_pages);
+  u->dirty = 1;
+  wm_invalidate_window(win);
+  ev_push(u, SYSWIN_EV_RESIZE, cw, ch, 0);
+}
+
+int64_t syswin_resizable(uint64_t id, uint64_t enable) {
+  uwin_t *u = get_win(id, 1);
+
+  if (u == 0) {
+    return SYSCALL_EBADF;
+  }
+  u->resizable = enable != 0;
+  return 0;
+}
+
 int64_t syswin_create(uint64_t title_uaddr, uint64_t w, uint64_t h) {
   char title[WM_TITLE_CHARS];
   uint64_t pid = process_current_pid();
@@ -322,6 +397,7 @@ int64_t syswin_create(uint64_t title_uaddr, uint64_t w, uint64_t h) {
   u->rs_phys = 0;
   u->rs_pages = 0;
   u->resize_pending = 0;
+  u->resizable = 0;
   u->move_dirty = 0;
   u->w = (int)w;
   u->h = (int)h;
@@ -655,6 +731,24 @@ int64_t syswin_resize(uint64_t id, uint64_t w, uint64_t h) {
 }
 
 #ifdef KERNEL_USER_SELFTEST
+void syswin_test_resize(int client_w, int client_h) {
+  g_test_rs_h = client_h;
+  g_test_rs_w = client_w;                           // the desktop task looks at this last
+}
+
+int syswin_test_size(int *w, int *h) {
+  int i;
+
+  for (i = 0; i < SYSWIN_MAX; ++i) {
+    if (g_uw[i].state == UW_ACTIVE) {
+      *w = g_uw[i].w;
+      *h = g_uw[i].h;
+      return 1;
+    }
+  }
+  return 0;
+}
+
 int syswin_test_active(void) {
   int i, n = 0;
 

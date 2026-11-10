@@ -28,6 +28,7 @@
 #define SYSWIN_EV_MOUSE_UP   4
 #define SYSWIN_EV_CLOSE      5         // the user closed the window; call win_close()
 #define SYSWIN_EV_MOUSE_DOUBLE 6       // x, y; sent right after the MOUSE_DOWN of a double click
+#define SYSWIN_EV_RESIZE     7         // x, y = the new client size; the surface is new and cleared: redraw
 
 // Non-printing keys arrive as EV_KEY with these codes in ch (same values as PS2_KEY_*).
 #define SYSWIN_KEY_LEFT   0x1C
@@ -89,6 +90,12 @@ int64_t syswin_resize(uint64_t id, uint64_t w, uint64_t h);
 int64_t syswin_clip_set(uint64_t buf_uaddr, uint64_t len);
 int64_t syswin_clip_get(uint64_t buf_uaddr, uint64_t max);
 
+// Let the user resize the window by dragging its edge or maximizing it. The surface
+// then follows the window (same limits as create) and the program gets EV_RESIZE with
+// the new size and must redraw. Without this the window frame still resizes, but the
+// surface keeps its size.
+int64_t syswin_resizable(uint64_t id, uint64_t enable);
+
 // The program with this pid is gone: release its windows (closed by syswin_poll).
 void syswin_process_exit(uint64_t pid);
 
@@ -100,6 +107,10 @@ void syswin_poll(void);
 int sys_copy_user_string(uint64_t uaddr, char *out, uint64_t max);
 
 #ifdef KERNEL_USER_SELFTEST
+// Ask the desktop task to resize every resizable window as if the user had dragged its
+// edge to this client size; syswin_test_size reports the first window's surface size.
+void syswin_test_resize(int client_w, int client_h);
+int syswin_test_size(int *w, int *h);
 int syswin_test_active(void);   // windows the program can use right now
 int syswin_test_used(void);     // slots in use in any state
 void syswin_test_inject(uint32_t type, int x, int y, uint32_t ch);

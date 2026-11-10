@@ -163,6 +163,7 @@ wm_window_t *wm_create(const char *title, int x, int y, int w, int h) {
   win->key = 0;
   win->mouse = 0;
   win->closing = 0;
+  win->resized = 0;
   win->tick = 0;
   copy_title(win->title, title);
   g_order[g_count++] = idx_of(win);
@@ -263,6 +264,9 @@ void wm_toggle_maximize(wm_window_t *win) {
     win->maximized = 1;
   }
   wm_invalidate_window(win);
+  if (win->resized) {
+    win->resized(win);
+  }
 }
 
 void wm_set_title(wm_window_t *win, const char *title) {
@@ -539,6 +543,14 @@ void wm_mouse_up(int x, int y) {
     int cx, cy, cw, ch;
     wm_client_rect(g_cap_win, &cx, &cy, &cw, &ch);
     g_cap_win->mouse(g_cap_win, x - cx, y - cy, WM_MOUSE_UP);
+  }
+  if (g_cap == CAP_RESIZE && g_cap_win && g_cap_win->resized) {
+    wm_window_t *win = g_cap_win;
+
+    g_cap = CAP_NONE;
+    g_cap_win = 0;
+    win->resized(win);
+    return;
   }
   g_cap = CAP_NONE;
   g_cap_win = 0;

@@ -275,6 +275,8 @@ static int64_t syscall_dispatch_inner(uint64_t nr, uint64_t a1, uint64_t a2, uin
       return syswin_clip_set(a1, a2);
     case SYS_CLIP_GET:
       return syswin_clip_get(a1, a2);
+    case SYS_WIN_RESIZABLE:
+      return syswin_resizable(a1, a2);
     case SYS_WIN_WAIT:
       return syswin_wait(a1, a2, a3);
     case SYS_WIN_MOVE:

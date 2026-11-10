@@ -13,8 +13,11 @@
 //     it; without one it saves to the first free /NOTEn.TXT
 // It uses only the window syscalls (win_*), the clipboard and the file syscalls.
 
-#define W        480
-#define H        300
+static int g_w = 480;                               // client size; follows the window (EV_RESIZE)
+static int g_h = 300;
+#define W        g_w
+#define H        g_h
+#define MAX_W    800
 #define MAX      4096
 #define STATUS_H 16
 #define ROW_H    10
@@ -177,7 +180,7 @@ static int sel_range(int *a, int *b) {
 static void redraw(void) {
   int cr, cc, r, x, y, sa, sb;
   int has_sel;
-  char line[COLS + 1];
+  char line[(MAX_W - 16) / 8 + 2];
 
   build_rows();
   cr = row_of(g_cur);
@@ -434,6 +437,7 @@ int main(void) {
     puts("notes: could not create a window\r\n");
     return 1;
   }
+  win_resizable((int)g_win, 1);
   if (getarg(g_file, sizeof(g_file)) > 0) {
     g_has_file = 1;
     load();
@@ -450,6 +454,12 @@ int main(void) {
 
     if (n != 1 || ev.type == EV_CLOSE) {
       break;
+    }
+    if (ev.type == EV_RESIZE) {                     // the window was resized: new surface, redraw
+      g_w = ev.x;
+      g_h = ev.y;
+      redraw();
+      continue;
     }
     if (ev.type == EV_MOUSE_DOWN) {                 // click: place the cursor; drag selects
       set_cursor(pos_at(ev.x, ev.y));

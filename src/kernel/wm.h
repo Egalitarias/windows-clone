@@ -44,6 +44,9 @@ struct wm_window {
   void (*mouse)(wm_window_t *win, int lx, int ly, int event);
   // Called once just before the window is destroyed.
   void (*closing)(wm_window_t *win);
+  // Called after the user finished resizing the window (mouse released) or maximized /
+  // restored it, with the new outer size already in place. May change the size again.
+  void (*resized)(wm_window_t *win);
   // Called about once a second while the window is not minimized (clocks,
   // uptime displays). Call wm_invalidate_window() if something changed.
   void (*tick)(wm_window_t *win);

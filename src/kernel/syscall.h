@@ -34,6 +34,7 @@
 #define SYS_CLIP_GET   25   // clip_get(buf, max) -> bytes copied out of the clipboard
 #define SYS_VOLINFO    26   // volinfo(index, dirent_t *out) -> 0; name, size in MB, attr = directory; -ENOENT past the last
 #define SYS_SPAWN      27   // spawn(path, arg) -> 0; starts a program (arg may be 0), nobody waits for it
+#define SYS_WIN_RESIZABLE 28   // win_resizable(id, enable)  surface follows user resizing; EV_RESIZE tells the program
 #define SYS_READDIR 8   // readdir(fd, sysfile_dirent_t *out) -> 1 entry stored, 0 at the end
                         // read(fd, ...) and write(fd, ...) also take file descriptors (see sysfile.h)
 

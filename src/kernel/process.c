@@ -946,6 +946,16 @@ static int wait_for(int (*cond)(void), int ticks) {
 
 static int cond_has_window(void) { return syswin_test_active() > 0; }
 static int cond_no_windows(void) { return syswin_test_used() == 0; }
+static int cond_size_300(void) {
+  int w = 0, h = 0;
+
+  return syswin_test_size(&w, &h) && w == 300 && h == 200;
+}
+static int cond_size_800(void) {
+  int w = 0, h = 0;
+
+  return syswin_test_size(&w, &h) && w == 800 && h == 600;
+}
 
 static int name_before(const char *a, const char *b) {   // case-insensitive a < b
   while (*a != 0 && *b != 0 && char_upper(*a) == char_upper(*b)) {
@@ -1002,6 +1012,25 @@ static int window_supervisor_task(void *arg) {
                          "winev: blocked read woke for key, mouse and close events");
   console_printf("[WIN] winev exit code %llu\r\n", code);
   failures += win_expect(wait_for(cond_no_windows, 500), "no windows left at the end");
+
+  // Resizing: a resizable window gets a new surface of the new client size and an
+  // EV_RESIZE; sizes beyond the limits are clamped to 800 x 600.
+  {
+    int sw = 0, sh = 0;
+
+    h = process_spawn("/APPS/RESZT.BIN");
+    failures += win_expect(h >= 0 && wait_for(cond_has_window, 500), "resize: window appeared");
+    failures += win_expect(syswin_test_size(&sw, &sh) && sw == 200 && sh == 120, "resize: starts at 200x120");
+    syswin_test_resize(300, 200);
+    failures += win_expect(wait_for(cond_size_300, 500), "resize: surface became 300x200");
+    syswin_test_resize(900, 700);
+    failures += win_expect(wait_for(cond_size_800, 500), "resize: 900x700 was clamped to 800x600");
+    syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 'q');
+    failures += win_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
+                           "resize: the program saw both EV_RESIZE events and exited cleanly");
+    console_printf("[WIN] reszt exit code %llu\r\n", code);
+    failures += win_expect(wait_for(cond_no_windows, 500), "resize: no windows left");
+  }
 
   // Notes as a user program: type, save with Ctrl+S, quit; then run it again on the
   // same file, which it must load, and append to it.

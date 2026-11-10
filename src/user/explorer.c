@@ -9,8 +9,10 @@
 //   - text files open in NOTES.BIN and .BIN programs run, both through spawn()
 // Drives are addressed with "/@N" path prefixes (see volinfo in user.h).
 
-#define W          560
-#define H          360
+static int g_w = 560;                               // client size; follows the window (EV_RESIZE)
+static int g_h = 360;
+#define W          g_w
+#define H          g_h
 #define TOOLBAR_H  28
 #define ROW_H      14
 #define STATUS_H   16
@@ -481,6 +483,7 @@ int main(void) {
     puts("explorer: could not create a window\r\n");
     return 1;
   }
+  win_resizable((int)g_win, 1);
   load_view();
   redraw();
 
@@ -490,7 +493,11 @@ int main(void) {
     if (n != 1 || ev.type == EV_CLOSE) {
       break;
     }
-    if (ev.type == EV_MOUSE_DOWN) {
+    if (ev.type == EV_RESIZE) {
+      g_w = ev.x;
+      g_h = ev.y;
+      select_index(g_sel);                          // keep the selection in view
+    } else if (ev.type == EV_MOUSE_DOWN) {
       click(ev.x, ev.y);
     } else if (ev.type == EV_MOUSE_DOUBLE) {
       if (ev.y >= LIST_TOP && ev.y < H - STATUS_H && g_sel >= 0 &&

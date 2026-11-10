@@ -33,6 +33,7 @@
 #define SYS_WIN_WAIT   21
 #define SYS_CLIP_SET   24
 #define SYS_VOLINFO    26
+#define SYS_WIN_RESIZABLE 28
 #define SYS_SPAWN      27
 #define SYS_CLIP_GET   25
 #define SYS_WIN_MOVE   22
@@ -115,6 +116,7 @@ static inline long mkdir(const char *path) { return syscall3(SYS_MKDIR, (long)pa
 #define EV_MOUSE_UP   4
 #define EV_CLOSE      5   // the user closed the window; call win_close() and exit
 #define EV_MOUSE_DOUBLE 6 // x, y: right after the EV_MOUSE_DOWN of a double click
+#define EV_RESIZE     7   // x, y = new client size; the surface is new and cleared: redraw
 
 // Non-printing keys arrive as EV_KEY with these values in ch.
 #define KEY_LEFT   0x1C
@@ -170,6 +172,9 @@ static inline long win_event(int id, win_event_t *ev, int block) { return syscal
 static inline long win_wait(int id, win_event_t *ev, unsigned long timeout_ms) { return syscall3(SYS_WIN_WAIT, id, (long)ev, (long)timeout_ms); }
 // Move the window so its top-left corner is at (x, y) on the screen (it stays reachable).
 static inline long win_move(int id, int x, int y) { return syscall3(SYS_WIN_MOVE, id, x, y); }
+// Let the user resize the window (drag its corner, or maximize it). The surface follows
+// (16..800 x 16..600) and EV_RESIZE reports the new size in x and y; redraw then.
+static inline long win_resizable(int id, int enable) { return syscall3(SYS_WIN_RESIZABLE, id, enable, 0); }
 // Change the client size (16..800 x 16..600). The surface comes back cleared: redraw.
 static inline long win_resize(int id, int w, int h) { return syscall3(SYS_WIN_RESIZE, id, w, h); }
 
