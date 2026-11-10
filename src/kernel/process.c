@@ -1,4 +1,5 @@
 #include "process.h"
+#include "apps.h"
 #include "fs.h"
 #include "gdt.h"
 #include "heap.h"
@@ -372,6 +373,7 @@ typedef struct {
 typedef struct {
   int used;
   volatile int done;
+  volatile uint64_t pid;           // process id once loaded, 0 before and after the run
   proc_io_t io;
   int error;
   int detached;                   // nobody waits: release the slot when the program ends
@@ -413,7 +415,9 @@ static int spawn_task(void *arg) {
 
   p.io = &s->io;
   p.arg = s->arg;
+  s->pid = p.pid;
   s->exit_code = process_run(&p);
+  s->pid = 0;
   {
     TCB *self = scheduler_current_tcb();
     console_printf("[PROC] pid %llu (%s) exited with %llu after %u context switches\r\n",
@@ -430,6 +434,32 @@ static int spawn_task(void *arg) {
 
 int process_spawn(const char *path) {
   return process_spawn_arg(path, 0);
+}
+
+int process_program_exists(const char *path) {
+  fat_volume_t *vol = 0;
+  fat_dirent_t ent;
+
+  return find_file(path, &vol, &ent) && ent.size != 0;
+}
+
+int process_spawn_active(const char *path, uint64_t *pid) {
+  int i;
+
+  if (pid != 0) {
+    *pid = 0;
+  }
+  for (i = 0; i < SPAWN_MAX; ++i) {
+    spawn_t *s = &g_spawns[i];
+
+    if (s->used && !s->done && str_eq_nocase(s->path, path)) {
+      if (pid != 0) {
+        *pid = s->pid;
+      }
+      return 1;
+    }
+  }
+  return 0;
 }
 
 static int spawn_common(const char *path, const char *arg, int detached);
@@ -1025,6 +1055,22 @@ static int window_supervisor_task(void *arg) {
                          "winev: blocked read woke for key, mouse and close events");
   console_printf("[WIN] winev exit code %llu\r\n", code);
   failures += win_expect(wait_for(cond_no_windows, 500), "no windows left at the end");
+
+  // The launcher behind the Notes icon starts NOTES.BIN as a program (not the built-in app).
+  {
+    int i2;
+
+    app_launch_notes();
+    failures += win_expect(wait_for(cond_has_window, 500), "launcher: Notes opened as a user window");
+    failures += win_expect(syswin_free_slots() == 3, "launcher: it uses one window slot");
+    syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
+    failures += win_expect(wait_for(cond_no_windows, 500), "launcher: closing the window releases it");
+    for (i2 = 0; i2 < 500 && process_live_count() != 0; ++i2) {
+      wait_one_tick();                              // the detached program finishes and frees its slot
+    }
+    failures += win_expect(process_live_count() == 0 && !process_spawn_active("/APPS/NOTES.BIN", 0),
+                           "launcher: the program exited and its slot is free");
+  }
 
   // Resizing: a resizable window gets a new surface of the new client size and an
   // EV_RESIZE; sizes beyond the limits are clamped to 800 x 600.

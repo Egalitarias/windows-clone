@@ -26,6 +26,8 @@ typedef struct {
   uint8_t readable;            // WRITE: opened with O_RDWR
   uint8_t append;              // WRITE: every write goes to the end
   uint8_t dirty;               // WRITE: needs storing on close
+  uint8_t loaded;              // WRITE: the buffer started as the file's old contents
+  fat_file_t *df;              // streamed file (bigger than SYSFILE_BUF_MAX): no buffer, len = size
   uint32_t dir_cluster;        // WRITE: directory and name to replace on close
   char name[FAT_NAME_MAX];
   fat_iter_t *iter;            // DIR
@@ -220,6 +222,9 @@ static void release(sysfile_t *f) {
   if (f->iter != 0) {
     kfree(f->iter);
   }
+  if (f->df != 0) {
+    kfree(f->df);
+  }
   memset(f, 0, sizeof(*f));
 }
 
@@ -237,7 +242,7 @@ static int flush(sysfile_t *f) {
 
 // Load a whole file into f->data / f->len. Caller holds the preempt lock.
 static int64_t load_file(sysfile_t *f, fat_volume_t *v, const fat_dirent_t *ent) {
-  if (ent->size > SYSFILE_MAX_SIZE) {
+  if (ent->size > SYSFILE_BUF_MAX) {
     return SYSCALL_EFBIG;
   }
   if (ent->size > 0) {
@@ -258,6 +263,26 @@ static int64_t load_file(sysfile_t *f, fat_volume_t *v, const fat_dirent_t *ent)
   }
   f->len = ent->size;
   return 0;
+}
+
+// Take an existing file's contents: into memory when small, else as a streamed file.
+static int64_t load_or_stream(sysfile_t *f, fat_volume_t *v, const fat_dirent_t *ent) {
+  if (ent->size > SYSFILE_MAX_SIZE) {
+    return SYSCALL_EFBIG;
+  }
+  if (ent->size > SYSFILE_BUF_MAX) {
+    f->df = (fat_file_t *)kmalloc(sizeof(*f->df));
+    if (f->df == 0) {
+      return SYSCALL_ENOMEM;
+    }
+    if (!fat_file_open(v, ent, f->df)) {
+      return SYSCALL_EIO;
+    }
+    f->len = ent->size;
+    return 0;
+  }
+  f->loaded = 1;
+  return load_file(f, v, ent);
 }
 
 static int64_t open_read(sysfile_t *f, const char *path, fat_volume_t *pinned, int bad) {
@@ -298,7 +323,7 @@ static int64_t open_read(sysfile_t *f, const char *path, fat_volume_t *pinned, i
       return 0;
     }
     {
-      int64_t lr = load_file(f, v, &ent);
+      int64_t lr = load_or_stream(f, v, &ent);
 
       if (lr < 0) {
         return lr;
@@ -347,7 +372,7 @@ static int64_t open_write(sysfile_t *f, const char *path, uint64_t flags, fat_vo
   f->readable = (flags & SYSFILE_O_RDWR) != 0;
   f->append = (flags & SYSFILE_O_APPEND) != 0;
   if ((flags & (SYSFILE_O_RDWR | SYSFILE_O_APPEND)) != 0 && found) {
-    int64_t lr = load_file(f, v, &ent);         // keep the old contents
+    int64_t lr = load_or_stream(f, v, &ent);    // keep the old contents
 
     if (lr < 0) {
       return lr;
@@ -439,6 +464,137 @@ void sysfile_close_all(void *tbl, int do_flush) {
 
 // ---- read / write / readdir --------------------------------------------------
 
+// ---- streamed files ------------------------------------------------------------------
+
+static int64_t stream_read(sysfile_t *f, uint64_t buf, uint64_t len) {
+  uint32_t got = 0;
+  uint8_t *tmp;
+  uint64_t n = len < SYSFILE_CHUNK ? len : SYSFILE_CHUNK;
+  int ok;
+
+  if (f->pos >= f->len) {
+    return 0;                                   // end of file
+  }
+  if (n > f->len - f->pos) {
+    n = f->len - f->pos;
+  }
+  if (!paging_user_range_ok(buf, n)) {
+    return SYSCALL_EFAULT;
+  }
+  if (f->gen != fs_generation()) {
+    return SYSCALL_EIO;                         // the volume went away
+  }
+  tmp = (uint8_t *)kmalloc((size_t)n);
+  if (tmp == 0) {
+    return SYSCALL_ENOMEM;
+  }
+  io_begin();
+  ok = fat_file_read(f->df, f->pos, tmp, (uint32_t)n, &got);
+  io_end();
+  if (got > 0) {
+    memcpy((void *)(uintptr_t)buf, tmp, got);   // the kernel copy: the disk driver cannot DMA into user memory
+    f->pos += got;
+  }
+  kfree(tmp);
+  if (got == 0) {
+    return ok ? 0 : SYSCALL_EIO;
+  }
+  return (int64_t)got;
+}
+
+static int64_t stream_write(sysfile_t *f, uint64_t buf, uint64_t len) {
+  uint32_t w = 0;
+  uint8_t *tmp;
+  uint64_t n;
+  int ok;
+
+  if (f->pos > f->len) {
+    return SYSCALL_EINVAL;
+  }
+  if (f->pos >= SYSFILE_MAX_SIZE) {
+    return SYSCALL_EFBIG;
+  }
+  n = len < SYSFILE_CHUNK ? len : SYSFILE_CHUNK;
+  if (n > SYSFILE_MAX_SIZE - f->pos) {
+    n = SYSFILE_MAX_SIZE - f->pos;
+  }
+  if (!paging_user_range_ok(buf, n)) {
+    return SYSCALL_EFAULT;
+  }
+  if (f->gen != fs_generation()) {
+    return SYSCALL_EIO;
+  }
+  tmp = (uint8_t *)kmalloc((size_t)n);
+  if (tmp == 0) {
+    return SYSCALL_ENOMEM;
+  }
+  memcpy(tmp, (const void *)(uintptr_t)buf, (size_t)n);
+  io_begin();
+  ok = fat_file_write(f->df, f->pos, tmp, (uint32_t)n, &w);
+  io_end();
+  kfree(tmp);
+  f->len = f->df->ent.size;
+  if (w == 0) {
+    return ok ? SYSCALL_ENOSPC : SYSCALL_EIO;
+  }
+  f->pos += w;
+  return (int64_t)w;
+}
+
+// A buffered write handle outgrew SYSFILE_BUF_MAX: put what it holds on the disk and carry
+// on streaming. A file that was loaded is overwritten in place; a new or emptied one is
+// created (or emptied) now. A hole left by a seek past the end is filled with zeros.
+static int64_t spill(sysfile_t *f) {
+  static const uint8_t zeros[4096];
+  fat_file_t *df;
+  fat_dirent_t ent;
+  uint32_t w = 0;
+  uint32_t at;
+  int ok;
+
+  if (f->gen != fs_generation()) {
+    return SYSCALL_EIO;
+  }
+  df = (fat_file_t *)kmalloc(sizeof(*df));
+  if (df == 0) {
+    return SYSCALL_ENOMEM;
+  }
+  scheduler_preempt_disable();
+  io_begin();
+  if (f->loaded && fat_lookup(f->v, f->dir_cluster, f->name, &ent)) {
+    ok = fat_file_open(f->v, &ent, df);
+  } else {
+    ok = fat_file_create(f->v, f->dir_cluster, f->name, df);
+  }
+  if (ok && f->len > 0) {
+    ok = fat_file_write(df, 0, f->data, f->len, &w) && w == f->len;
+  }
+  for (at = f->len; ok && at < f->pos;) {
+    uint32_t n = f->pos - at < sizeof(zeros) ? f->pos - at : (uint32_t)sizeof(zeros);
+
+    ok = fat_file_write(df, at, zeros, n, &w) && w == n;
+    at += n;
+  }
+  io_end();
+  scheduler_preempt_enable();
+  if (!ok) {
+    kfree(df);
+    return SYSCALL_EIO;
+  }
+  if (f->data != 0) {
+    kfree(f->data);
+  }
+  f->data = 0;
+  f->cap = 0;
+  f->df = df;
+  f->len = df->ent.size;
+  f->dirty = 0;
+  f->loaded = 0;
+  return 0;
+}
+
+// ---- read / write / lseek -----------------------------------------------------------------
+
 int64_t sysfile_read(uint64_t fd, uint64_t buf, uint64_t len) {
   sysfile_t *f = get_fd(fd);
   uint64_t n;
@@ -451,6 +607,9 @@ int64_t sysfile_read(uint64_t fd, uint64_t buf, uint64_t len) {
   }
   if (f->kind != KIND_READ && !(f->kind == KIND_WRITE && f->readable)) {
     return SYSCALL_EBADF;                       // opened write-only
+  }
+  if (f->df != 0) {
+    return stream_read(f, buf, len);
   }
   n = f->pos < f->len ? f->len - f->pos : 0;
   if (n > len) {
@@ -469,7 +628,6 @@ int64_t sysfile_read(uint64_t fd, uint64_t buf, uint64_t len) {
 
 int64_t sysfile_write(uint64_t fd, uint64_t buf, uint64_t len) {
   sysfile_t *f = get_fd(fd);
-  uint64_t room;
   uint64_t end;
 
   if (f == 0 || f->kind != KIND_WRITE) {
@@ -481,12 +639,16 @@ int64_t sysfile_write(uint64_t fd, uint64_t buf, uint64_t len) {
   if (f->append) {
     f->pos = f->len;
   }
-  if (f->pos >= SYSFILE_MAX_SIZE) {
-    return SYSCALL_EFBIG;
+  if (f->df != 0) {
+    return stream_write(f, buf, len);
   }
-  room = SYSFILE_MAX_SIZE - f->pos;
-  if (len > room) {
-    len = room;                                 // short write, like a full disk
+  if ((uint64_t)f->pos + len > SYSFILE_BUF_MAX) {
+    int64_t r = spill(f);                       // too big to hold: continue on the disk
+
+    if (r < 0) {
+      return r;
+    }
+    return stream_write(f, buf, len);
   }
   if (!paging_user_range_ok(buf, len)) {
     return SYSCALL_EFAULT;
@@ -526,6 +688,7 @@ int64_t sysfile_lseek(uint64_t fd, int64_t offset, uint64_t whence) {
   sysfile_t *f = get_fd(fd);
   int64_t base;
   int64_t target;
+  int64_t bound;
 
   if (f == 0) {
     return SYSCALL_EBADF;
@@ -545,8 +708,9 @@ int64_t sysfile_lseek(uint64_t fd, int64_t offset, uint64_t whence) {
   if (offset > (int64_t)SYSFILE_MAX_SIZE || offset < -(int64_t)SYSFILE_MAX_SIZE) {
     return SYSCALL_EINVAL;
   }
+  bound = f->df != 0 ? (int64_t)f->len : (int64_t)SYSFILE_BUF_MAX;   // a streamed file has no holes
   target = base + offset;
-  if (target < 0 || target > (int64_t)SYSFILE_MAX_SIZE) {
+  if (target < 0 || target > bound) {
     return SYSCALL_EINVAL;
   }
   f->pos = (uint32_t)target;

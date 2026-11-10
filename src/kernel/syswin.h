@@ -96,6 +96,11 @@ int64_t syswin_clip_get(uint64_t buf_uaddr, uint64_t max);
 // surface keeps its size.
 int64_t syswin_resizable(uint64_t id, uint64_t enable);
 
+// Windows still available to programs, and (desktop task only) bring the windows that
+// program `pid` owns to the front, restoring them if they were minimized.
+int syswin_free_slots(void);
+void syswin_raise_pid(uint64_t pid);
+
 // The program with this pid is gone: release its windows (closed by syswin_poll).
 void syswin_process_exit(uint64_t pid);
 

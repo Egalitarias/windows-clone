@@ -337,6 +337,32 @@ static void uw_resized(wm_window_t *win) {
   ev_push(u, SYSWIN_EV_RESIZE, cw, ch, 0);
 }
 
+int syswin_free_slots(void) {
+  int i, n = 0;
+
+  for (i = 0; i < SYSWIN_MAX; ++i) {
+    if (g_uw[i].state == UW_FREE) {
+      ++n;
+    }
+  }
+  return n;
+}
+
+void syswin_raise_pid(uint64_t pid) {
+  int i;
+
+  if (pid == 0) {
+    return;
+  }
+  for (i = 0; i < SYSWIN_MAX; ++i) {
+    uwin_t *u = &g_uw[i];
+
+    if (u->owner == pid && u->state == UW_ACTIVE && u->win != 0) {
+      wm_restore(u->win);
+    }
+  }
+}
+
 int64_t syswin_resizable(uint64_t id, uint64_t enable) {
   uwin_t *u = get_win(id, 1);
 

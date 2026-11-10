@@ -94,6 +94,29 @@ int fat_mkdir(fat_volume_t *v, uint32_t dir_cluster, const char *name, uint32_t 
 // Delete a file or an empty directory.
 int fat_delete(fat_volume_t *v, const fat_dirent_t *ent);
 
+// ---- Open files (streaming, for files too big to hold in memory) ------------------------
+// A fat_file_t reads and writes a file at byte offsets. It remembers where it last was in
+// the cluster chain, so sequential access does not walk the chain from the start each time.
+// Writes extend the file as needed and keep the directory record (size, first cluster) up
+// to date, so the file is consistent after every call.
+typedef struct {
+  fat_volume_t *v;
+  fat_dirent_t ent;            // the directory record: size and first cluster are kept current
+  uint32_t cur_index;          // cursor: index of a cluster in the chain ...
+  uint32_t cur_cluster;        // ... and its number (0 = none yet)
+} fat_file_t;
+
+// Open an existing file (from fat_lookup / fat_iter_next).
+int fat_file_open(fat_volume_t *v, const fat_dirent_t *ent, fat_file_t *f);
+// Create the file, or empty it if it exists (not for directories or read-only files).
+int fat_file_create(fat_volume_t *v, uint32_t dir_cluster, const char *name, fat_file_t *f);
+// Read up to len bytes at offset; *out_len gets the count (0 at or past the end).
+int fat_file_read(fat_file_t *f, uint32_t offset, void *buf, uint32_t len, uint32_t *out_len);
+// Write len bytes at offset, which must not be past the end of the file. *written gets
+// the count (less than len if the volume is full or the file would pass 4 GiB). Returns 0
+// only when nothing could be written.
+int fat_file_write(fat_file_t *f, uint32_t offset, const void *data, uint32_t len, uint32_t *written);
+
 // Bytes of free space (counted by scanning the FAT; takes a moment on big volumes).
 uint64_t fat_free_bytes(fat_volume_t *v);
 

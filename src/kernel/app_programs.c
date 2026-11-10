@@ -2,6 +2,7 @@
 #include "fb.h"
 #include "process.h"
 #include "string.h"
+#include "syswin.h"
 #include "wm.h"
 
 // Programs: launches user-mode programs from /APPS and shows what they print.
@@ -354,5 +355,36 @@ void app_programs_poll(void) {
     if (g_progs[i].used) {
       poll_one(&g_progs[i]);
     }
+  }
+}
+
+// ---- default Notes and Files: user programs, with the built-in apps as a fallback ----
+
+#define NOTES_PROGRAM    "/APPS/NOTES.BIN"
+#define EXPLORER_PROGRAM "/APPS/EXPLORER.BIN"
+
+// Start a windowed user program. 0 when that is not possible right now.
+static int launch_user_program(const char *path) {
+  if (!process_program_exists(path) || syswin_free_slots() == 0) {
+    return 0;
+  }
+  return process_spawn_detached(path, 0) == PROCESS_OK;
+}
+
+void app_launch_notes(void) {
+  if (!launch_user_program(NOTES_PROGRAM)) {
+    app_notes_open();
+  }
+}
+
+void app_launch_files(void) {
+  uint64_t pid = 0;
+
+  if (process_spawn_active(EXPLORER_PROGRAM, &pid)) {
+    syswin_raise_pid(pid);                          // one Explorer: bring it back
+    return;
+  }
+  if (!launch_user_program(EXPLORER_PROGRAM)) {
+    app_files_open();
   }
 }

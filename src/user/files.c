@@ -33,6 +33,127 @@ static int same(const char *a, const char *b, unsigned long n) {
 static char g_out[6000];
 static char g_in[6100];
 
+// ---- files bigger than the kernel's in-memory limit (256 KiB): streamed ---------------------
+
+static unsigned char pat(unsigned long i) {
+  return (unsigned char)(i * 31UL + (i >> 8) * 7UL + (i >> 16));
+}
+
+static void fill_pat(char *dst, unsigned long start, unsigned long n) {
+  unsigned long i;
+
+  for (i = 0; i < n; ++i) {
+    dst[i] = (char)pat(start + i);
+  }
+}
+
+// Does the file, read from its current position in odd-sized pieces, match the pattern
+// for `n` bytes starting at `start`?
+static int read_matches(int fd, unsigned long start, unsigned long n) {
+  unsigned long done = 0;
+
+  while (done < n) {
+    unsigned long want = n - done < 5000UL ? n - done : 5000UL;
+    long got = read(fd, g_in, want);
+    long i;
+
+    if (got <= 0) {
+      return 0;
+    }
+    for (i = 0; i < got; ++i) {
+      if ((unsigned char)g_in[i] != pat(start + done + (unsigned long)i)) {
+        return 0;
+      }
+    }
+    done += (unsigned long)got;
+  }
+  return 1;
+}
+
+static void big_file_tests(void) {
+  const unsigned long big = 1048576UL + 1234UL;       // well past the 256 KiB buffer limit
+  unsigned long off;
+  long fd;
+  int ok = 1;
+  dirent_t de;
+  int i;
+
+  // Write 1 MiB + 1234 bytes in 4 KiB pieces: the handle starts buffered and switches to the disk.
+  fd = open("/BIG.BIN", O_WRONLY);
+  check(fd >= 3, 78, "open a big file for writing");
+  for (off = 0; off < big && ok; off += 4096UL) {
+    unsigned long n = big - off < 4096UL ? big - off : 4096UL;
+
+    fill_pat(g_out, off, n);
+    ok = write((int)fd, g_out, n) == (long)n;
+  }
+  check(ok, 79, "write a 1 MiB file");
+  check(lseek((int)fd, 0, SEEK_CUR) == (long)big, 80, "position after the big write");
+  check(close((int)fd) == 0, 81, "close the big file");
+  check(stat("/BIG.BIN", &de) == 0 && de.size == big, 82, "size of the big file");
+
+  // Read it back in odd pieces, then seek around.
+  fd = open("/BIG.BIN", O_RDONLY);
+  check(fd >= 3 && read_matches((int)fd, 0, big), 83, "read the whole big file back");
+  check(read((int)fd, g_in, 10) == 0, 84, "end of the big file");
+  check(lseek((int)fd, 700000, SEEK_SET) == 700000 && read_matches((int)fd, 700000, 100), 85, "seek and read in the middle");
+  check(lseek((int)fd, -10, SEEK_END) == (long)big - 10, 86, "seek from the end");
+  check(read((int)fd, g_in, 20) == 10 && read_matches((int)fd, 0, 0) && (unsigned char)g_in[9] == pat(big - 1), 87, "the last 10 bytes");
+  check(lseek((int)fd, (long)big + 1, SEEK_SET) == -22, 88, "seek past the end of a big file is EINVAL");
+  check(lseek((int)fd, 262144, SEEK_SET) == 262144 && read_matches((int)fd, 262144, 9000), 89, "read across the old buffer limit");
+  close((int)fd);
+
+  // Overwrite 16 bytes in place, in the middle of the big file.
+  fd = open("/BIG.BIN", O_RDWR);
+  check(fd >= 3, 90, "open the big file for reading and writing");
+  check(lseek((int)fd, 500000, SEEK_SET) == 500000 && write((int)fd, "XXXXXXXXXXXXXXXX", 16) == 16, 91, "write in place");
+  check(lseek((int)fd, 499990, SEEK_SET) == 499990 && read((int)fd, g_in, 40) == 40, 92, "read around it");
+  ok = 1;
+  for (i = 0; i < 40; ++i) {
+    unsigned char want = (i >= 10 && i < 26) ? 'X' : pat(499990UL + (unsigned long)i);
+
+    ok = ok && (unsigned char)g_in[i] == want;
+  }
+  check(ok, 93, "the 16 bytes changed and their neighbours did not");
+  check(close((int)fd) == 0, 94, "close");
+  check(stat("/BIG.BIN", &de) == 0 && de.size == big, 95, "in-place writes keep the size");
+
+  // Append 5000 bytes to the big file.
+  fd = open("/BIG.BIN", O_WRONLY | O_APPEND);
+  check(fd >= 3, 96, "open the big file for appending");
+  fill_pat(g_out, big, 5000);
+  check(write((int)fd, g_out, 5000) == 5000, 97, "append");
+  check(close((int)fd) == 0, 98, "close after appending");
+  check(stat("/BIG.BIN", &de) == 0 && de.size == big + 5000UL, 99, "size after appending");
+  fd = open("/BIG.BIN", O_RDONLY);
+  check(fd >= 3 && lseek((int)fd, (long)big - 100, SEEK_SET) == (long)big - 100 && read_matches((int)fd, big - 100, 5100), 100, "the appended bytes follow the old ones");
+  close((int)fd);
+
+  // A small file that grows past the limit while open: its old contents must survive.
+  fd = open("/MID.TXT", O_WRONLY);
+  write((int)fd, "0123456789", 10);
+  close((int)fd);
+  fd = open("/MID.TXT", O_RDWR);
+  check(fd >= 3 && lseek((int)fd, 0, SEEK_END) == 10, 101, "open a small file for growing");
+  ok = 1;
+  for (off = 10; off < 300010UL && ok; off += 4096UL) {
+    unsigned long n = 300010UL - off < 4096UL ? 300010UL - off : 4096UL;
+
+    fill_pat(g_out, off, n);
+    ok = write((int)fd, g_out, n) == (long)n;
+  }
+  check(ok, 102, "grow a small file past 256 KiB");
+  check(close((int)fd) == 0 && stat("/MID.TXT", &de) == 0 && de.size == 300010UL, 103, "size of the grown file");
+  fd = open("/MID.TXT", O_RDONLY);
+  check(fd >= 3 && read((int)fd, g_in, 10) == 10 && same(g_in, "0123456789", 10), 104, "the old contents survived");
+  check(read_matches((int)fd, 10, 300000UL), 105, "the new contents follow");
+  close((int)fd);
+
+  check(unlink("/BIG.BIN") == 0 && unlink("/MID.TXT") == 0, 106, "remove the big files");
+  check(stat("/BIG.BIN", &de) == -2, 107, "the big file is gone");
+  puts("files: big file checks done\r\n");
+}
+
 int main(void) {
   long fd;
   long n;
@@ -216,6 +337,7 @@ int main(void) {
 
     if (getarg(arg, sizeof(arg)) > 0 && arg[0] == 's') {   // the supervisor asks for a real spawn once
       check(spawn("/APPS/HELLO.BIN", 0) == 0, 77, "spawn a program");
+      big_file_tests();                                      // slow, so only once
     }
   }
 

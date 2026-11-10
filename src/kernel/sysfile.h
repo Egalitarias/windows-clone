@@ -8,11 +8,18 @@
 // Paths look like "/APPS/HELLO.BIN". There are no drive letters: the default
 // volume (fs_default_volume) is searched first, then the others in order.
 //
-// Files are whole-file buffered, because the FAT driver reads and replaces whole
-// files: open() for reading loads the file into kernel memory and read() serves it
-// from there; open() for writing starts an empty buffer, write() appends to it and
-// close() replaces the file on disk. Files are limited to SYSFILE_MAX_SIZE bytes.
-// A write-opened file is only created or truncated by close(). Writes always go to
+// Small files (up to SYSFILE_BUF_MAX bytes) are buffered whole: open() for reading loads
+// the file into kernel memory and read() serves it from there; open() for writing starts
+// an empty buffer, write() fills it and close() replaces the file on disk.
+//
+// Bigger files are streamed: reads and writes go to the disk at the current position, at
+// most SYSFILE_CHUNK bytes per call (a read or write may return less than asked: loop). A
+// write handle switches to streaming by itself once its data passes SYSFILE_BUF_MAX; the
+// file is then created or emptied on the disk at that moment, not at close(), and every
+// write keeps its size up to date. Seeking in a streamed file stays within [0, size].
+// Files are limited to SYSFILE_MAX_SIZE bytes.
+//
+// A write-opened small file is only created or truncated by close(). Writes always go to
 // the default volume. Opened with O_RDWR or O_APPEND the file keeps its contents; writes
 // then land at the current position (lseek moves it) and close() stores the file only if
 // something was written.
@@ -25,7 +32,9 @@
 
 #define SYSFILE_FIRST_FD 3
 #define SYSFILE_MAX_FDS  8                      // open files per process
-#define SYSFILE_MAX_SIZE (256U * 1024U)
+#define SYSFILE_BUF_MAX  (256U * 1024U)         // files up to this size are held whole in memory
+#define SYSFILE_MAX_SIZE 0x7FFFFFFFU            // largest file (2 GiB - 1)
+#define SYSFILE_CHUNK    (64U * 1024U)          // most bytes one read() or write() moves from a big file
 
 #define SYSFILE_O_RDONLY 0                      // file or directory
 #define SYSFILE_O_WRONLY 1                      // create or truncate, applied on close

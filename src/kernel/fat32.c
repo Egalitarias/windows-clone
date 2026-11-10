@@ -952,6 +952,232 @@ static int fat_delete_impl(fat_volume_t *v, const fat_dirent_t *ent) {
   return 1;
 }
 
+// ---- Open files -------------------------------------------------------------------
+
+// Put the cursor on cluster number `idx` of the file's chain.
+static int file_seek(fat_file_t *f, uint32_t idx, uint32_t *cluster) {
+  fat_volume_t *v = f->v;
+  uint32_t c, i, next;
+
+  if (f->ent.first_cluster < 2) {
+    return 0;
+  }
+  if (f->cur_cluster >= 2 && f->cur_index <= idx) {
+    c = f->cur_cluster;
+    i = f->cur_index;
+  } else {
+    c = f->ent.first_cluster;
+    i = 0;
+  }
+  while (i < idx) {
+    if (!fat_get(v, c, &next) || is_eoc(v, next) || next < 2) {
+      return 0;
+    }
+    c = next;
+    ++i;
+  }
+  f->cur_cluster = c;
+  f->cur_index = i;
+  *cluster = c;
+  return 1;
+}
+
+static int fat_file_open_impl(fat_volume_t *v, const fat_dirent_t *ent, fat_file_t *f) {
+  if ((ent->attr & FAT_ATTR_DIR) != 0) {
+    return 0;
+  }
+  f->v = v;
+  f->ent = *ent;
+  f->cur_index = 0;
+  f->cur_cluster = 0;
+  return 1;
+}
+
+static int fat_file_create_impl(fat_volume_t *v, uint32_t dir_cluster, const char *name, fat_file_t *f) {
+  fat_dirent_t ent;
+
+  if (!name_ok(name)) {
+    return 0;
+  }
+  if (fat_lookup(v, dir_cluster, name, &ent)) {
+    if (ent.attr & (FAT_ATTR_DIR | FAT_ATTR_READONLY)) {
+      return 0;
+    }
+    free_chain(v, ent.first_cluster);
+    ent.first_cluster = 0;
+    ent.size = 0;
+    if (!update_record(v, &ent)) {
+      return 0;
+    }
+  } else if (!create_record(v, dir_cluster, name, FAT_ATTR_ARCHIVE, 0, 0, &ent)) {
+    return 0;
+  }
+  return fat_file_open_impl(v, &ent, f);
+}
+
+static int fat_file_read_impl(fat_file_t *f, uint32_t offset, void *buf, uint32_t len, uint32_t *out_len) {
+  fat_volume_t *v = f->v;
+  uint32_t cbytes = cluster_bytes(v);
+  uint8_t *dst = (uint8_t *)buf;
+  uint32_t pos = offset;
+
+  *out_len = 0;
+  if (offset >= f->ent.size) {
+    return 1;
+  }
+  if (len > f->ent.size - offset) {
+    len = f->ent.size - offset;
+  }
+  while (len > 0) {
+    uint32_t c, off = pos % cbytes, chunk = cbytes - off, done = 0, lba, sec_off, full;
+
+    if (chunk > len) {
+      chunk = len;
+    }
+    if (!file_seek(f, pos / cbytes, &c)) {
+      return *out_len > 0;
+    }
+    lba = cluster_lba(v, c) + off / 512u;
+    sec_off = off % 512u;
+    if (sec_off != 0) {                                   // the first, partial sector
+      uint32_t take = 512u - sec_off < chunk ? 512u - sec_off : chunk;
+
+      if (!block_read(v->dev, lba, 1, g_scratch)) {
+        return *out_len > 0;
+      }
+      memcpy(dst, g_scratch + sec_off, take);
+      dst += take;
+      done += take;
+      ++lba;
+    }
+    full = (chunk - done) / 512u;                         // whole sectors in one go
+    if (full > 0) {
+      if (!block_read(v->dev, lba, full, dst)) {
+        return *out_len > 0;
+      }
+      dst += (size_t)full * 512u;
+      done += full * 512u;
+      lba += full;
+    }
+    if (done < chunk) {                                   // the last, partial sector
+      if (!block_read(v->dev, lba, 1, g_scratch)) {
+        return *out_len > 0;
+      }
+      memcpy(dst, g_scratch, chunk - done);
+      dst += chunk - done;
+    }
+    pos += chunk;
+    len -= chunk;
+    *out_len += chunk;
+  }
+  return 1;
+}
+
+static int fat_file_write_impl(fat_file_t *f, uint32_t offset, const void *data, uint32_t len, uint32_t *written) {
+  fat_volume_t *v = f->v;
+  uint32_t cbytes = cluster_bytes(v);
+  const uint8_t *src = (const uint8_t *)data;
+  uint32_t pos = offset;
+  uint32_t old_first = f->ent.first_cluster;
+  uint32_t old_size = f->ent.size;
+  uint32_t chain = (f->ent.size + cbytes - 1u) / cbytes;      // clusters the file occupies now
+  int stopped = 0;
+
+  *written = 0;
+  if (offset > f->ent.size) {
+    return 0;
+  }
+  if (len > 0xFFFFFFFFu - offset) {
+    len = 0xFFFFFFFFu - offset;                                // a FAT file cannot pass 4 GiB - 1
+  }
+  while (len > 0 && !stopped) {
+    uint32_t idx = pos / cbytes, off = pos % cbytes, chunk = cbytes - off, done = 0;
+    uint32_t c, lba;
+    int fresh = 0;
+
+    if (chunk > len) {
+      chunk = len;
+    }
+    if (idx < chain) {
+      if (!file_seek(f, idx, &c)) {
+        break;
+      }
+    } else {                                                  // grow by one cluster
+      uint32_t prev = 0;
+
+      if (idx > 0 && !file_seek(f, idx - 1, &prev)) {
+        break;
+      }
+      c = alloc_cluster(v);
+      if (c == 0) {
+        break;                                                // volume full
+      }
+      if (idx == 0) {
+        f->ent.first_cluster = c;
+      } else if (!fat_set(v, prev, c)) {
+        free_chain(v, c);
+        break;
+      }
+      f->cur_cluster = c;
+      f->cur_index = idx;
+      chain = idx + 1u;
+      fresh = 1;
+    }
+    lba = cluster_lba(v, c) + off / 512u;
+    while (done < chunk) {
+      uint32_t sec_off = (off + done) % 512u;
+      uint32_t left = chunk - done;
+
+      if (sec_off == 0 && left >= 512u) {                     // whole sectors, written together
+        uint32_t full = left / 512u;
+
+        if (!block_write(v->dev, lba, full, src)) {
+          stopped = 1;
+          break;
+        }
+        src += (size_t)full * 512u;
+        done += full * 512u;
+        lba += full;
+      } else {                                                // part of a sector: keep the rest
+        uint32_t take = 512u - sec_off < left ? 512u - sec_off : left;
+        uint32_t sec_start = idx * cbytes + ((off + done) / 512u) * 512u;
+
+        if (!fresh && sec_start < f->ent.size) {
+          if (!block_read(v->dev, lba, 1, g_scratch)) {
+            stopped = 1;
+            break;
+          }
+        } else {
+          memset(g_scratch, 0, 512);
+        }
+        memcpy(g_scratch + sec_off, src, take);
+        if (!block_write(v->dev, lba, 1, g_scratch)) {
+          stopped = 1;
+          break;
+        }
+        src += take;
+        done += take;
+        ++lba;
+      }
+    }
+    pos += done;
+    len -= done;
+    *written += done;
+    if (pos > f->ent.size) {
+      f->ent.size = pos;
+    }
+    if (done < chunk) {
+      break;
+    }
+  }
+  if (f->ent.size != old_size || f->ent.first_cluster != old_first) {
+    if (!update_record(v, &f->ent)) {
+      return 0;
+    }
+  }
+  return *written > 0 || len == 0;
+}
+
 // ---- Public entry points -----------------------------------------------------
 // The driver keeps per-volume caches and is not reentrant, but the scheduler can
 // preempt a task between any two instructions. Each public call therefore runs
@@ -1014,6 +1240,42 @@ int fat_write_file(fat_volume_t *v, uint32_t dir_cluster, const char *name, cons
 
   scheduler_preempt_disable();
   result = fat_write_file_impl(v, dir_cluster, name, data, len);
+  scheduler_preempt_enable();
+  return result;
+}
+
+int fat_file_open(fat_volume_t *v, const fat_dirent_t *ent, fat_file_t *f) {
+  int result;
+
+  scheduler_preempt_disable();
+  result = fat_file_open_impl(v, ent, f);
+  scheduler_preempt_enable();
+  return result;
+}
+
+int fat_file_create(fat_volume_t *v, uint32_t dir_cluster, const char *name, fat_file_t *f) {
+  int result;
+
+  scheduler_preempt_disable();
+  result = fat_file_create_impl(v, dir_cluster, name, f);
+  scheduler_preempt_enable();
+  return result;
+}
+
+int fat_file_read(fat_file_t *f, uint32_t offset, void *buf, uint32_t len, uint32_t *out_len) {
+  int result;
+
+  scheduler_preempt_disable();
+  result = fat_file_read_impl(f, offset, buf, len, out_len);
+  scheduler_preempt_enable();
+  return result;
+}
+
+int fat_file_write(fat_file_t *f, uint32_t offset, const void *data, uint32_t len, uint32_t *written) {
+  int result;
+
+  scheduler_preempt_disable();
+  result = fat_file_write_impl(f, offset, data, len, written);
   scheduler_preempt_enable();
   return result;
 }

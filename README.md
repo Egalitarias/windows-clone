@@ -270,7 +270,6 @@ User-space task launching, per-process address spaces, a file system interface a
 system call interface for user tasks are done (see `docs/SYSCALL_PLAN.md`). Still open:
 - Moving more built-in apps (Files, Paint) to user processes
 - A user-space library (fonts, widgets), an ELF loader and a high-half kernel
-- Files over 256 KiB (files are held whole in memory today)
 - Enhanced QEMU/installer validation workflow (Issue #3)
 
 ## Kernel coding notes

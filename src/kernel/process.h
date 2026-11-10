@@ -77,6 +77,11 @@ int process_spawn_arg(const char *path, const char *arg);
 // negative PROCESS_ERR_* code (PROCESS_ERR_NOMEM when no slot or task is free). A path
 // that does not load is only reported on the kernel console.
 int process_spawn_detached(const char *path, const char *arg);
+// 1 if `path` names a loadable file on any volume.
+int process_program_exists(const char *path);
+// 1 if a program started from `path` is still running (or starting). *pid gets its
+// process id, 0 while it is still loading.
+int process_spawn_active(const char *path, uint64_t *pid);
 #define PROCESS_ARG_MAX 64
 
 // Wait (from a scheduler task) until the spawned program has finished. Stores

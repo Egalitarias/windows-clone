@@ -6,6 +6,12 @@
 #include "fat32.h"
 
 void app_notes_open(void);
+// The default Notes and Files: the user-mode programs NOTES.BIN and EXPLORER.BIN when
+// they can be started (the file exists, a window slot is free, a task slot is free),
+// otherwise the built-in kernel apps above. Files raises a running Explorer instead of
+// starting a second one. Call from the desktop task.
+void app_launch_notes(void);
+void app_launch_files(void);
 // Open an existing text file in a new Notes window (Ctrl+S saves it back).
 void app_notes_open_file(fat_volume_t *vol, const fat_dirent_t *ent);
 // File explorer (single instance; reopening raises it).

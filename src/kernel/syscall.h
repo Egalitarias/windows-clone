@@ -57,6 +57,7 @@
 #define SYSCALL_EINVAL  (-22)
 #define SYSCALL_EMFILE  (-24)
 #define SYSCALL_EFBIG   (-27)
+#define SYSCALL_ENOSPC  (-28)
 #define SYSCALL_ENAMETOOLONG (-36)
 #define SYSCALL_ENOSYS  (-38)
 
