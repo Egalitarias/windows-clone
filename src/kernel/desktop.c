@@ -56,8 +56,71 @@
 static char g_clock[6] = "--:--";
 static char g_date[11] = "";
 static char g_zone[10] = "";
-static int g_tz_offset_min = 0;     // local time = RTC (UTC) + this; not persisted yet
+static int g_tz_offset_min = 0;     // local time = RTC (UTC) + this; saved in TZ.CFG
+static int g_tz_dirty = 0;          // changed since it was last saved
+static uint64_t g_tz_changed_ms = 0;
 static void update_clock(void);
+
+// ---- time zone setting -----------------------------------------------------
+// Kept as text ("60" = UTC+01:00, the offset in minutes) in TZ.CFG on the default
+// volume. Saving waits until the clicks stop, so stepping through several zones
+// writes the disk once.
+
+#define TZ_FILE        "TZ.CFG"
+#define TZ_SAVE_DELAY_MS 2000
+
+static void tz_load(void) {
+  fat_volume_t *v = fs_default_volume();
+  fat_dirent_t ent;
+  char buf[16];
+  uint32_t got = 0, i = 0;
+  int sign = 1, value = 0, digits = 0;
+
+  if (v == 0 || !fat_lookup(v, v->root_cluster, TZ_FILE, &ent) || (ent.attr & FAT_ATTR_DIR) ||
+      ent.size == 0 || !fat_read_file(v, &ent, buf, sizeof(buf) - 1, &got)) {
+    return;
+  }
+  buf[got] = 0;
+  if (buf[i] == '-') {
+    sign = -1;
+    i++;
+  } else if (buf[i] == '+') {
+    i++;
+  }
+  for (; buf[i] >= '0' && buf[i] <= '9' && digits < 5; i++, digits++) {
+    value = value * 10 + (buf[i] - '0');
+  }
+  value *= sign;
+  if (digits > 0 && value >= TZ_MIN && value <= TZ_MAX) {
+    g_tz_offset_min = value;
+  }
+}
+
+static void tz_save(void) {
+  fat_volume_t *v = fs_default_volume();
+  char buf[16];
+  int n = 0, value = g_tz_offset_min, started = 0, div;
+
+  g_tz_dirty = 0;
+  if (v == 0) {
+    return;
+  }
+  if (value < 0) {
+    buf[n++] = '-';
+    value = -value;
+  }
+  for (div = 10000; div >= 1; div /= 10) {
+    int digit = (value / div) % 10;
+    if (digit != 0 || started || div == 1) {
+      buf[n++] = (char)('0' + digit);
+      started = 1;
+    }
+  }
+  buf[n++] = '\n';
+  if (!fat_write_file(v, v->root_cluster, TZ_FILE, buf, (uint32_t)n)) {
+    console_printf("[clock] could not save the time zone to %s\r\n", TZ_FILE);
+  }
+}
 static int g_icon_selected = -1;
 static uint64_t g_last_click_ms = 0;
 static int g_last_click_x = -9999, g_last_click_y = -9999;
@@ -339,6 +402,8 @@ static void handle_click(int x, int y, int double_click) {
       int next = g_tz_offset_min + step;
       if (next >= TZ_MIN && next <= TZ_MAX) {
         g_tz_offset_min = next;
+        g_tz_dirty = 1;
+        g_tz_changed_ms = timer_get_ms();
         update_clock();
       }
       return;
@@ -500,6 +565,8 @@ static __attribute__((noreturn)) void desktop_run(void) {
                      block_get(fs_volume(i)->dev)->name);
     }
   }
+  tz_load();
+  update_clock();
   last_second = timer_get_ms();
 
 #ifndef KERNEL_USER_SELFTEST                        // the self-tests count user windows: keep them out
@@ -571,6 +638,9 @@ static __attribute__((noreturn)) void desktop_run(void) {
       if (now - last_second >= 1000) {
         last_second = now;
         update_clock();
+        if (g_tz_dirty && now - g_tz_changed_ms >= TZ_SAVE_DELAY_MS) {
+          tz_save();
+        }
         wm_tick();
       }
     }
