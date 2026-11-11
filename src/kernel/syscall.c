@@ -7,6 +7,7 @@
 #include "process.h"
 #include "sysfile.h"
 #include "syswin.h"
+#include "desktop.h"
 
 #define MSR_EFER   0xC0000080U
 #define MSR_STAR   0xC0000081U
@@ -257,6 +258,18 @@ static int64_t syscall_dispatch_inner(uint64_t nr, uint64_t a1, uint64_t a2, uin
       return (int64_t)timer_get_ms();
     case SYS_SCREEN:
       return ((int64_t)fb_width() << 16) | (int64_t)fb_height();
+    case SYS_NOTIFY: {
+      char text[64];
+      int64_t r = sys_copy_user_string(a1, text, sizeof(text));
+
+      if (r == SYSCALL_ENAMETOOLONG) {
+        text[sizeof(text) - 1] = 0;           // too long: just cut it
+      } else if (r < 0) {
+        return r;
+      }
+      desktop_notify_post(text);
+      return 0;
+    }
     case SYS_VOLINFO:
       return sysfile_volinfo(a1, a2);
     case SYS_SPAWN: {

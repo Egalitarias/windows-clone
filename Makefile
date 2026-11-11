@@ -429,7 +429,7 @@ $(USER_DIR)/%.bin: $(USER_DIR)/%.elf
 	$(KERNEL_OBJCOPY) --strip-all $< $@
 
 # Each program is staged under an upper-case 8.3 name on the boot volume.
-user-apps: $(USER_DIR)/hello.bin $(USER_DIR)/count.bin $(USER_DIR)/crash.bin $(USER_DIR)/echo.bin $(USER_DIR)/tick.bin $(USER_DIR)/iso.bin $(USER_DIR)/files.bin $(USER_DIR)/wintest.bin $(USER_DIR)/winev.bin $(USER_DIR)/windemo.bin $(USER_DIR)/notes.bin $(USER_DIR)/explorer.bin $(USER_DIR)/paint.bin $(USER_DIR)/about.bin $(USER_DIR)/reszt.bin $(USER_DIR)/probe.bin $(USER_DIR)/stackovf.bin $(USER_DIR)/spin.bin $(USER_DIR)/kfault.bin
+user-apps: $(USER_DIR)/hello.bin $(USER_DIR)/count.bin $(USER_DIR)/crash.bin $(USER_DIR)/echo.bin $(USER_DIR)/tick.bin $(USER_DIR)/iso.bin $(USER_DIR)/files.bin $(USER_DIR)/wintest.bin $(USER_DIR)/winev.bin $(USER_DIR)/windemo.bin $(USER_DIR)/notes.bin $(USER_DIR)/explorer.bin $(USER_DIR)/paint.bin $(USER_DIR)/about.bin $(USER_DIR)/reszt.bin $(USER_DIR)/probe.bin $(USER_DIR)/stackovf.bin $(USER_DIR)/spin.bin $(USER_DIR)/kfault.bin $(USER_DIR)/toast.bin
 	@mkdir -p $(UEFI_DIR)/APPS
 	cp $(USER_DIR)/hello.bin $(UEFI_DIR)/APPS/HELLO.BIN
 	cp $(USER_DIR)/count.bin $(UEFI_DIR)/APPS/COUNT.BIN
@@ -449,6 +449,7 @@ user-apps: $(USER_DIR)/hello.bin $(USER_DIR)/count.bin $(USER_DIR)/crash.bin $(U
 	cp $(USER_DIR)/probe.bin $(UEFI_DIR)/APPS/PROBE.BIN
 	cp $(USER_DIR)/stackovf.bin $(UEFI_DIR)/APPS/STACKOVF.BIN
 	cp $(USER_DIR)/spin.bin $(UEFI_DIR)/APPS/SPIN.BIN
+	cp $(USER_DIR)/toast.bin $(UEFI_DIR)/APPS/TOAST.BIN
 	cp $(USER_DIR)/kfault.bin $(UEFI_DIR)/APPS/KFAULT.BIN
 
 .PHONY: user-apps

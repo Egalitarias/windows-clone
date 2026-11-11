@@ -34,6 +34,7 @@
 #define SYS_CLIP_SET   24
 #define SYS_VOLINFO    26
 #define SYS_UPTIME     29
+#define SYS_NOTIFY     31
 #define SYS_SCREEN     30
 #define SYS_WIN_RESIZABLE 28
 #define SYS_SPAWN      27
@@ -96,6 +97,7 @@ static inline long readdir(int fd, dirent_t *out) { return syscall3(SYS_READDIR,
 // the prefix reads search the default volume first and writes go to it.
 static inline long volinfo(int index, dirent_t *out) { return syscall3(SYS_VOLINFO, index, (long)out, 0); }
 // Milliseconds since the machine started.
+static inline long notify(const char *text) { return syscall3(SYS_NOTIFY, (long)text, 0, 0); }
 static inline long uptime_ms(void) { return syscall3(SYS_UPTIME, 0, 0, 0); }
 // The display size in pixels.
 static inline void screen_size(int *w, int *h) {

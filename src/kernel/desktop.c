@@ -4,6 +4,7 @@
 #include "fb.h"
 #include "fs.h"
 #include "idt.h"
+#include "irqlock.h"
 #include "block.h"
 #include "irq.h"
 #include "ps2.h"
@@ -175,6 +176,47 @@ void desktop_notify(const char *text) {
   g_toast_expire[g_toast_count] = timer_get_ms() + TOAST_LIFE_MS;
   g_toast_count++;
   toast_invalidate();
+}
+
+// Notifications from other tasks (programs): a small queue the desktop loop drains.
+#define POST_MAX 8
+static char g_post_text[POST_MAX][TOAST_CHARS + 1];
+static int g_post_head = 0, g_post_count = 0;
+
+void desktop_notify_post(const char *text) {
+  uint64_t f = irq_save();
+  int slot, n;
+
+  if (g_post_count < POST_MAX) {            // a flood of messages drops the newest
+    slot = (g_post_head + g_post_count) % POST_MAX;
+    for (n = 0; n < TOAST_CHARS && text[n]; n++) {
+      g_post_text[slot][n] = text[n];
+    }
+    g_post_text[slot][n] = 0;
+    g_post_count++;
+  }
+  irq_restore(f);
+}
+
+static void toast_drain_posts(void) {
+  char text[TOAST_CHARS + 1];
+
+  for (;;) {
+    uint64_t f = irq_save();
+    int n;
+
+    if (g_post_count == 0) {
+      irq_restore(f);
+      return;
+    }
+    for (n = 0; n <= TOAST_CHARS; n++) {
+      text[n] = g_post_text[g_post_head][n];
+    }
+    g_post_head = (g_post_head + 1) % POST_MAX;
+    g_post_count--;
+    irq_restore(f);
+    desktop_notify(text);
+  }
 }
 
 static void toast_remove(int idx) {
@@ -690,6 +732,7 @@ static __attribute__((noreturn)) void desktop_run(void) {
     app_programs_poll();
     app_console_poll();
     syswin_poll();
+    toast_drain_posts();
     while (ps2_poll(&ev)) {
       if (ev.type == PS2_EVENT_KEY) {
         if (ev.pressed && ev.ch == 27) {

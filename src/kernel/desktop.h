@@ -19,6 +19,10 @@ void desktop_pump(void);
 // shell and the kernel's desktop code), not from user programs' tasks.
 void desktop_notify(const char *text);
 
+// Same, but safe to call from any task (user programs' syscalls use it). The
+// desktop task shows it within a few milliseconds; if too many pile up, the newest are dropped.
+void desktop_notify_post(const char *text);
+
 // The clock's time zone: minutes to add to the RTC (UTC) for local time.
 int desktop_tz_offset_min(void);
 
