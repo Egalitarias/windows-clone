@@ -52,6 +52,7 @@ typedef struct {
   int is_pe;                  // a Windows (PE) program: has a heap block and the Win32 DLL
   uint64_t heap_phys, heap_pages;   // PE programs: the heap at PE_HEAP_BASE (the Win32 runtime manages it)
   uint64_t pe_exe_base, pe_dll_base;
+  uint64_t gs_base;           // PE programs: the thread block (TEB) GS points at
   uint64_t exit_code;
   void *io;                   // the program's console (set by process_spawn), or 0
   const char *arg;            // argument string given to process_spawn_arg, or 0
@@ -68,6 +69,10 @@ int process_create(const char *path, process_t *p);
 // Where a PE program's heap lives, and how big it is.
 #define PE_HEAP_BASE  0x00007F0000200000ULL
 #define PE_HEAP_PAGES 512U
+// The first pages of that block belong to the kernel: page 0 is the TEB (GS points at it, with
+// the PEB and the TLS pointer array in the same page), the rest is the program's thread-local
+// storage. The runtime's heap starts after them.
+#define PE_RESERVED_PAGES 4U
 #define PE_SHIM_PATH  "/APPS/WIN32.DLL"
 // For SYS_PEINFO: the current process is a PE program: fills out[0..3] = heap base, heap
 // size, program image base, Win32 DLL base and returns 1; 0 for any other program.

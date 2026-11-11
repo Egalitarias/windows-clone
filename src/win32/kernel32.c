@@ -111,6 +111,11 @@ uint64_t rt_dll_base(void) {
   return g_info[3];
 }
 
+uint64_t rt_exe_base(void) {
+  info_init();
+  return g_info[2];
+}
+
 // ---- Heap ------------------------------------------------------------------------------------
 // One block of memory from the kernel (PE_HEAP_BASE), carved with a first-fit allocator. Every
 // block has a 16-byte header: its total size, with bit 0 set while in use.

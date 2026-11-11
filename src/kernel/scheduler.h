@@ -10,6 +10,9 @@ void scheduler_init(void);
 
 // The task executing right now, or NULL before the scheduler has started.
 TCB *scheduler_current_tcb(void);
+
+// Load IA32_GS_BASE (does nothing when it already holds `base`).
+void cpu_set_gs_base(uint64_t base);
 // Nonzero once scheduler_run() has started dispatching tasks (timer preemption is live).
 int scheduler_is_running(void);
 

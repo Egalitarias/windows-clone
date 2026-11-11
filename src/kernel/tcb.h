@@ -41,6 +41,7 @@ typedef struct {
   // Per-process state, loaded by the scheduler whenever this task is switched in.
   uint64_t cr3;             // PML4 of the task's address space; 0 = the kernel's tables
   uint64_t kernel_rsp0;     // kernel stack for ring-3 entries (TSS.rsp0); 0 = leave unchanged
+  uint64_t gs_base;         // IA32_GS_BASE for the task (a PE program's TEB); 0 for everything else
 
   // Why a BLOCKED task is blocked (TASK_WAIT_*), and for sleepers when to wake it.
   uint32_t wait_kind;

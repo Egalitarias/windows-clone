@@ -89,6 +89,7 @@ static void tcb_free_slot(TCB *tcb) {
   tcb->address_space = 0;
   tcb->cr3 = 0;
   tcb->kernel_rsp0 = 0;
+  tcb->gs_base = 0;
   tcb->wait_kind = 0;
   tcb->wake_ms = 0;
   tcb->user_stack_base = 0;

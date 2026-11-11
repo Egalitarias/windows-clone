@@ -43,8 +43,8 @@ int process_pe_info(uint64_t out[4]) {
   if (p == 0 || !p->is_pe) {
     return 0;
   }
-  out[0] = PE_HEAP_BASE;
-  out[1] = p->heap_pages * 4096ULL;
+  out[0] = PE_HEAP_BASE + (uint64_t)PE_RESERVED_PAGES * 4096ULL;
+  out[1] = (p->heap_pages - PE_RESERVED_PAGES) * 4096ULL;
   out[2] = p->pe_exe_base;
   out[3] = p->pe_dll_base;
   return 1;
@@ -291,14 +291,15 @@ static int image_from_elf(const uint8_t *buf, uint64_t have, uint64_t size, imag
 // that DLL's exports. Imports it does not export are bound to a stub that ends the program
 // with a message naming nothing in particular (the kernel log says which ones were missing).
 // The program gets a heap block (PE_HEAP_BASE) the DLL manages, found with SYS_PEINFO.
-// Not supported: TLS, SEH tables (an exception kills the process), delay-load, imports by
+// Thread-local storage (the .tls section) works for the one thread: see pe_setup_teb.
+// Not supported: SEH tables (an exception kills the process), delay-load, imports by
 // ordinal, DLLs other than the runtime.
 
 typedef struct {
   uint64_t image_base;        // ImageBase from the file
   uint64_t load_base;         // where it was put
   uint32_t size_of_image, entry_rva;
-  uint32_t imp_rva, imp_size, rel_rva, rel_size, exp_rva, exp_size, tls_size;
+  uint32_t imp_rva, imp_size, rel_rva, rel_size, exp_rva, exp_size, tls_rva, tls_size;
   uint16_t chars, subsystem;
 } pe_t;
 
@@ -390,7 +391,7 @@ static int pe_load_headers(const uint8_t *b, uint64_t have, uint64_t file_size, 
   if (ndirs > 0) { pe->exp_rva = u32le(opt + 112); pe->exp_size = u32le(opt + 116); }
   if (ndirs > 1) { pe->imp_rva = u32le(opt + 120); pe->imp_size = u32le(opt + 124); }
   if (ndirs > 5) { pe->rel_rva = u32le(opt + 152); pe->rel_size = u32le(opt + 156); }
-  if (ndirs > 9) { pe->tls_size = u32le(opt + 188); }
+  if (ndirs > 9) { pe->tls_rva = u32le(opt + 184); pe->tls_size = u32le(opt + 188); }
   if (ndirs > 14 && u32le(opt + 228) != 0) {
     PE_FAIL(4);                                         // a .NET assembly
   }
@@ -541,12 +542,28 @@ static int pe_relocate(uint8_t *m, const pe_t *pe) {
   return 1;
 }
 
+static int pe_ieq_prefix(const char *s, const char *prefix) {
+  while (*prefix != 0) {
+    if (char_lower(*s) != char_lower(*prefix)) {
+      return 0;
+    }
+    ++s;
+    ++prefix;
+  }
+  return 1;
+}
+
 // DLL names the Win32 runtime stands in for.
 static int pe_is_runtime_name(const char *n) {
-  static const char names[][16] = {"kernel32.dll", "user32.dll", "gdi32.dll", "advapi32.dll", "shell32.dll",
-                                    "comctl32.dll", "win32.dll"};
+  static const char names[][20] = {"kernel32.dll", "user32.dll", "gdi32.dll", "advapi32.dll", "shell32.dll",
+                                    "comctl32.dll", "win32.dll", "ucrtbase.dll", "vcruntime140.dll",
+                                    "vcruntime140_1.dll", "msvcrt.dll"};
   size_t i;
 
+  // The universal C runtime's API sets: api-ms-win-crt-stdio-l1-1-0.dll and so on.
+  if (pe_ieq_prefix(n, "api-ms-win-crt-") || pe_ieq_prefix(n, "api-ms-win-core-")) {
+    return 1;
+  }
   for (i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
     if (pe_ieq(names[i], n)) {
       return 1;
@@ -621,6 +638,49 @@ static int pe_bind_imports(uint8_t *m0, const uint8_t *m1) {
   return 1;
 }
 
+// The thread block a Windows program expects at gs:[0]. It lives in the first page of the
+// program's heap block, together with a PEB and the TLS pointer array; the TLS data (the exe's
+// .tls section: initialised template, then zeroes) follows in the next pages. Returns 0 if the
+// program's TLS does not fit.
+static void pe_put(uint8_t *page, uint32_t off, uint64_t v) { put64le(page + off, v); }
+
+static int pe_setup_teb(process_t *p, uint8_t *m0) {
+  const pe_t *pe = &g_pe[0];
+  uint8_t *teb = (uint8_t *)(uintptr_t)p->heap_phys;
+  uint64_t base = PE_HEAP_BASE, stack_top = PROCESS_STACK_TOP;
+  uint64_t peb = base + 0x400, tlsarr = base + 0x800, tlsdata = base + 4096ULL;
+
+  pe_put(teb, 0x08, stack_top);                                    // NT_TIB.StackBase
+  pe_put(teb, 0x10, stack_top - (uint64_t)PROCESS_STACK_PAGES * 4096ULL);   // StackLimit
+  pe_put(teb, 0x30, base);                                         // Self
+  pe_put(teb, 0x40, p->pid);                                       // ClientId.UniqueProcess
+  pe_put(teb, 0x48, p->pid);                                       // ClientId.UniqueThread
+  pe_put(teb, 0x58, tlsarr);                                       // ThreadLocalStoragePointer
+  pe_put(teb, 0x60, peb);                                          // ProcessEnvironmentBlock
+  pe_put(teb + 0x400, 0x10, pe->load_base);                        // PEB.ImageBaseAddress
+  p->gs_base = base;
+  if (pe->tls_size >= 40 && (uint64_t)pe->tls_rva + 40u <= pe->size_of_image) {
+    const uint8_t *d = m0 + pe->tls_rva;
+    uint64_t start = u64le(d), end = u64le(d + 8), idx = u64le(d + 16);
+    uint32_t zero = u32le(d + 32);
+    uint64_t lo = pe->load_base, hi = pe->load_base + pe->size_of_image, len, total;
+
+    if (start < lo || end > hi || end < start || idx < lo || idx + 4u > hi) {
+      return 0;
+    }
+    len = end - start;
+    total = len + zero;
+    if (total > (uint64_t)(PE_RESERVED_PAGES - 1U) * 4096ULL) {
+      console_printf("[PE] thread-local storage of %llu bytes does not fit\r\n", total);
+      return 0;
+    }
+    memcpy(teb + 4096, m0 + (start - lo), (size_t)len);
+    pe_put(teb, 0x800, tlsdata);                                   // TLS slot 0
+    memset(m0 + (idx - lo), 0, 4);                                 // _tls_index = 0
+  }
+  return 1;
+}
+
 // Both files are mapped (not yet in the address space): fix them up and set the start state.
 static int pe_finish(process_t *p, image_t *img) {
   uint8_t *m0 = (uint8_t *)(uintptr_t)p->image_phys;
@@ -644,10 +704,19 @@ static int pe_finish(process_t *p, image_t *img) {
     console_printf("[PE] the program's import table is damaged\r\n");
     return PROCESS_ERR_BADPE;
   }
-  if (g_pe[0].tls_size != 0) {
-    console_printf("[PE] warning: this program uses thread-local storage, which is not supported\r\n");
+  if (!pe_setup_teb(p, m0)) {
+    return PROCESS_ERR_BADPE;
   }
   img->entry = g_pe[0].load_base + g_pe[0].entry_rva;
+  {
+    // Entered through the runtime's start function, which runs the TLS callbacks and then the
+    // program's own entry point (found with SYS_PEINFO).
+    uint32_t start = pe_export(m1, &g_pe[1], "__winclone_start");
+
+    if (start != 0) {
+      img->entry = g_pe[1].load_base + start;
+    }
+  }
   p->pe_exe_base = g_pe[0].load_base;
   p->pe_dll_base = g_pe[1].load_base;
   // Entered as a Windows function: RSP is 8 mod 16 with the return address on top and 32 bytes of
@@ -874,11 +943,13 @@ uint64_t process_run(process_t *p) {
     self->address_space = p;
     self->cr3 = p->cr3;
     self->kernel_rsp0 = p->kstack_top;
+    self->gs_base = p->gs_base;
   } else {
     g_fallback = p;
   }
   paging_activate(p->cr3);
   gdt_set_kernel_stack(p->kstack_top);
+  cpu_set_gs_base(p->gs_base);
   irq_restore(flags);
 
   // The program starts as if called: RSP is 8 mod 16 at function entry.
@@ -903,6 +974,7 @@ void process_destroy(process_t *p) {
   if (self != 0 && self->address_space == p) {
     self->address_space = 0;
     self->cr3 = 0;
+    self->gs_base = 0;
   }
   if (g_fallback == p) {
     g_fallback = 0;
@@ -2073,6 +2145,9 @@ static int pe_supervisor_task(void *arg) {
   h = process_spawn_arg("/APPS/WINHELLO.EXE", "one two");
   failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 7,
                         "WINHELLO.EXE ran: console, heap and a file round trip (exit code 7)");
+  h = process_spawn_arg("/APPS/WINCRT.EXE", "crt args");
+  failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
+                        "WINCRT.EXE: a program built with the dynamic C runtime (/MD) passed all its checks");
   h = process_spawn("/APPS/WINBAD.EXE");
   failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0xC0000139ULL,
                         "calling an import the runtime lacks ends the program with its own code");

@@ -298,6 +298,17 @@ static void scheduler_fx_switch(TCB *from, TCB *to) {
   }
 }
 
+// IA32_GS_BASE: Windows programs find their thread block (TEB) through GS. The kernel itself
+// never uses GS (no swapgs), so a program's value can simply stay loaded while it runs.
+static uint64_t g_gs_base_loaded;
+
+void cpu_set_gs_base(uint64_t base) {
+  if (base != g_gs_base_loaded) {
+    __asm__ volatile("wrmsr" : : "c"(0xC0000101u), "a"((uint32_t)base), "d"((uint32_t)(base >> 32)));
+    g_gs_base_loaded = base;
+  }
+}
+
 static void scheduler_activate_task(unsigned int index, int switched_tasks) {
   if (index >= g_task_count || g_tasks[index].tcb == 0) {
     return;
@@ -311,6 +322,7 @@ static void scheduler_activate_task(unsigned int index, int switched_tasks) {
   if (g_tasks[index].tcb->kernel_rsp0 != 0) {
     gdt_set_kernel_stack(g_tasks[index].tcb->kernel_rsp0);
   }
+  cpu_set_gs_base(g_tasks[index].tcb->gs_base);
   if (switched_tasks) {
     g_tasks[index].tcb->context_switches++;
   }
