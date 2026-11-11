@@ -465,7 +465,6 @@ static char g_env[4];
 EXPORT LPCH WINAPI GetEnvironmentStringsA(void) { return g_env; }
 EXPORT BOOL WINAPI FreeEnvironmentStringsA(LPCH p) { (void)p; return TRUE; }
 EXPORT BOOL WINAPI IsDebuggerPresent(void) { return FALSE; }
-EXPORT LPTOP_LEVEL_EXCEPTION_FILTER WINAPI SetUnhandledExceptionFilter(LPTOP_LEVEL_EXCEPTION_FILTER f) { (void)f; return 0; }
 EXPORT UINT WINAPI SetErrorMode(UINT m) { (void)m; return 0; }
 EXPORT VOID WINAPI OutputDebugStringA(LPCSTR s) { rt_log(s); }
 EXPORT DWORD WINAPI GetVersion(void) { return 0x4A650006u; }                 // 10.0, build 19045

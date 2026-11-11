@@ -85,27 +85,12 @@ EXPORT BOOL WINAPI IsProcessorFeaturePresent(DWORD f) {
 }
 
 EXPORT VOID WINAPI InitializeSListHead(PSLIST_HEADER h) { memset(h, 0, sizeof(*h)); }
-EXPORT LONG WINAPI UnhandledExceptionFilter(struct _EXCEPTION_POINTERS *p) { (void)p; return EXCEPTION_CONTINUE_SEARCH; }
-EXPORT VOID WINAPI RtlCaptureContext(PCONTEXT c) { memset(c, 0, sizeof(*c)); }
-EXPORT PRUNTIME_FUNCTION WINAPI RtlLookupFunctionEntry(DWORD64 pc, PDWORD64 base, PUNWIND_HISTORY_TABLE h) { (void)pc; (void)h; if (base != 0) { *base = 0; } return 0; }
-EXPORT PEXCEPTION_ROUTINE WINAPI RtlVirtualUnwind(DWORD t, DWORD64 b, DWORD64 pc, PRUNTIME_FUNCTION f, PCONTEXT c, PVOID *hd, PDWORD64 ef, PKNONVOLATILE_CONTEXT_POINTERS cp) {
-  (void)t; (void)b; (void)pc; (void)f; (void)c; (void)hd; (void)ef; (void)cp;
-  return 0;
-}
 EXPORT PVOID WINAPI EncodePointer(PVOID p) { return p; }
 EXPORT PVOID WINAPI DecodePointer(PVOID p) { return p; }
 EXPORT BOOL WINAPI HeapSetInformation(HANDLE h, HEAP_INFORMATION_CLASS c, PVOID i, SIZE_T n) { (void)h; (void)c; (void)i; (void)n; return TRUE; }
 EXPORT UINT WINAPI GetACP(void) { return 1252; }
 EXPORT UINT WINAPI GetOEMCP(void) { return 437; }
 EXPORT VOID WINAPI GetSystemTimePreciseAsFileTime(LPFILETIME ft) { GetSystemTimeAsFileTime(ft); }
-
-EXPORT DECLSPEC_NORETURN VOID WINAPI RaiseException(DWORD code, DWORD flags, DWORD n, const ULONG_PTR *args) {
-  (void)flags; (void)n; (void)args;
-  rt_log("\r\nThe program raised an exception that nothing handles (structured exceptions are not supported).\r\n");
-  ExitProcess(code);
-  for (;;) {
-  }
-}
 
 // Fiber local storage: one thread, so the same as thread local slots.
 EXPORT DWORD WINAPI FlsAlloc(PFLS_CALLBACK_FUNCTION cb) { (void)cb; return TlsAlloc(); }
@@ -120,23 +105,34 @@ EXPORT LPWCH WINAPI GetEnvironmentStringsW(void) {
 }
 EXPORT BOOL WINAPI FreeEnvironmentStringsW(LPWCH p) { (void)p; return TRUE; }
 
-// ---- vcruntime: exceptions are not supported ------------------------------------------------------------------
-
-X EXCEPTION_DISPOSITION __C_specific_handler(struct _EXCEPTION_RECORD *r, void *f, struct _CONTEXT *c, struct _DISPATCHER_CONTEXT *d) {
-  (void)r; (void)f; (void)c; (void)d;
-  return ExceptionContinueSearch;
-}
+// ---- vcruntime: the pieces that need no unwinding (seh.c and cxxeh.c have the rest) ------------------------------------------------------------------
 
 static void *g_cur_exc, *g_cur_exc_ctx;
 X void **__current_exception(void) { return &g_cur_exc; }
 X void **__current_exception_context(void) { return &g_cur_exc_ctx; }
-X int __CxxFrameHandler3(void *a, void *b, void *c, void *d) { (void)a; (void)b; (void)c; (void)d; return 1; }
-X int __CxxFrameHandler4(void *a, void *b, void *c, void *d) { (void)a; (void)b; (void)c; (void)d; return 1; }
 
 static DECLSPEC_NORETURN void die(const char *msg, int code);
-X DECLSPEC_NORETURN void _CxxThrowException(void *obj, void *info) { (void)obj; (void)info; die("A C++ exception was thrown (C++ exceptions are not supported).", 3); }
-X DECLSPEC_NORETURN void __std_terminate(void) { die("terminate() was called.", 3); }
-X DECLSPEC_NORETURN void terminate(void) { die("terminate() was called.", 3); }
+static DECLSPEC_NORETURN void term_report(const char *who, unsigned long long ra) {
+  static const char crlf[] = {13, 10, 0};
+  char hex[17];
+  unsigned long long a = ra - rt_exe_base(), v;
+  int i;
+
+  for (i = 0; i < 16; ++i) {
+    v = (a >> (60 - 4 * i)) & 15;
+    hex[i] = (char)(v < 10 ? '0' + v : 'A' + v - 10);
+  }
+  hex[16] = 0;
+  rt_log(crlf);
+  rt_log("[EH] ");
+  rt_log(who);
+  rt_log(" called from exe+0x");
+  rt_log(hex);
+  die("terminate() was called.", 3);
+}
+
+X DECLSPEC_NORETURN void __std_terminate(void) { term_report("__std_terminate", (unsigned long long)(uintptr_t)__builtin_return_address(0)); }
+X DECLSPEC_NORETURN void terminate(void) { term_report("terminate", (unsigned long long)(uintptr_t)__builtin_return_address(0)); }
 X int _callnewh(size_t n) { (void)n; return 0; }
 X DECLSPEC_NORETURN int _purecall(void) { die("Pure virtual function call.", 3); }
 

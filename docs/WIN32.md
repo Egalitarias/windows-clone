@@ -36,7 +36,7 @@ subset of the Win32 API.
   calls the missing function still runs. Imports by ordinal, delay-load imports, forwarders and
   other DLLs are not supported;
 - gives the program a 2 MiB **heap block** at `PE_HEAP_BASE` (the runtime's `HeapAlloc` and
-  `VirtualAlloc` carve it up; the `peinfo` syscall tells it where it is), a 16 KiB stack, and
+  `VirtualAlloc` carve it up; the `peinfo` syscall tells it where it is), a 64 KiB stack, and
   starts it with a Windows-style frame (shadow space, return address): returning from the entry
   point exits with the return value;
 - builds the **thread block**: the first four pages of the heap block hold a TEB (with the
@@ -49,9 +49,8 @@ subset of the Win32 API.
 - enters the program through the runtime's `__winclone_start`, which runs the TLS callbacks
   and then calls the real entry point (found with `peinfo`).
 
-Not supported: structured exception handling (an exception ends the process like any other
-fault; the `.pdata` tables are ignored and `__C_specific_handler` always says "keep looking"), C++
-exceptions (`_CxxThrowException` ends the program with a message), COM.
+Not supported: hardware exceptions reaching `__try/__except` or `catch` (a page fault or a division
+by zero still ends the process, see "Exceptions"), COM.
 
 Each program runs in its own address space as before; a PE program next to ELF programs is
 fine. The kernel keeps each task's x87/SSE state apart (FXSAVE/FXRSTOR at every task switch,
@@ -131,9 +130,58 @@ provides about 400 of them (`src/win32/crt.c`, `crtfmt.c`, `crtmath.c`):
 
 Not there: `/MT` (static CRT) programs, which want hundreds of `kernel32` functions the runtime
 does not have (`FlsAlloc` and `EncodePointer` are there, the locale, code page and string-type
-functions are not); C++ (`msvcp140`: `std::string`, iostreams; `operator new` works through
-`malloc`, but exceptions do not); wide `printf` is narrowed to ASCII; text mode does not
+functions are not); the C++ standard library (`msvcp140`: `std::string`, iostreams, `std::runtime_error`...;
+`operator new`, `std::exception` and `std::bad_alloc` work); wide `printf` is narrowed to ASCII; text mode does not
 translate `\r\n`; `fopen` takes the same translated paths as `CreateFileA`.
+
+## Exceptions
+
+C++ exceptions and structured exception handling work: `throw` and `catch` (by value, reference
+or pointer, base classes, `catch (...)`, `throw;`), destructors run during unwinding, objects
+that fail half way through construction are cleaned up, a `throw` inside a `catch` block, nested
+`try` blocks inside `catch` blocks, exceptions in several threads at once, `noexcept` (an
+exception leaving such a function ends the program), `std::exception` and `std::bad_alloc` from
+`new`; and `__try`/`__except`/`__finally` with `RaiseException`, filters and
+`GetExceptionInformation`. An exception nothing handles ends the program with a message and exit
+code 3 (like `terminate`) for a C++ one, or the exception code for any other.
+
+It is the real x64 mechanism, written from scratch in `src/win32/seh.c` and `cxxeh.c`:
+
+- **Unwinder.** `RtlLookupFunctionEntry` finds the function's `RUNTIME_FUNCTION` in the `.pdata` of
+  the program or of WIN32.DLL (the runtime is built with unwind tables so that exceptions can pass
+  through its frames, for instance a window procedure it called), and `RtlVirtualUnwind` undoes
+  the prolog described by the unwind info (pushes, stack allocations, frame pointer, saved
+  registers, chained entries) to get the caller's registers, the function's establisher frame and
+  its language handler. `RtlCaptureContext`/`RtlRestoreContext` save and load every register.
+- **Dispatcher.** Raising an exception (`RaiseException`, `_CxxThrowException`, `RtlRaiseException`)
+  captures the registers and runs two phases like Windows does. Phase 1 walks the stack calling each
+  frame's language handler (`__C_specific_handler`, `__CxxFrameHandler3`) until one says it will
+  handle the exception. Phase 2 walks it again with the unwinding flag so that handlers run the
+  `__finally` blocks and destructors, and stops at the frame that handles it, where execution
+  resumes: at the `__except` block, or at the address the C++ catch block returns.
+- **C++ handler.** `__CxxFrameHandler3` reads the compiler's tables (`FuncInfo`: the unwind map,
+  the try blocks and their handlers, the IP-to-state map; `ThrowInfo` and the catchable types of the
+  thrown object, matched by type name). Searching, it finds the catch that matches; unwinding, it
+  runs the actions of the unwind map from the state the frame was in down to the state of the
+  catching try. Once everything below is unwound, the catch parameter is copied (copy constructor,
+  `memcpy`, or a reference) and the catch block, a funclet, is called; the exception object is
+  destroyed after it returns, unless a `throw;` handed it on.
+- **Catch blocks run while the stack is still intact** (as on Windows), below the frames that were
+  unwound, so the thrown object stays valid. An exception thrown from inside a catch block starts a
+  new dispatch on top; walking up from there, the dead frames between the old throw and the catch
+  block are skipped (the funclet returns to a marker address in `rt_call_catch`, where the walk
+  continues in the function that owns the block), and a catch block that is left by an exception
+  gives up its exception object. When the handler is a `try` inside a catch block, execution
+  resumes inside that funclet; when it is outside, in the function that owns it.
+
+The compiler's tables use the `__CxxFrameHandler3` layout, which clang emits. `cl.exe` since Visual
+Studio 2019 compresses them (`__CxxFrameHandler4`); build with `/d2FH4-` for those, or the
+runtime tells you and the exception goes unhandled. Not supported: **hardware exceptions** (a null
+pointer, a division by zero, `int 3`) do not reach this code, because the kernel still ends the
+process on a CPU fault; a filter returning `EXCEPTION_CONTINUE_EXECUTION` is treated as "keep
+looking"; frames in the middle of a prolog or epilog (only an asynchronous fault can be there);
+exceptions thrown by a destructor while another exception is unwinding; `std::exception_ptr`,
+`std::current_exception`, `std::uncaught_exceptions`; `set_terminate` handlers.
 
 ## Threads
 
@@ -223,6 +271,14 @@ finds `NAME.BIN` or `NAME.EXE` in `\APPS`, or `run /PATH/NAME.EXE`).
 virtual FAT drive is not a good place for that). It runs, on the real desktop:
 
 - `WINHELLO.EXE`: console output, the command line, the heap, a file round trip (exit code 7);
+- `WINCXX.EXE` (`tests/cxxtest.cpp`, built by clang as C++ with `/MD`): 30 checks of exceptions: throws
+  of `int`, classes, base and derived types, pointers and doubles through frames with destructors
+  (the order of constructor and destructor calls is checked exactly), catch by value and
+  reference, `std::exception`, rethrow, a throw inside a catch block, try blocks inside catch
+  blocks, half-constructed objects, 3000 throws in a loop, `new` throwing `std::bad_alloc`,
+  throwing in three threads at once, `__try/__except/__finally` with filters and parameters, a C++
+  exception through a `__finally`. With `uncaught` and `noexcept` arguments the program ends with
+  exit code 3;
 - `WINTHR.EXE` (`tests/thrtest.c`, `/MD`): 45 checks of threads: join and exit codes, a critical
   section and interlocked counters over four threads (80000 increments each way), auto-reset and
   manual events, a bounded producer/consumer with a mutex and semaphores, per-thread TLS, last
@@ -248,10 +304,9 @@ screenshot (`python scripts/qemu-screenshot.py out/run/shot.png 28`).
 
 ## Limits worth knowing
 
-- At most 15 extra threads per program, 64 KiB of stack each (the main thread has 16 KiB), 32 tasks on the whole system.
-- A 16 KiB stack: the CRT's `printf` is frugal, but deep recursion or big local arrays will fault.
-- The 2 MiB heap and 16 KiB stack are fixed; a program that needs more fails its allocations.
+- At most 15 extra threads per program, 64 KiB of stack each (the main thread has 64 KiB too), 32 tasks on the whole system.
+- The 2 MiB heap and the stacks are fixed; a program that needs more fails its allocations.
 - Programs larger than about 900 KB (together with the runtime) do not fit the load window.
 - Not a Windows compatibility layer in the sense of running arbitrary software: it runs programs
   that stay inside the subset above. Programs from real toolchains that link the CRT, use
-  exceptions or threads, or draw with bitmaps and controls will not get far yet.
+  the C++ standard library, or draw with bitmaps and controls will not get far yet.

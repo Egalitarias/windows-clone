@@ -178,6 +178,7 @@ void rt_free(void *p);
 int rt_vsnprintf(char *buf, size_t size, const char *fmt, va_list ap);
 void rt_log(const char *s);
 uint64_t rt_dll_base(void);
+uint64_t rt_exe_base(void);
 
 // ---- user32.c / gdi32.c ----
 // A device context: a window's surface (sysid) plus the drawing state.

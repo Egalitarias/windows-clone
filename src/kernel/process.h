@@ -9,7 +9,7 @@
 // Layout of a process (all in the lower half, mapped U/S):
 //   PROCESS_LOAD_BASE            image (.text/.rodata/.data), then zeroed pages for
 //                                .bss and a small heap (PROCESS_EXTRA_PAGES)
-//   PROCESS_STACK_TOP - 16 KiB   stack (grows down); the page below is left
+//   PROCESS_STACK_TOP - 64 KiB   stack (grows down); the page below is left
 //                                unmapped as a guard page
 //
 // Every process has its own address space (a private PML4 sharing the kernel's
@@ -18,7 +18,7 @@
 
 #define PROCESS_LOAD_BASE    0x00007F0000001000ULL   // keep in sync with src/user/user.ld
 #define PROCESS_STACK_TOP    0x00007F0000100000ULL
-#define PROCESS_STACK_PAGES  4U
+#define PROCESS_STACK_PAGES  16U
 #define PROCESS_EXTRA_PAGES  12U
 #define PROCESS_MAX_IMAGE    (512ULL * 1024ULL)
 #define PROCESS_KSTACK_SIZE  16384U

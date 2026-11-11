@@ -2423,6 +2423,15 @@ static int pe_supervisor_task(void *arg) {
   h = process_spawn_arg("/APPS/WINCRT.EXE", "crt args");
   failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
                         "WINCRT.EXE: a program built with the dynamic C runtime (/MD) passed all its checks");
+  h = process_spawn("/APPS/WINCXX.EXE");
+  failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
+                        "WINCXX.EXE: C++ exceptions (throw, catch, rethrow, destructors, nesting) and __try/__except/__finally");
+  h = process_spawn_arg("/APPS/WINCXX.EXE", "uncaught");
+  failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 3,
+                        "an exception nothing catches ends the program (terminate, exit code 3)");
+  h = process_spawn_arg("/APPS/WINCXX.EXE", "noexcept");
+  failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 3,
+                        "an exception leaving a noexcept function ends the program (terminate, exit code 3)");
   h = process_spawn("/APPS/WINTHR.EXE");
   failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
                         "WINTHR.EXE: threads, critical sections, events, mutexes, semaphores, TLS and a shared heap passed all checks");

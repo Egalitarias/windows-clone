@@ -475,15 +475,15 @@ WINSDK_ROOT ?= C:/Program Files (x86)/Windows Kits/10
 WINSDK_VER ?= 10.0.26100.0
 MSVC_ROOT ?= $(shell ls -d "C:/Program Files/Microsoft Visual Studio/2022/"*/VC/Tools/MSVC/* 2>/dev/null | sort | tail -n 1)
 WIN32_SDK_OK := $(shell test -f "$(WINSDK_ROOT)/Include/$(WINSDK_VER)/um/windows.h" && test -f "$(MSVC_ROOT)/include/excpt.h" && echo 1)
-WIN32_CFLAGS := --target=x86_64-pc-windows-msvc -ffreestanding -fno-builtin -fno-stack-protector -mno-sse -O2 -Wall -Wextra -Wno-unused-parameter -Wno-microsoft
+WIN32_CFLAGS := --target=x86_64-pc-windows-msvc -ffreestanding -fno-builtin -fno-stack-protector -funwind-tables -mno-sse -O2 -Wall -Wextra -Wno-unused-parameter -Wno-microsoft
 WIN32_INCLUDES := -isystem "$(MSVC_ROOT)/include" -isystem "$(WINSDK_ROOT)/Include/$(WINSDK_VER)/um" -isystem "$(WINSDK_ROOT)/Include/$(WINSDK_VER)/shared" -isystem "$(WINSDK_ROOT)/Include/$(WINSDK_VER)/ucrt"
 WIN32_LIBPATH := "-libpath:$(WINSDK_ROOT)/Lib/$(WINSDK_VER)/um/x64"
 WIN32_CRT_LIBPATH := "-libpath:$(MSVC_ROOT)/lib/x64" "-libpath:$(WINSDK_ROOT)/Lib/$(WINSDK_VER)/ucrt/x64"
 # The C runtime part of the runtime uses SSE (doubles travel in XMM registers) and declares the
 # UCRT functions itself: the UCRT headers would mark them dllimport.
 WIN32_SSE_CFLAGS := $(filter-out -mno-sse,$(WIN32_CFLAGS)) -fno-math-errno -D_CRT_SECURE_NO_WARNINGS
-WIN32_RT_OBJS := $(WIN32_DIR)/kernel32.obj $(WIN32_DIR)/user32.obj $(WIN32_DIR)/gdi32.obj $(WIN32_DIR)/crt.obj $(WIN32_DIR)/crtfmt.obj $(WIN32_DIR)/crtmath.obj $(WIN32_DIR)/threads.obj $(WIN32_DIR)/threads.obj
-WIN32_TESTS := hello badimp wingui winmsg fptest crttest thrtest
+WIN32_RT_OBJS := $(WIN32_DIR)/kernel32.obj $(WIN32_DIR)/user32.obj $(WIN32_DIR)/gdi32.obj $(WIN32_DIR)/crt.obj $(WIN32_DIR)/crtfmt.obj $(WIN32_DIR)/crtmath.obj $(WIN32_DIR)/threads.obj $(WIN32_DIR)/seh.obj $(WIN32_DIR)/cxxeh.obj
+WIN32_TESTS := hello badimp wingui winmsg fptest crttest thrtest cxxtest
 WIN32_EXES := $(patsubst %,$(WIN32_DIR)/%.exe,$(WIN32_TESTS))
 
 $(WIN32_DIR)/%.obj: src/win32/%.c src/win32/internal.h
@@ -538,6 +538,14 @@ $(WIN32_DIR)/t_thrtest.obj: src/win32/tests/thrtest.c
 $(WIN32_DIR)/thrtest.exe: $(WIN32_DIR)/t_thrtest.obj
 	$(UEFI_LLD_LINK) -subsystem:console -entry:mainCRTStartup -nodefaultlib -out:$@ $^ $(WIN32_LIBPATH) $(WIN32_CRT_LIBPATH) msvcrt.lib vcruntime.lib ucrt.lib kernel32.lib
 
+# C++ with exceptions (clang emits the FH3 tables the runtime reads) and __try/__except.
+$(WIN32_DIR)/t_cxxtest.obj: src/win32/tests/cxxtest.cpp
+	@mkdir -p $(WIN32_DIR)
+	$(CC) --target=x86_64-pc-windows-msvc -x c++ -std=c++17 -O1 -fexceptions -fcxx-exceptions -fms-extensions -fno-stack-protector -Wall -Wno-microsoft -Wno-deprecated-declarations $(WIN32_INCLUDES) -c $< -o $@
+
+$(WIN32_DIR)/cxxtest.exe: $(WIN32_DIR)/t_cxxtest.obj
+	$(UEFI_LLD_LINK) -subsystem:console -entry:mainCRTStartup -nodefaultlib -out:$@ $^ $(WIN32_LIBPATH) $(WIN32_CRT_LIBPATH) msvcrt.lib vcruntime.lib ucrt.lib kernel32.lib
+
 $(WIN32_DIR)/winmsg.exe: $(WIN32_DIR)/t_winmsg.obj $(WIN32_DIR)/t_crt.obj $(WIN32_DIR)/t_entry_gui.obj
 	$(UEFI_LLD_LINK) -subsystem:windows -entry:WinMainCRTStartup -nodefaultlib -out:$@ $^ $(WIN32_LIBPATH) kernel32.lib user32.lib
 
@@ -552,6 +560,7 @@ win32-apps: $(WIN32_DIR)/win32.dll $(WIN32_EXES)
 	cp $(WIN32_DIR)/fptest.exe $(UEFI_DIR)/APPS/WINFP.EXE
 	cp $(WIN32_DIR)/crttest.exe $(UEFI_DIR)/APPS/WINCRT.EXE
 	cp $(WIN32_DIR)/thrtest.exe $(UEFI_DIR)/APPS/WINTHR.EXE
+	cp $(WIN32_DIR)/cxxtest.exe $(UEFI_DIR)/APPS/WINCXX.EXE
 else
 win32-apps:
 	@echo "win32-apps: Windows SDK or Visual Studio headers not found; skipping the Win32 runtime and PE test programs (see WINSDK_ROOT in the Makefile)"
