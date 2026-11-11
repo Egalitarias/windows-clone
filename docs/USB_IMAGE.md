@@ -26,10 +26,16 @@ Then boot the PC from the stick in UEFI mode (turn Secure Boot off; the loader i
 - The same image attached as NVMe (`--nvme`) boots and mounts as volume `WINCLONE`, and
   Notes and Files start from its `\APPS`.
 
-## Known limit
+## USB storage in the kernel
 
-The kernel has no USB storage driver yet. Booted from a USB stick, the UEFI firmware loads
-the kernel fine, but the kernel then sees no disk with `\APPS`, so programs do not start
-(Files and Notes show "Cannot start /APPS/..."). The same image on a SATA or NVMe disk works.
-USB storage (xHCI plus mass storage) is the next step to make the stick usable on real
-hardware; USB keyboard and mouse are needed there too.
+The kernel reads and writes USB sticks (`src/kernel/usbstor.c`): an xHCI controller driver plus
+Bulk-Only Transport with SCSI commands, polled like the NVMe driver. A stick shows up as a disk
+named `usb0`, so booting from the stick works: the kernel finds `\APPS` on it. Tested in QEMU
+(`qemu-xhci` + `usb-storage`): boot from the image alone, Notes and Files start from it, and a
+changed `TZ.CFG` is written back (checked with `scripts/fat32-ls.py --check`).
+
+Limits: devices must sit in the PC's own USB ports (no hubs), 512-byte blocks only, disks up to
+2 TiB (READ CAPACITY(10)), one controller command or transfer at a time, no hot plug (devices are
+found at boot). Not tried on real hardware yet. The kernel takes the controller over from the
+firmware (BIOS handoff), which on PCs that emulate a PS/2 keyboard through the BIOS can switch that
+emulation off: a USB keyboard and mouse driver is still needed.

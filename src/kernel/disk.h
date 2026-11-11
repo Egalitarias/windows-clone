@@ -3,7 +3,7 @@
 
 #include "console.h"
 
-// Whole-disk access over every supported controller (SATA/AHCI and NVMe). The
+// Whole-disk access over every supported controller (SATA/AHCI, NVMe and USB mass storage). The
 // block layer builds partitions on top of this. Sector size is 512 bytes.
 
 #define DISK_MAX 12
@@ -11,7 +11,8 @@
 
 typedef enum {
   DISK_BUS_SATA = 1,
-  DISK_BUS_NVME = 2
+  DISK_BUS_NVME = 2,
+  DISK_BUS_USB = 3
 } disk_bus_t;
 
 typedef struct {
@@ -19,7 +20,7 @@ typedef struct {
   int driver_index;        // index inside the controller driver
   uint64_t sectors;
   char model[41];
-  char name[16];           // "sata0", "nvme0"
+  char name[16];           // "sata0", "nvme0", "usb0"
 } disk_info_t;
 
 // Bring up the controllers and enumerate disks. Returns the disk count.

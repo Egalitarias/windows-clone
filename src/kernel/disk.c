@@ -1,6 +1,7 @@
 #include "disk.h"
 #include "ahci.h"
 #include "nvme.h"
+#include "usbstor.h"
 #include "string.h"
 
 static disk_info_t g_disks[DISK_MAX];
@@ -18,7 +19,7 @@ static void add_disk(disk_bus_t bus, int driver_index, uint64_t sectors, const c
   d->driver_index = driver_index;
   d->sectors = sectors;
   str_copy(d->model, model, sizeof(d->model));
-  n = (int)str_copy(d->name, bus == DISK_BUS_NVME ? "nvme" : "sata", sizeof(d->name));
+  n = (int)str_copy(d->name, bus == DISK_BUS_NVME ? "nvme" : (bus == DISK_BUS_USB ? "usb" : "sata"), sizeof(d->name));
   u32_to_str((uint32_t)bus_number, d->name + n);
 }
 
@@ -36,6 +37,11 @@ int disk_init(void) {
     const nvme_disk_t *d = nvme_disk(i);
     add_disk(DISK_BUS_NVME, i, d->sectors, d->model, i);
   }
+  n = usbstor_init();
+  for (i = 0; i < n; i++) {
+    const usb_disk_t *u = usbstor_disk(i);
+    add_disk(DISK_BUS_USB, i, u->sectors, u->model, i);
+  }
   return g_count;
 }
 
@@ -50,6 +56,9 @@ int disk_read(int index, uint64_t lba, uint32_t count, void *buf) {
   if (!d) {
     return 0;
   }
+  if (d->bus == DISK_BUS_USB) {
+    return usbstor_read(d->driver_index, lba, count, buf);
+  }
   return d->bus == DISK_BUS_NVME ? nvme_read(d->driver_index, lba, count, buf)
                                  : ahci_read(d->driver_index, lba, count, buf);
 }
@@ -58,6 +67,9 @@ int disk_write(int index, uint64_t lba, uint32_t count, const void *buf) {
   const disk_info_t *d = disk_get(index);
   if (!d) {
     return 0;
+  }
+  if (d->bus == DISK_BUS_USB) {
+    return usbstor_write(d->driver_index, lba, count, buf);
   }
   return d->bus == DISK_BUS_NVME ? nvme_write(d->driver_index, lba, count, buf)
                                  : ahci_write(d->driver_index, lba, count, buf);
