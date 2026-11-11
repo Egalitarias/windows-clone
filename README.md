@@ -31,7 +31,7 @@ About (user programs in `\APPS`) and Setup.
 6. Windowing system (done: window manager, see `docs/WINDOW_MANAGER.md`); double buffering done; a compositor done (per-window surfaces composed with alpha: soft shadows, translucent drag; see `docs/WINDOW_MANAGER.md`)
 7. Desktop shell: taskbar and Start menu (done); file explorer and taskbar clock with date and a saved, adjustable time zone done; notifications done (toasts above the taskbar, `desktop_notify`; the Console's `notify` command tries one), and programs raise them with the `notify` syscall
 8. Installer (done for fixed disks, see `docs/INSTALLER.md`); a bootable USB image is built with `make CC=clang usb-image` (see `docs/USB_IMAGE.md`; the kernel reads USB sticks, so it boots from one)
-9. Optional: PE loader and a small Win32 subset
+9. Windows programs: PE loader and a small Win32 subset (done, see `docs/WIN32.md`: x64 `.exe` files built with the real Windows SDK run, with kernel32/user32/gdi32 provided by `WIN32.DLL`); no CRT, threads, controls or bitmaps yet
 
 ## Build and run
 

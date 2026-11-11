@@ -272,6 +272,32 @@ static void scheduler_initialize_task_context(TCB *tcb) {
   scheduler_snapshot_context(tcb, frame);
 }
 
+// Let user code use SSE (Windows programs are compiled for it) and keep each task's x87/SSE
+// registers apart: FXSAVE/FXRSTOR around every task switch. The kernel itself uses neither, so
+// at the switch the registers still hold the interrupted task's values.
+static void scheduler_enable_sse(void) {
+  uint64_t cr0, cr4;
+
+  __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+  cr0 &= ~(1ULL << 2);                               // EM = 0: no x87 emulation
+  cr0 |= (1ULL << 1);                                // MP = 1
+  cr0 &= ~(1ULL << 3);                               // TS = 0
+  __asm__ volatile("mov %0, %%cr0" : : "r"(cr0));
+  __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+  cr4 |= (1ULL << 9) | (1ULL << 10);                 // OSFXSR | OSXMMEXCPT
+  __asm__ volatile("mov %0, %%cr4" : : "r"(cr4));
+  __asm__ volatile("fninit");
+}
+
+static void scheduler_fx_switch(TCB *from, TCB *to) {
+  if (from != 0) {
+    __asm__ volatile("fxsave %0" : "=m"(*(uint8_t(*)[512])from->fx_state) : : "memory");
+  }
+  if (to != 0) {
+    __asm__ volatile("fxrstor %0" : : "m"(*(uint8_t(*)[512])to->fx_state) : "memory");
+  }
+}
+
 static void scheduler_activate_task(unsigned int index, int switched_tasks) {
   if (index >= g_task_count || g_tasks[index].tcb == 0) {
     return;
@@ -328,6 +354,8 @@ static void scheduler_print_summary(void) {
 
 void scheduler_init(void) {
   unsigned int i;
+
+  scheduler_enable_sse();
 
   for (i = 0; i < SCHEDULER_MAX_TASKS; ++i) {
     g_tasks[i].tcb = 0;
@@ -660,6 +688,7 @@ void *scheduler_on_timer_tick(void *interrupt_stack_pointer) {
 
   if (next_index != g_current_index) {
     g_context_switch_count++;
+    scheduler_fx_switch(g_current_index < g_task_count ? g_tasks[g_current_index].tcb : 0, g_tasks[next_index].tcb);
     scheduler_activate_task(next_index, 1);
   } else {
     scheduler_activate_task(next_index, 0);

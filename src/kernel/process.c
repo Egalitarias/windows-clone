@@ -37,6 +37,19 @@ uint64_t process_current_pid(void) {
   return p != 0 ? p->pid : 0;
 }
 
+int process_pe_info(uint64_t out[4]) {
+  process_t *p = current_process();
+
+  if (p == 0 || !p->is_pe) {
+    return 0;
+  }
+  out[0] = PE_HEAP_BASE;
+  out[1] = p->heap_pages * 4096ULL;
+  out[2] = p->pe_exe_base;
+  out[3] = p->pe_dll_base;
+  return 1;
+}
+
 const char *process_current_arg(void) {
   process_t *p = current_process();
 
@@ -131,6 +144,10 @@ static void create_cleanup(process_t *p) {
   if (p->image_phys != 0) {
     free_pages(p->image_phys, p->image_pages);
   }
+  if (p->heap_phys != 0) {
+    free_pages(p->heap_phys, p->heap_pages);
+  }
+  p->heap_phys = 0;
   p->cr3 = 0;
   p->kstack_alloc = 0;
   p->stack_phys = 0;
@@ -145,7 +162,7 @@ static void create_cleanup(process_t *p) {
 // their magic number. Only PT_LOAD segments are used; there is no dynamic linking and
 // no relocation, so the file must already be linked for the address it asks for.
 
-#define ELF_MAX_SEGS 4
+#define ELF_MAX_SEGS 32
 #define ELFCLASS64   2
 #define ELFDATA2LSB  1
 #define ET_EXEC      2
@@ -174,6 +191,7 @@ typedef struct {
   uint64_t memsz;       // bytes in memory (the rest is zeroed .bss)
   uint64_t offset;      // position in the file
   int writable;
+  int src;              // which file the bytes come from: 0 the program, 1 the Win32 DLL
 } seg_t;
 
 typedef struct {
@@ -198,6 +216,7 @@ static void image_from_flat(uint64_t size, image_t *img) {
   img->seg[0].memsz = size;
   img->seg[0].offset = 0;
   img->seg[0].writable = 1;
+  img->seg[0].src = 0;
   img->base = PROCESS_LOAD_BASE;
   img->end = page_up(PROCESS_LOAD_BASE + size);
   img->entry = PROCESS_LOAD_BASE;
@@ -243,6 +262,7 @@ static int image_from_elf(const uint8_t *buf, uint64_t have, uint64_t size, imag
     s->memsz = ph.memsz;
     s->offset = ph.offset;
     s->writable = (ph.flags & PF_W) != 0;
+    s->src = 0;
     if (page_down(ph.vaddr) < lo) {
       lo = page_down(ph.vaddr);
     }
@@ -262,13 +282,417 @@ static int image_from_elf(const uint8_t *buf, uint64_t have, uint64_t size, imag
   return 1;
 }
 
+// ---- Windows (PE) programs -------------------------------------------------------
+//
+// A PE32+ (x64) executable is mapped like an ELF one, section by section, but at a load
+// address of the kernel's choosing: the file's base relocations are applied. Next to it the
+// Win32 runtime, /APPS/WIN32.DLL (built from src/win32), is mapped into the same address
+// space and the executable's imports from kernel32, user32, gdi32 and friends are bound to
+// that DLL's exports. Imports it does not export are bound to a stub that ends the program
+// with a message naming nothing in particular (the kernel log says which ones were missing).
+// The program gets a heap block (PE_HEAP_BASE) the DLL manages, found with SYS_PEINFO.
+// Not supported: TLS, SEH tables (an exception kills the process), delay-load, imports by
+// ordinal, DLLs other than the runtime.
+
+typedef struct {
+  uint64_t image_base;        // ImageBase from the file
+  uint64_t load_base;         // where it was put
+  uint32_t size_of_image, entry_rva;
+  uint32_t imp_rva, imp_size, rel_rva, rel_size, exp_rva, exp_size, tls_size;
+  uint16_t chars, subsystem;
+} pe_t;
+
+static pe_t g_pe[2];          // 0 the program, 1 the Win32 DLL; only touched under process_create's preempt lock
+
+static uint16_t u16le(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
+static uint32_t u32le(const uint8_t *p) {
+  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+static uint64_t u64le(const uint8_t *p) { return (uint64_t)u32le(p) | ((uint64_t)u32le(p + 4) << 32); }
+static void put64le(uint8_t *p, uint64_t v) {
+  int i;
+
+  for (i = 0; i < 8; ++i) {
+    p[i] = (uint8_t)(v >> (8 * i));
+  }
+}
+
+static int image_add_seg(image_t *img, uint64_t vaddr, uint64_t filesz, uint64_t memsz, uint64_t offset, int writable,
+                         int src) {
+  seg_t *s;
+  int j;
+
+  if (img->count == ELF_MAX_SEGS || filesz > memsz || vaddr < PROCESS_LOAD_BASE || vaddr >= IMAGE_LIMIT ||
+      memsz > IMAGE_LIMIT - vaddr) {
+    return 0;
+  }
+  for (j = 0; j < img->count; ++j) {
+    uint64_t a0 = page_down(img->seg[j].vaddr), a1 = page_up(img->seg[j].vaddr + img->seg[j].memsz);
+
+    if (page_down(vaddr) < a1 && page_up(vaddr + memsz) > a0) {
+      return 0;
+    }
+  }
+  s = &img->seg[img->count++];
+  s->vaddr = vaddr;
+  s->filesz = filesz;
+  s->memsz = memsz;
+  s->offset = offset;
+  s->writable = writable;
+  s->src = src;
+  if (page_down(vaddr) < img->base) {
+    img->base = page_down(vaddr);
+  }
+  if (page_up(vaddr + memsz) > img->end) {
+    img->end = page_up(vaddr + memsz);
+  }
+  return 1;
+}
+
+// Check the headers in b[0..have) and add the file's headers and sections to the image at
+// `load_base`. `file_size` is the whole file's length.
+#define PE_FAIL(code) do { console_printf("[PE] headers rejected (check %d)\r\n", (int)(code)); return 0; } while (0)
+
+static int pe_load_headers(const uint8_t *b, uint64_t have, uint64_t file_size, uint64_t load_base, int src, pe_t *pe,
+                           image_t *img) {
+  uint32_t lfanew, nsec, size_opt, i, headers, sec_align, ndirs;
+  const uint8_t *nt, *opt, *sec;
+
+  memset(pe, 0, sizeof(*pe));
+  if (have < 0x40 || b[0] != 'M' || b[1] != 'Z') {
+    PE_FAIL(0);
+  }
+  lfanew = u32le(b + 0x3C);
+  if (lfanew < 0x40 || lfanew > have || have - lfanew < 24) {
+    PE_FAIL(1);
+  }
+  nt = b + lfanew;
+  if (nt[0] != 'P' || nt[1] != 'E' || nt[2] != 0 || nt[3] != 0 || u16le(nt + 4) != 0x8664) {
+    PE_FAIL(2);
+  }
+  nsec = u16le(nt + 6);
+  size_opt = u16le(nt + 20);
+  pe->chars = u16le(nt + 22);
+  opt = nt + 24;
+  if (size_opt < 112 || (uint64_t)(opt - b) + size_opt > have || u16le(opt) != 0x20B || nsec == 0 || nsec > 96) {
+    PE_FAIL(3);
+  }
+  pe->entry_rva = u32le(opt + 16);
+  pe->image_base = u64le(opt + 24);
+  sec_align = u32le(opt + 32);
+  pe->size_of_image = u32le(opt + 56);
+  headers = u32le(opt + 60);
+  pe->subsystem = u16le(opt + 68);
+  ndirs = u32le(opt + 108);
+  if (ndirs > (size_opt - 112u) / 8u) {
+    ndirs = (size_opt - 112u) / 8u;
+  }
+  if (ndirs > 0) { pe->exp_rva = u32le(opt + 112); pe->exp_size = u32le(opt + 116); }
+  if (ndirs > 1) { pe->imp_rva = u32le(opt + 120); pe->imp_size = u32le(opt + 124); }
+  if (ndirs > 5) { pe->rel_rva = u32le(opt + 152); pe->rel_size = u32le(opt + 156); }
+  if (ndirs > 9) { pe->tls_size = u32le(opt + 188); }
+  if (ndirs > 14 && u32le(opt + 228) != 0) {
+    PE_FAIL(4);                                         // a .NET assembly
+  }
+  if (sec_align != 4096 || pe->size_of_image == 0 || (pe->size_of_image & 4095u) != 0 || headers == 0 ||
+      headers > pe->size_of_image || headers > file_size || pe->entry_rva >= pe->size_of_image) {
+    PE_FAIL(5);
+  }
+  sec = opt + size_opt;
+  if ((uint64_t)(sec - b) + (uint64_t)nsec * 40u > have) {
+    PE_FAIL(6);
+  }
+  pe->load_base = load_base;
+  if (!image_add_seg(img, load_base, headers, page_up(headers), 0, 0, src)) {
+    PE_FAIL(7);
+  }
+  for (i = 0; i < nsec; ++i) {
+    const uint8_t *h = sec + (size_t)i * 40u;
+    uint32_t vsize = u32le(h + 8), rva = u32le(h + 12), raw = u32le(h + 16), rawptr = u32le(h + 20);
+    uint32_t flags = u32le(h + 36);
+    uint64_t memsz = vsize != 0 ? vsize : raw, filesz = raw < memsz ? raw : memsz;
+
+    if (memsz == 0) {
+      continue;
+    }
+    if ((rva & 4095u) != 0 || (uint64_t)rva + memsz > pe->size_of_image || rva < headers ||
+        (filesz != 0 && ((uint64_t)rawptr > file_size || filesz > file_size - rawptr))) {
+      PE_FAIL(8);
+    }
+    if (!image_add_seg(img, load_base + rva, filesz, memsz, rawptr, (flags & 0x80000000u) != 0, src)) {
+      PE_FAIL(9);
+    }
+  }
+  return 1;
+}
+
+static int pe_ieq(const char *a, const char *b) {
+  while (*a != 0 && char_lower(*a) == char_lower(*b)) {
+    ++a;
+    ++b;
+  }
+  return *a == 0 && *b == 0;
+}
+
+static int pe_streq(const char *a, const char *b) {
+  while (*a != 0 && *a == *b) {
+    ++a;
+    ++b;
+  }
+  return *a == *b;
+}
+
+// A NUL-terminated string at `rva` inside the module, or 0 if it runs off the image.
+static const char *pe_str(const uint8_t *m, const pe_t *pe, uint64_t rva) {
+  uint64_t i;
+
+  if (rva >= pe->size_of_image) {
+    return 0;
+  }
+  for (i = rva; i < pe->size_of_image; ++i) {
+    if (m[i] == 0) {
+      return (const char *)(m + rva);
+    }
+  }
+  return 0;
+}
+
+// RVA of the export called `name` (0 if there is none).
+static uint32_t pe_export(const uint8_t *m, const pe_t *pe, const char *name) {
+  const uint8_t *dir;
+  uint32_t nnames, fns, names, ords, i;
+
+  if (pe->exp_size < 40 || (uint64_t)pe->exp_rva + 40u > pe->size_of_image) {
+    return 0;
+  }
+  dir = m + pe->exp_rva;
+  nnames = u32le(dir + 24);
+  fns = u32le(dir + 28);
+  names = u32le(dir + 32);
+  ords = u32le(dir + 36);
+  for (i = 0; i < nnames; ++i) {
+    const char *n;
+    uint32_t ord, rva;
+
+    if ((uint64_t)names + 4u * (uint64_t)(i + 1u) > pe->size_of_image || (uint64_t)ords + 2u * (uint64_t)(i + 1u) > pe->size_of_image) {
+      return 0;
+    }
+    n = pe_str(m, pe, u32le(m + names + 4u * i));
+    if (n == 0 || !pe_streq(n, name)) {
+      continue;
+    }
+    ord = u16le(m + ords + 2u * i);
+    if ((uint64_t)fns + 4u * (uint64_t)(ord + 1u) > pe->size_of_image) {
+      return 0;
+    }
+    rva = u32le(m + fns + 4u * ord);
+    if (rva >= pe->exp_rva && rva < pe->exp_rva + pe->exp_size) {
+      return 0;                                       // a forwarder: not supported
+    }
+    return rva;
+  }
+  return 0;
+}
+
+// Apply the base relocations: the module sits at load_base, not at its ImageBase.
+static int pe_relocate(uint8_t *m, const pe_t *pe) {
+  uint64_t delta = pe->load_base - pe->image_base;
+  uint32_t pos = 0;
+
+  if (delta == 0) {
+    return 1;
+  }
+  if (pe->rel_size == 0) {
+    return (pe->chars & 1u) == 0;                     // no relocations needed unless they were stripped (IMAGE_FILE_RELOCS_STRIPPED)
+  }
+  if ((uint64_t)pe->rel_rva + pe->rel_size > pe->size_of_image) {
+    return 0;
+  }
+  while (pos + 8u <= pe->rel_size) {
+    const uint8_t *blk = m + pe->rel_rva + pos;
+    uint32_t page = u32le(blk), size = u32le(blk + 4), n, k;
+
+    if (size < 8 || pos + size > pe->rel_size) {
+      return 0;
+    }
+    n = (size - 8u) / 2u;
+    for (k = 0; k < n; ++k) {
+      uint16_t w = u16le(blk + 8 + 2u * k);
+      uint32_t type = w >> 12, rva = page + (w & 0xFFFu);
+
+      if (type == 0) {
+        continue;
+      }
+      if (type == 10 && (uint64_t)rva + 8u <= pe->size_of_image) {              // DIR64
+        put64le(m + rva, u64le(m + rva) + delta);
+      } else if (type == 3 && (uint64_t)rva + 4u <= pe->size_of_image) {        // HIGHLOW
+        uint32_t v = u32le(m + rva) + (uint32_t)delta;
+
+        m[rva] = (uint8_t)v;
+        m[rva + 1] = (uint8_t)(v >> 8);
+        m[rva + 2] = (uint8_t)(v >> 16);
+        m[rva + 3] = (uint8_t)(v >> 24);
+      } else {
+        return 0;
+      }
+    }
+    pos += size;
+  }
+  return 1;
+}
+
+// DLL names the Win32 runtime stands in for.
+static int pe_is_runtime_name(const char *n) {
+  static const char names[][16] = {"kernel32.dll", "user32.dll", "gdi32.dll", "advapi32.dll", "shell32.dll",
+                                    "comctl32.dll", "win32.dll"};
+  size_t i;
+
+  for (i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+    if (pe_ieq(names[i], n)) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+// Fill the program's import address table from the runtime's exports.
+static int pe_bind_imports(uint8_t *m0, const uint8_t *m1) {
+  const pe_t *pe = &g_pe[0], *dll = &g_pe[1];
+  uint32_t pos, unimpl = pe_export(m1, dll, "__winclone_unimplemented");
+  uint32_t missing = 0;
+
+  if (pe->imp_size == 0) {
+    return 1;
+  }
+  if ((uint64_t)pe->imp_rva + pe->imp_size > pe->size_of_image || unimpl == 0) {
+    return 0;
+  }
+  for (pos = 0; pos + 20u <= pe->imp_size; pos += 20u) {
+    const uint8_t *d = m0 + pe->imp_rva + pos;
+    uint32_t ilt = u32le(d), name_rva = u32le(d + 12), iat = u32le(d + 16), k;
+    const char *dname;
+    int known;
+
+    if (name_rva == 0 && iat == 0) {
+      break;
+    }
+    dname = pe_str(m0, pe, name_rva);
+    if (dname == 0 || iat == 0 || iat >= pe->size_of_image) {
+      return 0;
+    }
+    known = pe_is_runtime_name(dname);
+    for (k = 0;; ++k) {
+      uint64_t thunk = (uint64_t)(ilt != 0 ? ilt : iat) + 8u * (uint64_t)k, slot = (uint64_t)iat + 8u * (uint64_t)k;
+      uint64_t t, addr = 0;
+
+      if (thunk + 8u > pe->size_of_image || slot + 8u > pe->size_of_image) {
+        return 0;
+      }
+      t = u64le(m0 + thunk);
+      if (t == 0) {
+        break;
+      }
+      if ((t >> 63) == 0 && known) {
+        const char *fname = pe_str(m0, pe, (t & 0x7FFFFFFFULL) + 2u);
+        uint32_t rva = fname != 0 ? pe_export(m1, dll, fname) : 0;
+
+        if (rva != 0) {
+          addr = dll->load_base + rva;
+        } else if (fname != 0) {
+          console_printf("[PE] unresolved import %s!%s\r\n", dname, fname);
+        }
+      } else if ((t >> 63) == 0) {
+        const char *fname = pe_str(m0, pe, (t & 0x7FFFFFFFULL) + 2u);
+
+        console_printf("[PE] unresolved import %s!%s (no such library)\r\n", dname, fname != 0 ? fname : "?");
+      } else {
+        console_printf("[PE] unresolved import %s!#%llu (by ordinal)\r\n", dname, t & 0xFFFFULL);
+      }
+      if (addr == 0) {
+        addr = dll->load_base + unimpl;
+        ++missing;
+      }
+      put64le(m0 + slot, addr);
+    }
+  }
+  if (missing != 0) {
+    console_printf("[PE] %u import(s) not provided by the Win32 runtime: calling one ends the program\r\n", missing);
+  }
+  return 1;
+}
+
+// Both files are mapped (not yet in the address space): fix them up and set the start state.
+static int pe_finish(process_t *p, image_t *img) {
+  uint8_t *m0 = (uint8_t *)(uintptr_t)p->image_phys;
+  uint8_t *m1 = m0 + (g_pe[1].load_base - img->base);
+  uint32_t ret = pe_export(m1, &g_pe[1], "__winclone_return");
+  uint64_t stack_virt = PROCESS_STACK_TOP - (uint64_t)PROCESS_STACK_PAGES * 4096ULL;
+
+  if (!pe_relocate(m0, &g_pe[0])) {
+    console_printf("[PE] the program cannot be relocated (no base relocations)\r\n");
+    return PROCESS_ERR_BADPE;
+  }
+  if (!pe_relocate(m1, &g_pe[1])) {
+    console_printf("[PE] the Win32 runtime cannot be relocated\r\n");
+    return PROCESS_ERR_BADPE;
+  }
+  if (ret == 0) {
+    console_printf("[PE] the Win32 runtime has no __winclone_return export\r\n");
+    return PROCESS_ERR_BADPE;
+  }
+  if (!pe_bind_imports(m0, m1)) {
+    console_printf("[PE] the program's import table is damaged\r\n");
+    return PROCESS_ERR_BADPE;
+  }
+  if (g_pe[0].tls_size != 0) {
+    console_printf("[PE] warning: this program uses thread-local storage, which is not supported\r\n");
+  }
+  img->entry = g_pe[0].load_base + g_pe[0].entry_rva;
+  p->pe_exe_base = g_pe[0].load_base;
+  p->pe_dll_base = g_pe[1].load_base;
+  // Entered as a Windows function: RSP is 8 mod 16 with the return address on top and 32 bytes of
+  // shadow space above it. Returning from the entry point ends the program with its result.
+  p->initial_sp = PROCESS_STACK_TOP - 0x48ULL;
+  put64le((uint8_t *)(uintptr_t)(p->stack_phys + (p->initial_sp - stack_virt)), g_pe[1].load_base + ret);
+  return PROCESS_OK;
+}
+
+// Describe a PE program and the Win32 DLL it needs. Opens the DLL as *dll_file.
+static int pe_setup(const uint8_t *head, uint64_t have, uint64_t size, image_t *img, fat_file_t *dll_file) {
+  static uint8_t dhead[4096];
+  fat_volume_t *vol = 0;
+  fat_dirent_t ent;
+  uint32_t got = 0;
+
+  memset(img, 0, sizeof(*img));
+  img->base = ~0ULL;
+  if (!pe_load_headers(head, have, size, PROCESS_LOAD_BASE, 0, &g_pe[0], img) || (g_pe[0].chars & 0x2000) != 0 ||
+      (g_pe[0].subsystem != 2 && g_pe[0].subsystem != 3)) {
+    return PROCESS_ERR_BADPE;
+  }
+  if (!find_file(PE_SHIM_PATH, &vol, &ent)) {
+    console_printf("[PE] the Win32 runtime %s was not found\r\n", PE_SHIM_PATH);
+    return PROCESS_ERR_NOSHIM;
+  }
+  if (!fat_file_open(vol, &ent, dll_file) || !fat_file_read(dll_file, 0, dhead, sizeof(dhead), &got)) {
+    return PROCESS_ERR_READ;
+  }
+  if (!pe_load_headers(dhead, got, ent.size, PROCESS_LOAD_BASE + g_pe[0].size_of_image, 1, &g_pe[1], img) ||
+      (g_pe[1].chars & 0x2000) == 0 || g_pe[1].exp_size == 0) {
+    return PROCESS_ERR_BADPE;
+  }
+  img->entry = PROCESS_LOAD_BASE;            // set for real by pe_finish
+  return PROCESS_OK;
+}
+
 static int process_create_locked(const char *path, process_t *p) {
   fat_volume_t *vol = 0;
   fat_dirent_t ent;
-  fat_file_t file;
+  fat_file_t file, dll_file;
   image_t img;
-  uint8_t head[512];
+  static uint8_t head[4096];                    // process_create holds the preempt lock, so one copy will do
   uint32_t got = 0, head_len = 0;
+  int is_pe = 0;
   uint64_t stack_virt = PROCESS_STACK_TOP - (uint64_t)PROCESS_STACK_PAGES * 4096ULL;
   uint64_t extra_virt;
   uint8_t *kstack;
@@ -293,6 +717,13 @@ static int process_create_locked(const char *path, process_t *p) {
     if (!image_from_elf(head, head_len, ent.size, &img)) {
       return PROCESS_ERR_BADELF;
     }
+  } else if (head_len >= 2 && head[0] == 'M' && head[1] == 'Z') {
+    int rc = pe_setup(head, head_len, ent.size, &img, &dll_file);
+
+    if (rc != PROCESS_OK) {
+      return rc;
+    }
+    is_pe = 1;
   } else {
     image_from_flat(ent.size, &img);
   }
@@ -321,16 +752,38 @@ static int process_create_locked(const char *path, process_t *p) {
   }
   zero_pages(p->image_phys, p->image_pages);
   zero_pages(p->stack_phys, PROCESS_STACK_PAGES);
+  if (is_pe) {
+    p->heap_pages = PE_HEAP_PAGES;
+    p->heap_phys = pmm_alloc_pages(p->heap_pages);
+    if (p->heap_phys == 0 || !paging_map_range(p->heap_phys, p->heap_pages * 4096ULL)) {
+      if (p->heap_phys != 0) {
+        free_pages(p->heap_phys, p->heap_pages);
+        p->heap_phys = 0;
+      }
+      create_cleanup(p);
+      return PROCESS_ERR_NOMEM;
+    }
+    zero_pages(p->heap_phys, p->heap_pages);
+    p->is_pe = 1;
+  }
 
   // Copy each segment's file bytes to its place; the rest of it stays zero (.bss).
   for (i = 0; i < img.count; ++i) {
     const seg_t *s = &img.seg[i];
     uint8_t *dst = (uint8_t *)(uintptr_t)(p->image_phys + (s->vaddr - img.base));
 
-    if (s->filesz != 0 &&
-        (!fat_file_read(&file, (uint32_t)s->offset, dst, (uint32_t)s->filesz, &got) || got != s->filesz)) {
+    if (s->filesz != 0 && (!fat_file_read(s->src ? &dll_file : &file, (uint32_t)s->offset, dst, (uint32_t)s->filesz, &got) ||
+                           got != s->filesz)) {
       create_cleanup(p);
       return PROCESS_ERR_READ;
+    }
+  }
+  if (is_pe) {
+    int rc = pe_finish(p, &img);
+
+    if (rc != PROCESS_OK) {
+      create_cleanup(p);
+      return rc;
     }
   }
 
@@ -355,7 +808,8 @@ static int process_create_locked(const char *path, process_t *p) {
   extra_virt = img.end;
   if (!paging_map_user_in(p->cr3, extra_virt, p->image_phys + (extra_virt - img.base),
                           (uint64_t)PROCESS_EXTRA_PAGES * 4096ULL, 1) ||
-      !paging_map_user_in(p->cr3, stack_virt, p->stack_phys, (uint64_t)PROCESS_STACK_PAGES * 4096ULL, 1)) {
+      !paging_map_user_in(p->cr3, stack_virt, p->stack_phys, (uint64_t)PROCESS_STACK_PAGES * 4096ULL, 1) ||
+      (is_pe && !paging_map_user_in(p->cr3, PE_HEAP_BASE, p->heap_phys, p->heap_pages * 4096ULL, 1))) {
     create_cleanup(p);
     return PROCESS_ERR_NOMEM;
   }
@@ -429,7 +883,7 @@ uint64_t process_run(process_t *p) {
 
   // The program starts as if called: RSP is 8 mod 16 at function entry.
   p->running = 1;
-  code = user_run(p->entry, PROCESS_STACK_TOP - 8ULL, &p->saved_rsp);
+  code = user_run(p->entry, p->initial_sp != 0 ? p->initial_sp : PROCESS_STACK_TOP - 8ULL, &p->saved_rsp);
   p->running = 0;
   p->exit_code = code;
   return code;
@@ -1578,5 +2032,171 @@ static int hard_supervisor_task(void *arg) {
 void process_hardening_selftest(void) {
   fs_init();
   scheduler_add_task("hard-supervisor", hard_supervisor_task, 0);
+}
+#endif
+
+#if defined(KERNEL_USER_SELFTEST) && KERNEL_USER_SELFTEST == 10
+// USER_SELFTEST=10: Windows (PE) programs. WINHELLO.EXE uses the Win32 runtime (heap, files,
+// console); WINBAD.EXE calls an import the runtime lacks; a file that only looks like a PE.
+static int pe_expect(int ok, const char *what) {
+  console_printf("[PE]  %s %s\r\n", ok ? "ok  " : "FAIL", what);
+  return ok ? 0 : 1;
+}
+
+static int pe_wait_for(int (*cond)(void), int ticks) {
+  while (ticks-- > 0 && !cond()) {
+    wait_one_tick();
+  }
+  return cond();
+}
+
+static int cond_pe_window(void) { return syswin_test_active() > 0; }
+static int cond_pe_no_windows(void) { return syswin_test_used() == 0; }
+static int cond_pe_red(void) { return syswin_test_pixel(30, 30) == 0x00C82828; }          // FillRect with a solid brush
+static int cond_pe_blue(void) { return syswin_test_pixel(130, 30) == 0x002828C8; }        // Rectangle filled by the selected brush
+static int cond_pe_ellipse(void) { return syswin_test_pixel(230, 35) == 0x0028C828; }     // Ellipse
+static int cond_pe_white(void) { return syswin_test_pixel(300, 250) == 0x00FFFFFF; }      // the class background brush
+static int cond_pe_blue_text(void) { return syswin_test_count(0x000000FFu) > 40; }        // TextOut, SetTextColor
+static int cond_pe_marker(void) { return syswin_test_pixel(300, 150) == 0x0028C828; }     // drawn at the click position
+static int cond_pe_typed(void) { return syswin_test_count(0x00FF00FFu) > 20; }            // typed characters
+
+static int cond_pe_msgbox(void) { return syswin_test_count(0x003A78D6u) > 1000; }   // the default button
+
+static int pe_supervisor_task(void *arg) {
+  int failures = 0;
+  uint64_t code = 0;
+  int h, a, b;
+  fat_volume_t *v = fs_default_volume();
+  static const uint8_t junk[200] = {'M', 'Z', 1, 2, 3};
+
+  (void)arg;
+  h = process_spawn_arg("/APPS/WINHELLO.EXE", "one two");
+  failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 7,
+                        "WINHELLO.EXE ran: console, heap and a file round trip (exit code 7)");
+  h = process_spawn("/APPS/WINBAD.EXE");
+  failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0xC0000139ULL,
+                        "calling an import the runtime lacks ends the program with its own code");
+
+  a = process_spawn("/APPS/WINHELLO.EXE");
+  b = process_spawn("/APPS/HELLO.BIN");
+  {
+    uint64_t ca = 0, cb = 0;
+
+    failures += pe_expect(a >= 0 && b >= 0 && process_wait(a, &ca) == PROCESS_OK && process_wait(b, &cb) == PROCESS_OK &&
+                              ca == 7 && cb == 7,
+                          "a PE program next to an ELF program: both finished");
+  }
+  if (v != 0) {
+    int rc;
+
+    failures += pe_expect(fat_write_file(v, v->root_cluster, "BADPE.EXE", junk, sizeof(junk)), "wrote a fake PE file");
+    h = process_spawn("/BADPE.EXE");
+    rc = h >= 0 ? process_wait(h, &code) : h;
+    failures += pe_expect(rc == PROCESS_ERR_BADPE, "a file with an MZ header but no PE is refused");
+    {
+      fat_dirent_t e;
+
+      if (fat_lookup(v, v->root_cluster, "BADPE.EXE", &e)) {
+        fat_delete(v, &e);
+      }
+    }
+  }
+  // SSE: three copies of a long floating-point computation run side by side; each must get
+  // the same answer twice (their SSE registers must not leak into each other).
+  {
+    int f1 = process_spawn_arg("/APPS/WINFP.EXE", "a");
+    int f2 = process_spawn_arg("/APPS/WINFP.EXE", "b");
+    int f3 = process_spawn_arg("/APPS/WINFP.EXE", "c");
+    uint64_t c1 = 9, c2 = 9, c3 = 9;
+
+    failures += pe_expect(f1 >= 0 && f2 >= 0 && f3 >= 0 && process_wait(f1, &c1) == PROCESS_OK &&
+                              process_wait(f2, &c2) == PROCESS_OK && process_wait(f3, &c3) == PROCESS_OK && c1 == 0 && c2 == 0 && c3 == 0,
+                          "floating point: three SSE programs at once kept their own registers");
+  }
+
+  // MessageBoxA: a window of its own with buttons; Enter presses the default one.
+  while (desktop_loop_count() < 3) {
+    wait_one_tick();
+  }
+  h = process_spawn("/APPS/WINMSG.EXE");
+  failures += pe_expect(h >= 0 && pe_wait_for(cond_pe_window, 500), "WINMSG.EXE: the message box window appeared");
+  failures += pe_expect(pe_wait_for(cond_pe_msgbox, 500), "MessageBoxA drew its buttons");
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, '\n');
+  failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 6, "MessageBoxA returned IDYES when Enter was pressed");
+  failures += pe_expect(pe_wait_for(cond_pe_no_windows, 500), "the message box window was released");
+
+  // A windowed program: WinMain, window class, WM_PAINT with GDI, input and a timer. The desktop
+  // task must be running (it is, as the idle callback).
+  while (desktop_loop_count() < 3) {
+    wait_one_tick();
+  }
+  h = process_spawn("/APPS/WINGUI.EXE");
+  failures += pe_expect(h >= 0 && pe_wait_for(cond_pe_window, 500), "WINGUI.EXE: its window appeared");
+  failures += pe_expect(pe_wait_for(cond_pe_white, 500), "WM_PAINT: the class background brush erased the window");
+  failures += pe_expect(pe_wait_for(cond_pe_red, 500), "GDI: FillRect with a solid brush");
+  failures += pe_expect(pe_wait_for(cond_pe_blue, 500), "GDI: Rectangle filled with the selected brush");
+  failures += pe_expect(pe_wait_for(cond_pe_ellipse, 500), "GDI: Ellipse");
+  failures += pe_expect(pe_wait_for(cond_pe_blue_text, 500), "GDI: TextOut with SetTextColor");
+  syswin_test_inject(SYSWIN_EV_MOUSE_DOWN, 300, 150, 0);                // WM_LBUTTONDOWN
+  syswin_test_inject(SYSWIN_EV_MOUSE_UP, 300, 150, 0);
+  failures += pe_expect(pe_wait_for(cond_pe_marker, 500), "WM_LBUTTONDOWN reached the window procedure and InvalidateRect repainted");
+  syswin_test_inject(SYSWIN_EV_MOUSE_DOWN, 320, 160, 0);
+  syswin_test_inject(SYSWIN_EV_MOUSE_UP, 320, 160, 0);
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 'a');                         // WM_KEYDOWN, WM_CHAR, WM_KEYUP
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 'b');
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 'c');
+  failures += pe_expect(pe_wait_for(cond_pe_typed, 500), "WM_CHAR delivered the typed characters");
+  for (a = 0; a < 20; ++a) {                                             // let the 40 ms timer fire at least once
+    wait_one_tick();
+  }
+  syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);                         // WM_CLOSE -> DestroyWindow -> WM_DESTROY -> PostQuitMessage
+  failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 123,
+                        "exit code 123 = 2 clicks, 3 characters, timer fired (WM_QUIT carried it out)");
+  failures += pe_expect(pe_wait_for(cond_pe_no_windows, 500), "the window was released at exit");
+  for (a = 0; a < 6; ++a) {
+    h = process_spawn("/APPS/WINHELLO.EXE");
+    if (h < 0 || process_wait(h, &code) != PROCESS_OK || code != 7) {
+      break;
+    }
+  }
+  failures += pe_expect(a == 6, "six more runs (the 2 MB heap and the image were freed each time)");
+  failures += pe_expect(process_live_count() == 0, "nothing leaked at the end");
+
+  if (failures == 0) {
+    console_write_string("[PE] PASS: Windows programs\r\n");
+  } else {
+    console_printf("[PE] FAIL: %d check(s) failed\r\n", failures);
+  }
+  return 0;
+}
+
+void process_pe_selftest(void) {
+  fs_init();
+  desktop_start();
+  scheduler_add_task("pe-supervisor", pe_supervisor_task, 0);
+}
+#endif
+
+
+#if defined(KERNEL_USER_SELFTEST) && KERNEL_USER_SELFTEST == 11
+// USER_SELFTEST=11: not a test. Starts the Windows demo programs on the desktop and leaves them
+// there, to look at in a screenshot (scripts/qemu-screenshot.py, wait ~25 s).
+static int pe_demo_task(void *arg) {
+  (void)arg;
+  while (desktop_loop_count() < 3) {
+    wait_one_tick();
+  }
+  process_spawn("/APPS/WINGUI.EXE");
+  process_spawn("/APPS/WINMSG.EXE");
+  for (;;) {
+    wait_one_tick();
+  }
+  return 0;
+}
+
+void process_pe_demo(void) {
+  fs_init();
+  desktop_start();
+  scheduler_add_task("pe-demo", pe_demo_task, 0);
 }
 #endif

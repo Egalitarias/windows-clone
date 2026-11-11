@@ -231,6 +231,10 @@ static __attribute__((noreturn)) void kernel_runtime(const KERNEL_BOOT_INFO *boo
     process_window_selftest();
 #elif defined(KERNEL_USER_SELFTEST) && KERNEL_USER_SELFTEST == 9
     process_hardening_selftest();
+#elif defined(KERNEL_USER_SELFTEST) && KERNEL_USER_SELFTEST == 10
+    process_pe_selftest();
+#elif defined(KERNEL_USER_SELFTEST) && KERNEL_USER_SELFTEST == 11
+    process_pe_demo();
 #endif
     scheduler_add_task("task-a", demo_task, &task_a);
     scheduler_add_task("task-b", demo_task, &task_b);

@@ -29,6 +29,8 @@
 #define PROCESS_ERR_NOMEM    (-4)
 #define PROCESS_ERR_READ     (-5)
 #define PROCESS_ERR_EMPTY    (-6)
+#define PROCESS_ERR_BADPE    (-8)   // a PE file the loader cannot use (not x64, bad headers, a DLL, ...)
+#define PROCESS_ERR_NOSHIM   (-9)   // a PE program but /APPS/WIN32.DLL (the Win32 runtime) is missing
 #define PROCESS_ERR_BADELF   (-7)   // an ELF file the loader cannot use (wrong type, bad segments)
 
 // A program killed by a CPU exception in user mode reports this plus the vector
@@ -46,6 +48,10 @@ typedef struct {
   uint64_t kstack_top;
   uint64_t cr3;               // physical address of the process's PML4 (its own address space)
   uint64_t saved_rsp;         // kernel context to return to when the program exits
+  uint64_t initial_sp;        // user RSP at the entry point (0 = the default for ELF programs)
+  int is_pe;                  // a Windows (PE) program: has a heap block and the Win32 DLL
+  uint64_t heap_phys, heap_pages;   // PE programs: the heap at PE_HEAP_BASE (the Win32 runtime manages it)
+  uint64_t pe_exe_base, pe_dll_base;
   uint64_t exit_code;
   void *io;                   // the program's console (set by process_spawn), or 0
   const char *arg;            // argument string given to process_spawn_arg, or 0
@@ -58,6 +64,14 @@ typedef struct {
 // Load the program (ELF or flat binary) at `path` (like "/APPS/HELLO.BIN", searched on every
 // mounted volume) into a new process. Returns PROCESS_OK or a PROCESS_ERR_* code.
 int process_create(const char *path, process_t *p);
+
+// Where a PE program's heap lives, and how big it is.
+#define PE_HEAP_BASE  0x00007F0000200000ULL
+#define PE_HEAP_PAGES 512U
+#define PE_SHIM_PATH  "/APPS/WIN32.DLL"
+// For SYS_PEINFO: the current process is a PE program: fills out[0..3] = heap base, heap
+// size, program image base, Win32 DLL base and returns 1; 0 for any other program.
+int process_pe_info(uint64_t out[4]);
 
 // Run the program to completion. Blocks until it calls exit(); the exit code is
 // stored in p->exit_code and returned.
@@ -148,6 +162,8 @@ void process_desktop_selftest(void);     // USER_SELFTEST=5: same, with the desk
 void process_isolation_selftest(void);   // USER_SELFTEST=6: concurrent processes in separate address spaces
 void process_file_selftest(void);        // USER_SELFTEST=7: file syscalls (FILES.BIN)
 void process_window_selftest(void);      // USER_SELFTEST=8: window syscalls (WINTEST.BIN, WINEV.BIN)
+void process_pe_demo(void);               // USER_SELFTEST=11: leave the Windows demo programs open (for a screenshot)
+void process_pe_selftest(void);          // USER_SELFTEST=10: Windows (PE) programs
 void process_hardening_selftest(void);   // USER_SELFTEST=9: bad pointers, stack overflow, preemption
 #endif
 

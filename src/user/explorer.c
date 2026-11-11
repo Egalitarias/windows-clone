@@ -297,7 +297,7 @@ static void open_selected(void) {
     set_status("Path too long to open", 0, 1);
   } else if (is_text_name(e->name)) {
     set_status(spawn("/APPS/NOTES.BIN", full) == 0 ? "Opened in Notes: " : "No free program slot: ", e->name, 0);
-  } else if (ulib_has_ext(e->name, "BIN")) {
+  } else if (ulib_has_ext(e->name, "BIN") || ulib_has_ext(e->name, "EXE")) {
     if (spawn(full, 0) == 0) {
       set_status("Started ", e->name, 0);
     } else {

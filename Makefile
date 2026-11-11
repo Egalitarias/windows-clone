@@ -403,6 +403,7 @@ installer-package: uefi-loader $(INSTALLER_SCRIPT) | dirs
 	cp $(UEFI_KERNEL) $(INSTALLER_PACKAGE_EFI_DIR)/KERNEL.BIN
 	@mkdir -p $(INSTALLER_PACKAGE_DIR)/APPS
 	cp $(UEFI_DIR)/APPS/*.BIN $(INSTALLER_PACKAGE_DIR)/APPS/
+	-cp $(UEFI_DIR)/APPS/*.EXE $(UEFI_DIR)/APPS/*.DLL $(INSTALLER_PACKAGE_DIR)/APPS/
 	cp $(INSTALLER_SCRIPT) $(INSTALLER_PACKAGE_SCRIPT)
 	chmod +x $(INSTALLER_PACKAGE_SCRIPT)
 	@echo "Installer package created at: $(INSTALLER_PACKAGE_DIR)"
@@ -416,7 +417,7 @@ $(UEFI_EFI): $(UEFI_OBJ)
 $(UEFI_KERNEL): $(KERNEL_UEFI_BIN) | dirs
 	cp $< $@
 
-uefi-loader: check-uefi-tools $(UEFI_EFI) $(UEFI_KERNEL) user-apps
+uefi-loader: check-uefi-tools $(UEFI_EFI) $(UEFI_KERNEL) user-apps win32-apps
 	@echo "UEFI loader built at: $(UEFI_EFI)"
 	@echo "UEFI kernel staged at: $(UEFI_KERNEL)"
 
@@ -463,6 +464,75 @@ user-apps: $(USER_DIR)/hello.bin $(USER_DIR)/count.bin $(USER_DIR)/crash.bin $(U
 
 .PHONY: user-apps
 
+# ---- Windows (PE) programs and the Win32 runtime (src/win32) ---------------------------------
+# WIN32.DLL (kernel32 + user32 + gdi32) and the test programs are built with clang for the
+# Windows target against the real Windows SDK headers and import libraries (Visual Studio's
+# C++ headers plus a Windows 10/11 SDK). Without them the step is skipped and the OS builds as
+# before; programs that need the runtime then do not start. Override WINSDK_ROOT, WINSDK_VER
+# and MSVC_ROOT if yours are elsewhere.
+WIN32_DIR := $(OUT_DIR)/win32
+WINSDK_ROOT ?= C:/Program Files (x86)/Windows Kits/10
+WINSDK_VER ?= 10.0.26100.0
+MSVC_ROOT ?= $(shell ls -d "C:/Program Files/Microsoft Visual Studio/2022/"*/VC/Tools/MSVC/* 2>/dev/null | sort | tail -n 1)
+WIN32_SDK_OK := $(shell test -f "$(WINSDK_ROOT)/Include/$(WINSDK_VER)/um/windows.h" && test -f "$(MSVC_ROOT)/include/excpt.h" && echo 1)
+WIN32_CFLAGS := --target=x86_64-pc-windows-msvc -ffreestanding -fno-builtin -fno-stack-protector -mno-sse -O2 -Wall -Wextra -Wno-unused-parameter -Wno-microsoft
+WIN32_INCLUDES := -isystem "$(MSVC_ROOT)/include" -isystem "$(WINSDK_ROOT)/Include/$(WINSDK_VER)/um" -isystem "$(WINSDK_ROOT)/Include/$(WINSDK_VER)/shared" -isystem "$(WINSDK_ROOT)/Include/$(WINSDK_VER)/ucrt"
+WIN32_LIBPATH := "-libpath:$(WINSDK_ROOT)/Lib/$(WINSDK_VER)/um/x64"
+WIN32_RT_OBJS := $(WIN32_DIR)/kernel32.obj $(WIN32_DIR)/user32.obj $(WIN32_DIR)/gdi32.obj
+WIN32_TESTS := hello badimp wingui winmsg fptest
+WIN32_EXES := $(patsubst %,$(WIN32_DIR)/%.exe,$(WIN32_TESTS))
+
+$(WIN32_DIR)/%.obj: src/win32/%.c src/win32/internal.h
+	@mkdir -p $(WIN32_DIR)
+	$(CC) $(WIN32_CFLAGS) $(WIN32_INCLUDES) -c $< -o $@
+
+$(WIN32_DIR)/t_%.obj: src/win32/tests/%.c
+	@mkdir -p $(WIN32_DIR)
+	$(CC) $(WIN32_CFLAGS) $(WIN32_INCLUDES) -c $< -o $@
+
+$(WIN32_DIR)/win32.dll: $(WIN32_RT_OBJS)
+	$(UEFI_LLD_LINK) -dll -noentry -nodefaultlib -opt:ref -out:$@ $^
+
+$(WIN32_DIR)/missing.lib: src/win32/tests/missing.def
+	@mkdir -p $(WIN32_DIR)
+	llvm-lib -def:$< -machine:x64 -out:$@
+
+$(WIN32_DIR)/badimp.exe: $(WIN32_DIR)/t_badimp.obj $(WIN32_DIR)/t_crt.obj $(WIN32_DIR)/t_entry_console.obj $(WIN32_DIR)/missing.lib
+	$(UEFI_LLD_LINK) -subsystem:console -entry:mainCRTStartup -nodefaultlib -out:$@ $(filter %.obj,$^) $(filter %.lib,$^) $(WIN32_LIBPATH) kernel32.lib
+
+$(WIN32_DIR)/hello.exe: $(WIN32_DIR)/t_hello.obj $(WIN32_DIR)/t_crt.obj $(WIN32_DIR)/t_entry_console.obj
+	$(UEFI_LLD_LINK) -subsystem:console -entry:mainCRTStartup -nodefaultlib -out:$@ $^ $(WIN32_LIBPATH) kernel32.lib user32.lib
+
+$(WIN32_DIR)/wingui.exe: $(WIN32_DIR)/t_wingui.obj $(WIN32_DIR)/t_crt.obj $(WIN32_DIR)/t_entry_gui.obj
+	$(UEFI_LLD_LINK) -subsystem:windows -entry:WinMainCRTStartup -nodefaultlib -out:$@ $^ $(WIN32_LIBPATH) kernel32.lib user32.lib gdi32.lib
+
+# Built with SSE on (WIN32_CFLAGS has it off): exercises the per-task x87/SSE state.
+$(WIN32_DIR)/t_fptest.obj: src/win32/tests/fptest.c
+	@mkdir -p $(WIN32_DIR)
+	$(CC) $(filter-out -mno-sse,$(WIN32_CFLAGS)) $(WIN32_INCLUDES) -c $< -o $@
+
+$(WIN32_DIR)/fptest.exe: $(WIN32_DIR)/t_fptest.obj $(WIN32_DIR)/t_crt.obj $(WIN32_DIR)/t_entry_console.obj
+	$(UEFI_LLD_LINK) -subsystem:console -entry:mainCRTStartup -nodefaultlib -out:$@ $^ $(WIN32_LIBPATH) kernel32.lib user32.lib
+
+$(WIN32_DIR)/winmsg.exe: $(WIN32_DIR)/t_winmsg.obj $(WIN32_DIR)/t_crt.obj $(WIN32_DIR)/t_entry_gui.obj
+	$(UEFI_LLD_LINK) -subsystem:windows -entry:WinMainCRTStartup -nodefaultlib -out:$@ $^ $(WIN32_LIBPATH) kernel32.lib user32.lib
+
+ifeq ($(WIN32_SDK_OK),1)
+win32-apps: $(WIN32_DIR)/win32.dll $(WIN32_EXES)
+	@mkdir -p $(UEFI_DIR)/APPS
+	cp $(WIN32_DIR)/win32.dll $(UEFI_DIR)/APPS/WIN32.DLL
+	cp $(WIN32_DIR)/hello.exe $(UEFI_DIR)/APPS/WINHELLO.EXE
+	cp $(WIN32_DIR)/badimp.exe $(UEFI_DIR)/APPS/WINBAD.EXE
+	cp $(WIN32_DIR)/wingui.exe $(UEFI_DIR)/APPS/WINGUI.EXE
+	cp $(WIN32_DIR)/winmsg.exe $(UEFI_DIR)/APPS/WINMSG.EXE
+	cp $(WIN32_DIR)/fptest.exe $(UEFI_DIR)/APPS/WINFP.EXE
+else
+win32-apps:
+	@echo "win32-apps: Windows SDK or Visual Studio headers not found; skipping the Win32 runtime and PE test programs (see WINSDK_ROOT in the Makefile)"
+endif
+
+.PHONY: win32-apps
+
 qemu-run: uefi-loader $(OVMF_VARS) check-qemu-tools
 	qemu-system-x86_64 \
 		-machine q35 \
@@ -493,6 +563,7 @@ $(VM_DISK): installer-package | dirs check-vm-disk-tools
 		$(INSTALLER_PACKAGE_EFI_DIR)/KERNEL.BIN ::/EFI/BOOT/KERNEL.BIN
 	mmd -i $(VM_DISK)@@$(VM_DISK_ESP_OFFSET_BYTES) ::/APPS
 	mcopy -i $(VM_DISK)@@$(VM_DISK_ESP_OFFSET_BYTES) $(INSTALLER_PACKAGE_DIR)/APPS/*.BIN ::/APPS/
+	-for f in $(INSTALLER_PACKAGE_DIR)/APPS/*.EXE $(INSTALLER_PACKAGE_DIR)/APPS/*.DLL; do [ -f "$$f" ] && mcopy -i $(VM_DISK)@@$(VM_DISK_ESP_OFFSET_BYTES) "$$f" ::/APPS/; done
 	mcopy -i $(VM_DISK)@@$(VM_DISK_ESP_OFFSET_BYTES) \
 		$(INSTALLER_PACKAGE_SCRIPT) ::/install.sh
 	@echo "VM disk created at: $(VM_DISK)"
@@ -542,6 +613,7 @@ $(VBOX_DISK_VDI): installer-package | dirs check-vbox-tools
 		$(INSTALLER_PACKAGE_EFI_DIR)/KERNEL.BIN ::/EFI/BOOT/KERNEL.BIN
 	mmd -i $(VBOX_DISK_RAW)@@$(VBOX_ESP_OFFSET_BYTES) ::/APPS
 	mcopy -i $(VBOX_DISK_RAW)@@$(VBOX_ESP_OFFSET_BYTES) $(INSTALLER_PACKAGE_DIR)/APPS/*.BIN ::/APPS/
+	-for f in $(INSTALLER_PACKAGE_DIR)/APPS/*.EXE $(INSTALLER_PACKAGE_DIR)/APPS/*.DLL; do [ -f "$$f" ] && mcopy -i $(VBOX_DISK_RAW)@@$(VBOX_ESP_OFFSET_BYTES) "$$f" ::/APPS/; done
 	VBoxManage convertfromraw $(VBOX_DISK_RAW) $(abspath $(VBOX_DISK_VDI)) --format VDI
 	@rm -f $(VBOX_DISK_RAW)
 	@echo "VirtualBox disk created at: $(VBOX_DISK_VDI)"

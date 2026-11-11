@@ -38,6 +38,7 @@
 #define SYS_UPTIME     29   // uptime_ms() -> milliseconds since boot
 #define SYS_NOTIFY     31   // notify(text) -> 0; shows a toast (text over 33 characters is cut)
 #define SYS_SCREEN     30   // screen_size() -> (width << 16) | height of the display
+#define SYS_PEINFO     32   // peinfo(uint64_t out[4]) -> 0; heap base, heap size, exe base, DLL base (PE programs only, else -ENOSYS)
 #define SYS_READDIR 8   // readdir(fd, sysfile_dirent_t *out) -> 1 entry stored, 0 at the end
                         // read(fd, ...) and write(fd, ...) also take file descriptors (see sysfile.h)
 

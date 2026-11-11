@@ -182,6 +182,17 @@ TCB *tcb_create(const char *name, uint32_t priority) {
   tcb->priority = priority;
   tcb->ticks_running = 0;
   tcb->context_switches = 0;
+  {
+    int i;
+
+    for (i = 0; i < 512; ++i) {                  // a clean x87/SSE state: default control words
+      tcb->fx_state[i] = 0;
+    }
+    tcb->fx_state[0] = 0x7F;                       // FCW = 0x037F
+    tcb->fx_state[1] = 0x03;
+    tcb->fx_state[24] = 0x80;                      // MXCSR = 0x1F80 (all exceptions masked)
+    tcb->fx_state[25] = 0x1F;
+  }
 
   tcb_allocate_stack(tcb);
 

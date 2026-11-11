@@ -234,15 +234,15 @@ APPS_SOURCE="$SOURCE_DIR/APPS"
 TARGET_APPS="$ESP_MOUNT/APPS"
 if [ -d "$APPS_SOURCE" ]; then
     if [ "$DRY_RUN" -eq 1 ]; then
-        log_info "[dry-run] Would copy $APPS_SOURCE/*.BIN -> $TARGET_APPS"
+        log_info "[dry-run] Would copy $APPS_SOURCE/*.BIN, *.EXE and *.DLL -> $TARGET_APPS"
     else
         mkdir -p "$TARGET_APPS"
-        for program in "$APPS_SOURCE"/*.BIN; do
+        for program in "$APPS_SOURCE"/*.BIN "$APPS_SOURCE"/*.EXE "$APPS_SOURCE"/*.DLL; do
             [ -f "$program" ] || continue
             cp "$program" "$TARGET_APPS/"
         done
         sync
-        for program in "$APPS_SOURCE"/*.BIN; do
+        for program in "$APPS_SOURCE"/*.BIN "$APPS_SOURCE"/*.EXE "$APPS_SOURCE"/*.DLL; do
             [ -f "$program" ] || continue
             cmp -s "$program" "$TARGET_APPS/$(basename "$program")" || {
                 log_error "Verification failed for $(basename "$program")"

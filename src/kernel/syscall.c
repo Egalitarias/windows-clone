@@ -254,6 +254,21 @@ static int64_t syscall_dispatch_inner(uint64_t nr, uint64_t a1, uint64_t a2, uin
     }
     case SYS_WIN_TITLE:
       return syswin_title(a1, a2);
+    case SYS_PEINFO: {
+      uint64_t info[4];
+      int i;
+
+      if (!paging_user_range_ok(a1, sizeof(info))) {
+        return SYSCALL_EFAULT;
+      }
+      if (!process_pe_info(info)) {
+        return SYSCALL_ENOSYS;
+      }
+      for (i = 0; i < 4; ++i) {
+        ((volatile uint64_t *)(uintptr_t)a1)[i] = info[i];
+      }
+      return 0;
+    }
     case SYS_UPTIME:
       return (int64_t)timer_get_ms();
     case SYS_SCREEN:

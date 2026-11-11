@@ -45,6 +45,11 @@ typedef struct {
   // Why a BLOCKED task is blocked (TASK_WAIT_*), and for sleepers when to wake it.
   uint32_t wait_kind;
   uint64_t wake_ms;
+
+  // x87/SSE register state (FXSAVE format), saved and restored by the scheduler when the task
+  // is switched out and in. Kernel code uses no SSE, but user programs (Windows ones in
+  // particular) do. Last, so the offsets the assembly uses stay put.
+  uint8_t fx_state[512] __attribute__((aligned(16)));
 } TCB;
 
 #define TASK_WAIT_NONE  0U

@@ -165,7 +165,7 @@ static void cmd_help(void) {
   console_printf("  use N                switch to volume N\r\n");
   console_printf("  pwd, cd DIR, ls [DIR]   look around the current volume\r\n");
   console_printf("  cat FILE             show a text file\r\n");
-  console_printf("  run PROG [ARG]       start a program (PROG alone means /APPS/PROG.BIN)\r\n");
+  console_printf("  run PROG [ARG]       start a program (PROG alone means /APPS/PROG.BIN or .EXE)\r\n");
   console_printf("  notify [TEXT]        show a notification\r\n");
   console_printf("  shutdown             power off\r\n");
 }
@@ -336,6 +336,9 @@ static void cmd_run(int argc, char **argv) {
     n += (int)str_copy(path + n, argv[1], sizeof(path) - (size_t)n);
     if (!has_dot) {
       str_copy(path + n, ".BIN", sizeof(path) - (size_t)n);
+      if (!process_program_exists(path)) {                // a Windows program?
+        str_copy(path + n, ".EXE", sizeof(path) - (size_t)n);
+      }
     }
   }
   if (!process_program_exists(path)) {
