@@ -13,7 +13,7 @@
 // are exposed.
 
 #define XHCI_MAX_CONTROLLERS 2
-#define XHCI_MAX_SLOTS       8
+#define XHCI_MAX_SLOTS       16
 #define RING_TRBS            64            // the last one is the Link TRB
 #define EVENT_TRBS           64
 
@@ -93,7 +93,15 @@ typedef struct {
   int used;
   int slot;
   int speed;
-  int port;
+  int port;                  // root-hub port the device hangs off (through any hubs)
+  uint32_t route;            // route string: 4 bits per hub tier, first hub in the low nibble
+  int depth;                 // number of hubs between this device and the root port
+  int dev_class;             // bDeviceClass (9 = hub)
+  int tt_slot, tt_port;      // low/full-speed device behind a high-speed hub: its transaction translator
+  int is_hub;
+  int hub_ports;             // downstream ports (hubs only)
+  uint32_t hub_ttt;          // think time field of the hub's slot context
+  uint32_t hub_pwr_ms;       // power-on to power-good
   uint8_t *ctx;              // output device context
   uint64_t ctx_phys;
   ring_t ep0;
@@ -434,6 +442,13 @@ static void ep_context(xhci_t *x, uint32_t dci, uint32_t type, uint32_t mps, con
   e[4] = avg | (avg << 16);
 }
 
+// Slot context for the device: route string, speed, root port, hub fields, transaction translator.
+static void fill_slot(const xdev_t *d, uint32_t *s, uint32_t entries) {
+  s[0] = d->route | ((uint32_t)d->speed << 20) | (d->is_hub ? (1u << 26) : 0u) | (entries << 27);
+  s[1] = ((uint32_t)d->port << 16) | (d->is_hub ? ((uint32_t)d->hub_ports << 24) : 0u);
+  s[2] = (uint32_t)d->tt_slot | ((uint32_t)d->tt_port << 8) | (d->is_hub ? (d->hub_ttt << 16) : 0u);
+}
+
 static int speed_mps0(int speed) {
   return speed == 4 ? 512 : (speed == 2 ? 8 : 64);        // super / low / full+high
 }
@@ -494,9 +509,10 @@ static int reset_port(xhci_t *x, uint32_t port, int *speed) {
   return 1;
 }
 
-static xdev_t *address_device(xhci_t *x, uint32_t port, int speed) {
+static xdev_t *address_device(xhci_t *x, uint32_t port, int speed, uint32_t route, int depth, int tt_slot,
+                              int tt_port) {
   uint32_t slot = 0, cc;
-  uint32_t *c, *s;
+  uint32_t *c;
   xdev_t *d;
 
   cc = command(x, 0, TRB_CMD_ENABLE << 10, &slot);
@@ -509,6 +525,10 @@ static xdev_t *address_device(xhci_t *x, uint32_t port, int speed) {
   d->slot = (int)slot;
   d->speed = speed;
   d->port = (int)port;
+  d->route = route;
+  d->depth = depth;
+  d->tt_slot = tt_slot;
+  d->tt_port = tt_port;
   d->ctx_phys = alloc_mapped(1);
   if (!d->ctx_phys || !ring_init(&d->ep0)) {
     return 0;
@@ -519,9 +539,7 @@ static xdev_t *address_device(xhci_t *x, uint32_t port, int speed) {
   input_clear(x);
   c = ictx_ptr(x, 0);
   c[1] = 3;                                               // add slot + EP0
-  s = ictx_ptr(x, 1);
-  s[0] = ((uint32_t)speed << 20) | (1u << 27);
-  s[1] = port << 16;
+  fill_slot(d, ictx_ptr(x, 1), 1);
   ep_context(x, 1, 4, (uint32_t)speed_mps0(speed), &d->ep0, 8);
   cc = command(x, x->input_phys, (TRB_CMD_ADDRESS << 10) | (slot << 24), 0);
   return cc == CC_SUCCESS ? d : 0;
@@ -535,6 +553,7 @@ static int fix_ep0_mps(xhci_t *x, xdev_t *d) {
     return 0;
   }
   mps = x->dbuf[7];
+  d->dev_class = x->dbuf[4];
   if (d->speed == 4) {
     mps = 512;
   }
@@ -625,7 +644,7 @@ static uint32_t hid_interval(int speed, uint8_t b) {
 
 // One Configure Endpoint command for everything the device offers that we use.
 static int configure_endpoints(xhci_t *x, xdev_t *d) {
-  uint32_t add = 1, max_dci = 1, *c, *s;
+  uint32_t add = 1, max_dci = 1, *c;
   int k;
 
   input_clear(x);
@@ -665,9 +684,7 @@ static int configure_endpoints(xhci_t *x, xdev_t *d) {
   }
   c = ictx_ptr(x, 0);
   c[1] = add;
-  s = ictx_ptr(x, 1);
-  s[0] = ((uint32_t)d->speed << 20) | (max_dci << 27);
-  s[1] = (uint32_t)d->port << 16;
+  fill_slot(d, ictx_ptr(x, 1), max_dci);
   return command(x, x->input_phys, (TRB_CMD_CONFIGURE << 10) | ((uint32_t)d->slot << 24), 0) == CC_SUCCESS;
 }
 
@@ -809,16 +826,128 @@ static void hid_arm(xhci_t *x, xdev_t *d, hid_t *h) {
   ring_doorbell(x, (uint32_t)d->slot, h->dci);
 }
 
-static void enumerate_port(xhci_t *x, int xi, uint32_t port) {
-  int speed = 0, k;
+static void enumerate_device(xhci_t *x, int xi, uint32_t port, int speed, uint32_t route, int depth, int tt_slot,
+                             int tt_port);
+
+// Hub class requests (USB 2.0 11.24, USB 3.0 10.14), sent on the hub's endpoint 0.
+#define HUB_GET_STATUS        0
+#define HUB_CLEAR_FEATURE     1
+#define HUB_SET_FEATURE       3
+#define HUB_PORT_RESET        4
+#define HUB_PORT_POWER        8
+#define HUB_C_PORT_CONNECTION 16
+
+// wPortStatus in the low 16 bits, wPortChange in the high 16 bits.
+static int hub_port_status(xhci_t *x, xdev_t *h, uint32_t port, uint32_t *st) {
+  if (!control(x, h, 0xA3, HUB_GET_STATUS, 0, (uint16_t)port, 4, 1)) {
+    return 0;
+  }
+  *st = (uint32_t)x->dbuf[0] | ((uint32_t)x->dbuf[1] << 8) | ((uint32_t)x->dbuf[2] << 16) |
+        ((uint32_t)x->dbuf[3] << 24);
+  return 1;
+}
+
+static void hub_port_feature(xhci_t *x, xdev_t *h, uint32_t port, int set, uint16_t feature) {
+  control(x, h, 0x23, set ? HUB_SET_FEATURE : HUB_CLEAR_FEATURE, feature, (uint16_t)port, 0, 0);
+}
+
+static void hub_scan_port(xhci_t *x, int xi, xdev_t *h, uint32_t port) {
+  uint32_t st = 0, route;
+  uint64_t start;
+  int speed, tt_slot = 0, tt_port = 0;
+
+  if (!hub_port_status(x, h, port, &st) || !(st & 1u)) {            // nothing connected
+    return;
+  }
+  if (h->depth >= 5) {                                               // does not fit in a route string
+    console_printf("[usb] hub port %u: too many hubs deep, ignored\r\n", port);
+    return;
+  }
+  hub_port_feature(x, h, port, 0, HUB_C_PORT_CONNECTION);
+  hub_port_feature(x, h, port, 1, HUB_PORT_RESET);
+  start = timer_get_ms();
+  for (;;) {
+    delay_ms(10);
+    if (hub_port_status(x, h, port, &st) && (st & (1u << 20))) {     // C_PORT_RESET
+      break;
+    }
+    if (timer_get_ms() - start > 1000) {
+      console_printf("[usb] hub port %u: reset timed out\r\n", port);
+      return;
+    }
+  }
+  hub_port_feature(x, h, port, 0, 20);                                // clear C_PORT_RESET
+  if (!hub_port_status(x, h, port, &st) || !(st & 1u) || !(st & 2u)) {   // still connected and enabled?
+    return;
+  }
+  delay_ms(20);                                                       // reset recovery
+  if (h->speed == 4) {
+    speed = 4;
+  } else if (st & (1u << 9)) {
+    speed = 2;
+  } else if (st & (1u << 10)) {
+    speed = 3;
+  } else {
+    speed = 1;
+  }
+  if (speed < 3) {                                                    // behind a transaction translator
+    if (h->speed == 3) {
+      tt_slot = h->slot;
+      tt_port = (int)port;
+    } else {
+      tt_slot = h->tt_slot;
+      tt_port = h->tt_port;
+    }
+  }
+  route = h->route | (port << (4 * h->depth));
+  enumerate_device(x, xi, (uint32_t)h->port, speed, route, h->depth + 1, tt_slot, tt_port);
+}
+
+// Read the hub descriptor, tell the controller this is a hub, power the ports and enumerate
+// whatever is plugged into them. Hot plug is not followed: the ports are looked at once.
+static void hub_start(xhci_t *x, int xi, xdev_t *h) {
+  uint32_t n, p;
+  int ss = h->speed == 4;
+
+  if (ss && !control(x, h, 0x20, 12, (uint16_t)h->depth, 0, 0, 0)) {   // SET_HUB_DEPTH
+    console_printf("[usb] hub: SET_HUB_DEPTH failed\r\n");
+    return;
+  }
+  if (!control(x, h, 0xA0, 6, ss ? 0x2A00 : 0x2900, 0, ss ? 12 : 9, 1) || x->dbuf[2] == 0) {
+    console_printf("[usb] hub: no hub descriptor\r\n");
+    return;
+  }
+  n = x->dbuf[2];
+  if (n > 15) {                                                        // a route string nibble holds 1..15
+    n = 15;
+  }
+  h->hub_ports = (int)n;
+  h->hub_pwr_ms = (uint32_t)x->dbuf[5] * 2u;
+  h->hub_ttt = ss ? 0u : (((uint32_t)x->dbuf[3] >> 5) & 3u);
+  h->is_hub = 1;
+  if (!configure_endpoints(x, h)) {                       // slot context: hub flag, port count, think time
+    console_printf("[usb] hub: could not configure the hub\r\n");
+    return;
+  }
+  console_printf("[usb] %s hub with %u ports (root port %d, tier %d)\r\n", ss ? "SuperSpeed" : "USB 2.0", n, h->port,
+                 h->depth + 1);
+  for (p = 1; p <= n; p++) {
+    hub_port_feature(x, h, p, 1, HUB_PORT_POWER);
+  }
+  delay_ms(h->hub_pwr_ms + 100);
+  for (p = 1; p <= n; p++) {
+    hub_scan_port(x, xi, h, p);
+  }
+}
+
+static void enumerate_device(xhci_t *x, int xi, uint32_t port, int speed, uint32_t route, int depth, int tt_slot,
+                             int tt_port) {
+  int k;
   xdev_t *d;
   uint32_t total;
   usb_disk_t *disk;
 
-  if (!reset_port(x, port, &speed)) {
-    return;
-  }
-  d = address_device(x, port, speed);
+  d = address_device(x, port, speed, route, depth, tt_slot, tt_port);
   if (d == 0 || !fix_ep0_mps(x, d)) {
     return;
   }
@@ -834,6 +963,12 @@ static void enumerate_port(xhci_t *x, int xi, uint32_t port) {
     return;
   }
   parse_config(d, x->dbuf, total);
+  if (d->dev_class == 9) {
+    if (control(x, d, 0x00, 9, d->cfg_value, 0, 0, 0)) {                               // SET_CONFIGURATION
+      hub_start(x, xi, d);
+    }
+    return;
+  }
   if (!d->has_storage && d->hid_count == 0) {
     console_printf("[usb] port %u: unsupported device (speed %d)\r\n", port, speed);
     return;
@@ -864,6 +999,15 @@ static void enumerate_port(xhci_t *x, int xi, uint32_t port) {
     d->is_storage = 1;
     g_disk_count++;
   }
+}
+
+static void enumerate_port(xhci_t *x, int xi, uint32_t port) {
+  int speed = 0;
+
+  if (!reset_port(x, port, &speed)) {
+    return;
+  }
+  enumerate_device(x, xi, port, speed, 0, 0, 0, 0);
 }
 
 

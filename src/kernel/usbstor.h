@@ -4,8 +4,8 @@
 #include "console.h"
 #include "ps2.h"
 
-// USB mass storage and HID (keyboard, mouse): an xHCI host controller driver (polled, root-hub ports only, no
-// hubs) plus the Bulk-Only Transport with SCSI commands. Memory sticks and USB disks
+// USB mass storage and HID (keyboard, mouse): an xHCI host controller driver (polled; root-hub ports and
+// USB hubs up to 5 tiers deep, no hot plug) plus the Bulk-Only Transport with SCSI commands. Memory sticks and USB disks
 // with 512-byte blocks show up as disks next to SATA and NVMe ones.
 
 #define USB_MAX_DISKS 4
