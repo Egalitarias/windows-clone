@@ -5,6 +5,7 @@ Usage: python scripts/qemu-screenshot.py [options] [output.png] [wait-seconds] [
 
 Options:
     --nvme IMAGE   also attach IMAGE as an NVMe disk (repeatable)
+    --usb IMAGE    also attach IMAGE as a USB stick (first boot choice; repeatable)
     --no-esp       do not attach the virtual FAT boot disk (boot from --nvme only)
     --no-data      do not attach out/run/data.img
 
@@ -65,12 +66,16 @@ def ppm_to_png(ppm_path, png_path):
 def main():
     argv = sys.argv[1:]
     nvme_images = []
+    usb_images = []
     no_esp = no_data = False
     rest = []
     i = 0
     while i < len(argv):
         if argv[i] == "--nvme":
             nvme_images.append(argv[i + 1])
+            i += 2
+        elif argv[i] == "--usb":
+            usb_images.append(argv[i + 1])
             i += 2
         elif argv[i] == "--no-esp":
             no_esp = True
@@ -108,6 +113,11 @@ def main():
     for n, image in enumerate(nvme_images):
         cmd += ["-drive", "if=none,id=nvm%d,format=raw,file=%s" % (n, image),
                 "-device", "nvme,serial=winclone%d,drive=nvm%d" % (n, n)]
+    if usb_images:
+        cmd += ["-device", "qemu-xhci,id=xhci"]
+    for n, image in enumerate(usb_images):
+        cmd += ["-drive", "if=none,id=usb%d,format=raw,file=%s" % (n, image),
+                "-device", "usb-storage,bus=xhci.0,drive=usb%d,bootindex=%d" % (n, n)]
     data_img = os.path.join(run_dir, "data.img")
     if os.path.exists(data_img) and not no_data:
         cmd += ["-drive", "if=none,id=data,format=raw,file=" + data_img,
