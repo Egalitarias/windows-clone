@@ -55,6 +55,7 @@ KERNEL_UEFI_PCI_OBJ := $(KERNEL_DIR)/uefi_kernel_pci.o
 KERNEL_UEFI_AHCI_OBJ := $(KERNEL_DIR)/uefi_kernel_ahci.o
 KERNEL_UEFI_BLOCK_OBJ := $(KERNEL_DIR)/uefi_kernel_block.o
 KERNEL_UEFI_FAT32_OBJ := $(KERNEL_DIR)/uefi_kernel_fat32.o
+KERNEL_UEFI_EXFAT_OBJ := $(KERNEL_DIR)/uefi_kernel_exfat.o
 KERNEL_UEFI_FS_OBJ := $(KERNEL_DIR)/uefi_kernel_fs.o
 KERNEL_UEFI_NVME_OBJ := $(KERNEL_DIR)/uefi_kernel_nvme.o
 KERNEL_UEFI_USBSTOR_OBJ := $(KERNEL_DIR)/uefi_kernel_usbstor.o
@@ -219,16 +220,16 @@ kernel: $(KERNEL_OBJ) $(KERNEL_BIN)
 $(KERNEL_UEFI_STUB_OBJ): src/kernel/uefi_kernel.S | dirs
 	$(CC) $(KERNEL_ASFLAGS) $< -o $@
 
-$(KERNEL_UEFI_MAIN_OBJ): src/kernel/main.c | dirs
+$(KERNEL_UEFI_MAIN_OBJ): src/kernel/main.c $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_CONSOLE_OBJ): src/kernel/console.c | dirs
+$(KERNEL_UEFI_CONSOLE_OBJ): src/kernel/console.c $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_FB_OBJ): src/kernel/fb.c src/kernel/fb.h src/kernel/font8x8.h | dirs
+$(KERNEL_UEFI_FB_OBJ): src/kernel/fb.c src/kernel/fb.h src/kernel/font8x8.h $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_DESKTOP_OBJ): src/kernel/desktop.c src/kernel/desktop.h src/kernel/fb.h src/kernel/ps2.h src/kernel/wm.h src/kernel/apps.h | dirs
+$(KERNEL_UEFI_DESKTOP_OBJ): src/kernel/desktop.c src/kernel/desktop.h src/kernel/fb.h src/kernel/ps2.h src/kernel/wm.h src/kernel/apps.h $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
 $(KERNEL_UEFI_STRING_OBJ): src/kernel/string.c $(wildcard src/kernel/*.h) | dirs
@@ -244,6 +245,9 @@ $(KERNEL_UEFI_BLOCK_OBJ): src/kernel/block.c $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
 $(KERNEL_UEFI_FAT32_OBJ): src/kernel/fat32.c $(wildcard src/kernel/*.h) | dirs
+	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_UEFI_EXFAT_OBJ): src/kernel/exfat.c $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
 $(KERNEL_UEFI_FS_OBJ): src/kernel/fs.c $(wildcard src/kernel/*.h) | dirs
@@ -270,58 +274,58 @@ $(KERNEL_UEFI_CONSOLEWIN_OBJ): src/kernel/console_win.c $(wildcard src/kernel/*.
 $(KERNEL_UEFI_SHELL_OBJ): src/kernel/shell.c $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_IRQ_OBJ): src/kernel/irq.c src/kernel/irq.h src/kernel/pic.h | dirs
+$(KERNEL_UEFI_IRQ_OBJ): src/kernel/irq.c src/kernel/irq.h src/kernel/pic.h $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
 $(KERNEL_UEFI_IRQ_STUBS_OBJ): src/kernel/irq_stubs.S | dirs
 	$(CC) $(KERNEL_ASFLAGS) $< -o $@
 
-$(KERNEL_UEFI_RTC_OBJ): src/kernel/rtc.c src/kernel/rtc.h | dirs
+$(KERNEL_UEFI_RTC_OBJ): src/kernel/rtc.c src/kernel/rtc.h $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_WM_OBJ): src/kernel/wm.c src/kernel/wm.h src/kernel/fb.h | dirs
+$(KERNEL_UEFI_WM_OBJ): src/kernel/wm.c src/kernel/wm.h src/kernel/fb.h $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
 $(KERNEL_UEFI_APPPROG_OBJ): src/kernel/app_programs.c $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_APPS_OBJ): src/kernel/apps.c src/kernel/apps.h src/kernel/wm.h src/kernel/fb.h | dirs
+$(KERNEL_UEFI_APPS_OBJ): src/kernel/apps.c src/kernel/apps.h src/kernel/wm.h src/kernel/fb.h $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_PS2_OBJ): src/kernel/ps2.c src/kernel/ps2.h | dirs
+$(KERNEL_UEFI_PS2_OBJ): src/kernel/ps2.c src/kernel/ps2.h $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_PMM_OBJ): src/kernel/pmm.c | dirs
+$(KERNEL_UEFI_PMM_OBJ): src/kernel/pmm.c $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_HEAP_OBJ): src/kernel/heap.c | dirs
+$(KERNEL_UEFI_HEAP_OBJ): src/kernel/heap.c $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_PAGING_OBJ): src/kernel/paging.c | dirs
+$(KERNEL_UEFI_PAGING_OBJ): src/kernel/paging.c $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_IDT_OBJ): src/kernel/idt.c | dirs
+$(KERNEL_UEFI_IDT_OBJ): src/kernel/idt.c $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_PIC_OBJ): src/kernel/pic.c | dirs
+$(KERNEL_UEFI_PIC_OBJ): src/kernel/pic.c $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_GDT_OBJ): src/kernel/gdt.c | dirs
+$(KERNEL_UEFI_GDT_OBJ): src/kernel/gdt.c $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_USERMODE_OBJ): src/kernel/usermode.c | dirs
+$(KERNEL_UEFI_USERMODE_OBJ): src/kernel/usermode.c $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_PROCESS_OBJ): src/kernel/process.c src/kernel/process.h | dirs
+$(KERNEL_UEFI_PROCESS_OBJ): src/kernel/process.c src/kernel/process.h $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_SYSCALL_OBJ): src/kernel/syscall.c src/kernel/sysfile.h | dirs
+$(KERNEL_UEFI_SYSCALL_OBJ): src/kernel/syscall.c src/kernel/sysfile.h $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_SYSFILE_OBJ): src/kernel/sysfile.c src/kernel/sysfile.h src/kernel/syswin.h | dirs
+$(KERNEL_UEFI_SYSFILE_OBJ): src/kernel/sysfile.c src/kernel/sysfile.h src/kernel/syswin.h $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_SYSWIN_OBJ): src/kernel/syswin.c src/kernel/syswin.h src/kernel/font8x8.h src/kernel/fb.h src/kernel/wm.h | dirs
+$(KERNEL_UEFI_SYSWIN_OBJ): src/kernel/syswin.c src/kernel/syswin.h src/kernel/font8x8.h src/kernel/fb.h src/kernel/wm.h $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
 $(KERNEL_UEFI_SYSCALL_ENTRY_OBJ): src/kernel/syscall_entry.S | dirs
@@ -330,43 +334,43 @@ $(KERNEL_UEFI_SYSCALL_ENTRY_OBJ): src/kernel/syscall_entry.S | dirs
 $(KERNEL_UEFI_EXCEPTIONS_OBJ): src/kernel/exceptions.S | dirs
 	$(CC) $(KERNEL_ASFLAGS) $< -o $@
 
-$(KERNEL_UEFI_SCHEDULER_OBJ): src/kernel/scheduler.c | dirs
+$(KERNEL_UEFI_SCHEDULER_OBJ): src/kernel/scheduler.c $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_SCHEDULER_TEST_OBJ): src/kernel/test_scheduler.c | dirs
+$(KERNEL_UEFI_SCHEDULER_TEST_OBJ): src/kernel/test_scheduler.c $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
 $(KERNEL_UEFI_CONTEXT_SWITCH_OBJ): src/kernel/context_switch.S | dirs
 	$(CC) $(KERNEL_ASFLAGS) $< -o $@
 
-$(KERNEL_UEFI_CONTEXT_SWITCH_TEST_OBJ): src/kernel/test_context_switch.c | dirs
+$(KERNEL_UEFI_CONTEXT_SWITCH_TEST_OBJ): src/kernel/test_context_switch.c $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_TCB_OBJ): src/kernel/tcb.c | dirs
+$(KERNEL_UEFI_TCB_OBJ): src/kernel/tcb.c $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_TCB_TEST_OBJ): src/kernel/test_tcb.c | dirs
+$(KERNEL_UEFI_TCB_TEST_OBJ): src/kernel/test_tcb.c $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_STACK_GUARD_OBJ): src/kernel/stack_guard.c | dirs
+$(KERNEL_UEFI_STACK_GUARD_OBJ): src/kernel/stack_guard.c $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_STACK_GUARD_TEST_OBJ): src/kernel/test_stack_guard.c | dirs
+$(KERNEL_UEFI_STACK_GUARD_TEST_OBJ): src/kernel/test_stack_guard.c $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_TIMER_OBJ): src/kernel/timer.c | dirs
+$(KERNEL_UEFI_TIMER_OBJ): src/kernel/timer.c $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
 $(KERNEL_UEFI_TIMER_STUB_OBJ): src/kernel/timer_stub.S | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_TIMER_TEST_OBJ): src/kernel/test_timer.c | dirs
+$(KERNEL_UEFI_TIMER_TEST_OBJ): src/kernel/test_timer.c $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_GDT_TEST_OBJ): src/kernel/test_gdt.c | dirs
+$(KERNEL_UEFI_GDT_TEST_OBJ): src/kernel/test_gdt.c $(wildcard src/kernel/*.h) | dirs
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_UEFI_ELF): $(KERNEL_UEFI_STUB_OBJ) $(KERNEL_UEFI_MAIN_OBJ) $(KERNEL_UEFI_CONSOLE_OBJ) $(KERNEL_UEFI_FB_OBJ) $(KERNEL_UEFI_DESKTOP_OBJ) $(KERNEL_UEFI_PS2_OBJ) $(KERNEL_UEFI_WM_OBJ) $(KERNEL_UEFI_APPS_OBJ) $(KERNEL_UEFI_APPPROG_OBJ) $(KERNEL_UEFI_IRQ_OBJ) $(KERNEL_UEFI_IRQ_STUBS_OBJ) $(KERNEL_UEFI_RTC_OBJ) $(KERNEL_UEFI_STRING_OBJ) $(KERNEL_UEFI_PCI_OBJ) $(KERNEL_UEFI_AHCI_OBJ) $(KERNEL_UEFI_BLOCK_OBJ) $(KERNEL_UEFI_FAT32_OBJ) $(KERNEL_UEFI_FS_OBJ) $(KERNEL_UEFI_NVME_OBJ) $(KERNEL_UEFI_USBSTOR_OBJ) $(KERNEL_UEFI_DISK_OBJ) $(KERNEL_UEFI_FORMAT_OBJ) $(KERNEL_UEFI_SETUP_OBJ) $(KERNEL_UEFI_CONSOLEWIN_OBJ) $(KERNEL_UEFI_SHELL_OBJ) $(KERNEL_UEFI_PMM_OBJ) $(KERNEL_UEFI_HEAP_OBJ) $(KERNEL_UEFI_PAGING_OBJ) $(KERNEL_UEFI_IDT_OBJ) $(KERNEL_UEFI_PIC_OBJ) $(KERNEL_UEFI_GDT_OBJ) $(KERNEL_UEFI_USERMODE_OBJ) $(KERNEL_UEFI_PROCESS_OBJ) $(KERNEL_UEFI_SYSCALL_OBJ) $(KERNEL_UEFI_SYSFILE_OBJ) $(KERNEL_UEFI_SYSWIN_OBJ) $(KERNEL_UEFI_SYSCALL_ENTRY_OBJ) $(KERNEL_UEFI_EXCEPTIONS_OBJ) $(KERNEL_UEFI_SCHEDULER_OBJ) $(KERNEL_UEFI_CONTEXT_SWITCH_OBJ) $(KERNEL_UEFI_TCB_OBJ) $(KERNEL_UEFI_STACK_GUARD_OBJ) $(KERNEL_UEFI_TIMER_OBJ) $(KERNEL_UEFI_TIMER_STUB_OBJ) $(KERNEL_TEST_OBJS)
+$(KERNEL_UEFI_ELF): $(KERNEL_UEFI_STUB_OBJ) $(KERNEL_UEFI_MAIN_OBJ) $(KERNEL_UEFI_CONSOLE_OBJ) $(KERNEL_UEFI_FB_OBJ) $(KERNEL_UEFI_DESKTOP_OBJ) $(KERNEL_UEFI_PS2_OBJ) $(KERNEL_UEFI_WM_OBJ) $(KERNEL_UEFI_APPS_OBJ) $(KERNEL_UEFI_APPPROG_OBJ) $(KERNEL_UEFI_IRQ_OBJ) $(KERNEL_UEFI_IRQ_STUBS_OBJ) $(KERNEL_UEFI_RTC_OBJ) $(KERNEL_UEFI_STRING_OBJ) $(KERNEL_UEFI_PCI_OBJ) $(KERNEL_UEFI_AHCI_OBJ) $(KERNEL_UEFI_BLOCK_OBJ) $(KERNEL_UEFI_FAT32_OBJ) $(KERNEL_UEFI_EXFAT_OBJ) $(KERNEL_UEFI_FS_OBJ) $(KERNEL_UEFI_NVME_OBJ) $(KERNEL_UEFI_USBSTOR_OBJ) $(KERNEL_UEFI_DISK_OBJ) $(KERNEL_UEFI_FORMAT_OBJ) $(KERNEL_UEFI_SETUP_OBJ) $(KERNEL_UEFI_CONSOLEWIN_OBJ) $(KERNEL_UEFI_SHELL_OBJ) $(KERNEL_UEFI_PMM_OBJ) $(KERNEL_UEFI_HEAP_OBJ) $(KERNEL_UEFI_PAGING_OBJ) $(KERNEL_UEFI_IDT_OBJ) $(KERNEL_UEFI_PIC_OBJ) $(KERNEL_UEFI_GDT_OBJ) $(KERNEL_UEFI_USERMODE_OBJ) $(KERNEL_UEFI_PROCESS_OBJ) $(KERNEL_UEFI_SYSCALL_OBJ) $(KERNEL_UEFI_SYSFILE_OBJ) $(KERNEL_UEFI_SYSWIN_OBJ) $(KERNEL_UEFI_SYSCALL_ENTRY_OBJ) $(KERNEL_UEFI_EXCEPTIONS_OBJ) $(KERNEL_UEFI_SCHEDULER_OBJ) $(KERNEL_UEFI_CONTEXT_SWITCH_OBJ) $(KERNEL_UEFI_TCB_OBJ) $(KERNEL_UEFI_STACK_GUARD_OBJ) $(KERNEL_UEFI_TIMER_OBJ) $(KERNEL_UEFI_TIMER_STUB_OBJ) $(KERNEL_TEST_OBJS)
 	$(KERNEL_LD) -pie -T src/kernel/kernel.ld -o $@ $^
 
 $(KERNEL_UEFI_BIN): $(KERNEL_UEFI_ELF)

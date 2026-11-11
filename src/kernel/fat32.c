@@ -1,4 +1,5 @@
 #include "fat32.h"
+#include "exfat.h"
 #include "scheduler.h"
 static uint64_t fat_free_bytes_impl(fat_volume_t *v);
 static int fat_mount_impl(int dev, fat_volume_t *v);
@@ -169,6 +170,10 @@ static int fat_mount_impl(int dev, fat_volume_t *v) {
   if (sec[510] != 0x55 || sec[511] != 0xAA) {
     return 0;
   }
+  if (exfat_probe(sec)) {
+    return exfat_mount(dev, v, sec);
+  }
+  v->exfat = 0;
   bps = le16(sec + 11);
   spc = sec[13];
   if (bps != 512 || spc == 0 || (spc & (spc - 1)) != 0) {
@@ -1188,7 +1193,7 @@ uint64_t fat_free_bytes(fat_volume_t *v) {
   uint64_t result;
 
   scheduler_preempt_disable();
-  result = fat_free_bytes_impl(v);
+  result = v->exfat ? exfat_free_bytes(v) : fat_free_bytes_impl(v);
   scheduler_preempt_enable();
   return result;
 }
@@ -1204,7 +1209,11 @@ int fat_mount(int dev, fat_volume_t *v) {
 
 void fat_iter_open(fat_volume_t *v, uint32_t dir_cluster, fat_iter_t *it) {
   scheduler_preempt_disable();
-  fat_iter_open_impl(v, dir_cluster, it);
+  if (v->exfat) {
+    exfat_iter_open(v, dir_cluster, it);
+  } else {
+    fat_iter_open_impl(v, dir_cluster, it);
+  }
   scheduler_preempt_enable();
 }
 
@@ -1212,7 +1221,7 @@ int fat_iter_next(fat_iter_t *it, fat_dirent_t *out) {
   int result;
 
   scheduler_preempt_disable();
-  result = fat_iter_next_impl(it, out);
+  result = it->v->exfat ? exfat_iter_next(it, out) : fat_iter_next_impl(it, out);
   scheduler_preempt_enable();
   return result;
 }
@@ -1221,7 +1230,7 @@ int fat_lookup(fat_volume_t *v, uint32_t dir_cluster, const char *name, fat_dire
   int result;
 
   scheduler_preempt_disable();
-  result = fat_lookup_impl(v, dir_cluster, name, out);
+  result = v->exfat ? exfat_lookup(v, dir_cluster, name, out) : fat_lookup_impl(v, dir_cluster, name, out);
   scheduler_preempt_enable();
   return result;
 }
@@ -1230,7 +1239,7 @@ int fat_read_file(fat_volume_t *v, const fat_dirent_t *ent, void *buf, uint32_t 
   int result;
 
   scheduler_preempt_disable();
-  result = fat_read_file_impl(v, ent, buf, max, out_len);
+  result = v->exfat ? exfat_read_file(v, ent, buf, max, out_len) : fat_read_file_impl(v, ent, buf, max, out_len);
   scheduler_preempt_enable();
   return result;
 }
@@ -1239,7 +1248,8 @@ int fat_write_file(fat_volume_t *v, uint32_t dir_cluster, const char *name, cons
   int result;
 
   scheduler_preempt_disable();
-  result = fat_write_file_impl(v, dir_cluster, name, data, len);
+  result = v->exfat ? exfat_write_file(v, dir_cluster, name, data, len)
+                    : fat_write_file_impl(v, dir_cluster, name, data, len);
   scheduler_preempt_enable();
   return result;
 }
@@ -1248,7 +1258,7 @@ int fat_file_open(fat_volume_t *v, const fat_dirent_t *ent, fat_file_t *f) {
   int result;
 
   scheduler_preempt_disable();
-  result = fat_file_open_impl(v, ent, f);
+  result = v->exfat ? exfat_file_open(v, ent, f) : fat_file_open_impl(v, ent, f);
   scheduler_preempt_enable();
   return result;
 }
@@ -1257,7 +1267,7 @@ int fat_file_create(fat_volume_t *v, uint32_t dir_cluster, const char *name, fat
   int result;
 
   scheduler_preempt_disable();
-  result = fat_file_create_impl(v, dir_cluster, name, f);
+  result = v->exfat ? exfat_file_create(v, dir_cluster, name, f) : fat_file_create_impl(v, dir_cluster, name, f);
   scheduler_preempt_enable();
   return result;
 }
@@ -1266,7 +1276,7 @@ int fat_file_read(fat_file_t *f, uint32_t offset, void *buf, uint32_t len, uint3
   int result;
 
   scheduler_preempt_disable();
-  result = fat_file_read_impl(f, offset, buf, len, out_len);
+  result = f->v->exfat ? exfat_file_read(f, offset, buf, len, out_len) : fat_file_read_impl(f, offset, buf, len, out_len);
   scheduler_preempt_enable();
   return result;
 }
@@ -1275,7 +1285,8 @@ int fat_file_write(fat_file_t *f, uint32_t offset, const void *data, uint32_t le
   int result;
 
   scheduler_preempt_disable();
-  result = fat_file_write_impl(f, offset, data, len, written);
+  result = f->v->exfat ? exfat_file_write(f, offset, data, len, written)
+                       : fat_file_write_impl(f, offset, data, len, written);
   scheduler_preempt_enable();
   return result;
 }
@@ -1284,7 +1295,7 @@ int fat_mkdir(fat_volume_t *v, uint32_t dir_cluster, const char *name, uint32_t 
   int result;
 
   scheduler_preempt_disable();
-  result = fat_mkdir_impl(v, dir_cluster, name, new_cluster);
+  result = v->exfat ? exfat_mkdir(v, dir_cluster, name, new_cluster) : fat_mkdir_impl(v, dir_cluster, name, new_cluster);
   scheduler_preempt_enable();
   return result;
 }
@@ -1293,7 +1304,7 @@ int fat_delete(fat_volume_t *v, const fat_dirent_t *ent) {
   int result;
 
   scheduler_preempt_disable();
-  result = fat_delete_impl(v, ent);
+  result = v->exfat ? exfat_delete(v, ent) : fat_delete_impl(v, ent);
   scheduler_preempt_enable();
   return result;
 }

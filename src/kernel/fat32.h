@@ -3,7 +3,7 @@
 
 #include "console.h"
 
-// FAT16 and FAT32 file systems on a block device: long file names, read,
+// FAT16, FAT32 and exFAT (exfat.h) file systems on a block device: long file names, read,
 // create/replace files, directories, delete. (FAT12 is not supported.) Writes go
 // straight through to the device (no write-back cache). The FSInfo sector is not
 // maintained (its counts are only hints). Single-threaded: call from one
@@ -21,8 +21,19 @@
 #define FAT_ATTR_DIR      0x10
 #define FAT_ATTR_ARCHIVE  0x20
 
+// exFAT: what a directory listing taught us about a sub-directory (see exfat.c).
+#define FAT_EXDIR_CACHE 48
+typedef struct {
+  uint32_t cluster;            // first cluster of the directory (0 = unused slot)
+  uint32_t parent;             // directory that holds its entry
+  uint32_t abs;                // record index of its entry in the parent
+  uint32_t length;             // bytes
+  uint8_t nofat;               // clusters are contiguous, not chained in the FAT
+} fat_exdir_t;
+
 typedef struct {
   int dev;                     // block device index
+  int exfat;                   // 1 = exFAT: the exfat_* fields below are in use
   uint32_t sectors_per_cluster;
   uint32_t reserved_sectors;
   uint32_t num_fats;
@@ -42,6 +53,17 @@ typedef struct {
   uint8_t fat_buf[512];        // cache of the most recent FAT sector
   uint32_t fat_buf_lba;
   int fat_buf_valid;
+  // exFAT only (the FAT cache above is not used there):
+  uint32_t ex_bitmap_lba;      // first sector of the allocation bitmap
+  uint32_t ex_bitmap_bytes;
+  uint8_t ex_bm_buf[512];      // cache of the most recent bitmap sector
+  uint32_t ex_bm_lba;
+  int ex_bm_valid;
+  uint8_t ex_fat_buf[512];     // cache of the most recent FAT sector
+  uint32_t ex_fat_lba;
+  int ex_fat_valid;
+  fat_exdir_t ex_dirs[FAT_EXDIR_CACHE];
+  uint32_t ex_dir_next;
 } fat_volume_t;
 
 typedef struct {
@@ -50,6 +72,8 @@ typedef struct {
   uint8_t attr;
   uint32_t size;
   uint32_t first_cluster;
+  uint8_t exflags;             // exFAT: stream flags (bit 1 = clusters are contiguous)
+  uint32_t valid;              // exFAT: valid data length (never above size)
   uint16_t mdate;              // DOS date / time of last write
   uint16_t mtime;
   // Where the record lives, for updates and deletes.
@@ -69,9 +93,11 @@ typedef struct {
   int sec_valid;
   int done;
   int fixed_root;              // iterating the FAT16 fixed root directory
+  uint8_t nofat;               // exFAT: directory clusters are contiguous
+  uint32_t clusters_left;      // exFAT, contiguous directory: clusters after the current one
 } fat_iter_t;
 
-// Mount the FAT16 or FAT32 volume on block device `dev`. Returns 1 on success.
+// Mount the FAT16, FAT32 or exFAT volume on block device `dev`. Returns 1 on success.
 int fat_mount(int dev, fat_volume_t *v);
 
 // Directories are identified by their first cluster; the root is v->root_cluster.

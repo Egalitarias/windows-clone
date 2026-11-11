@@ -11,6 +11,7 @@ Files app / Notes (user programs: explorer.c, notes.c)
         |
 fs.c        mounted FAT32 volumes (fs_volume(i))
 fat32.c     FAT16 and FAT32: long names, read, write, mkdir, delete
+exfat.c     exFAT behind the same fat_* calls (fat_mount picks it by the boot sector)
 block.c     block devices = partitions (MBR / GPT) or whole disks
 disk.c      one list of whole disks across controllers
 ahci.c      AHCI SATA controller    nvme.c   NVMe controller   (both polled, DMA via a bounce buffer)
@@ -72,6 +73,32 @@ open in Notes. Notes: Ctrl+S saves to the open file, or to the next free `NOTEn.
 the first volume for a new note. Text is capped at 4096 bytes in Notes; longer files are
 truncated and flagged so you do not save over them.
 
+## exFAT
+
+`fat_mount` recognises an exFAT boot sector and the volume then dispatches to `exfat.c`
+through the same `fat_*` calls, so Files, Notes, the shell and the file syscalls work on
+exFAT sticks and disks unchanged (also as a partition of any type, or a whole disk with no
+partition table).
+
+- Reads and writes: 512-byte sectors, any cluster size, the allocation bitmap, FAT-chained
+  and contiguous ("no FAT chain") files, directory entry sets with long names (checksum
+  verified on read, name hash and checksum written), create/replace, write at an offset,
+  append (a contiguous file is converted to a FAT chain when it grows), mkdir, delete
+  (empty directories only), directory growth (the parent's size is updated), free space.
+- Names are ASCII: other characters show as `?` and are refused when creating. There is
+  no upcase table, so names compare case-insensitively for ASCII only.
+- Limits: files over 4 GiB (sizes are 32-bit in `fat_dirent_t`), 4096-byte-sector media,
+  TexFAT, writing to a file whose valid data length is shorter than its size (refused),
+  an allocation bitmap that is not contiguous. The volume dirty flag and the percent-in-use
+  field are not maintained, and there is no "safely remove": pulling a stick during a write
+  can leave it needing a check.
+- Verified against Linux's `exfatprogs`: `scripts/make-exfat-image.sh` builds a test image
+  (files written by Linux, including a 3 MB contiguous file and a 200-file directory); the
+  kernel self-test reads them, appends to and patches the contiguous file, grows the
+  directory, and runs the generic FAT tests; afterwards `fsck.exfat` reports the image
+  clean and a Linux loop mount has every byte right. Done for 4 KiB and 32 KiB clusters,
+  with and without an MBR partition.
+
 ## Testing
 
 ```bash
@@ -87,7 +114,7 @@ python scripts/fat32-ls.py out/run/data.img --check  # FAT copies equal, no leak
 `fat32-ls.py` is a separate implementation from the kernel driver, so it catches bugs
 the kernel's own view of the disk would miss.
 
-Kernel self-test: build with `make CC=clang FS_SELFTEST=1 uefi-loader`, boot, and read
+Kernel self-test (runs on the first exFAT volume if there is one, else volume 0): build with `make CC=clang FS_SELFTEST=1 uefi-loader`, boot, and read
 the `[fstest]` lines on the serial log. It writes a 200 KB file, shrinks another,
 creates 30 long-named files (directory growth), deletes half, nests directories and
 checks name handling. Afterwards `fat32-ls.py` can verify the result byte for byte.

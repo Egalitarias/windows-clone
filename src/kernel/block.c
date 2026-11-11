@@ -52,6 +52,11 @@ static int looks_like_fat_boot_sector(const uint8_t *s) {
   return 1;
 }
 
+// An exFAT boot sector (a whole-disk volume without a partition table).
+static int looks_like_exfat_boot_sector(const uint8_t *s) {
+  return s[510] == 0x55 && s[511] == 0xAA && memcmp(s + 3, "EXFAT   ", 8) == 0;
+}
+
 static void scan_gpt(int disk, uint64_t disk_sectors) {
   static uint8_t header[512];
   static uint8_t entries[512];
@@ -104,7 +109,7 @@ static void scan_disk(int disk) {
   if (!d || !disk_read(disk, 0, 1, sector)) {
     return;
   }
-  if (looks_like_fat_boot_sector(sector)) {
+  if (looks_like_fat_boot_sector(sector) || looks_like_exfat_boot_sector(sector)) {
     add_device(disk, 0, d->sectors, 0);
     return;
   }

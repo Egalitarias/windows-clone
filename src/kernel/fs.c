@@ -93,17 +93,132 @@ static void check(int ok, const char *what) {
   }
 }
 
+static int strcmp_label(const char *a, const char *b) {
+  while (*a && *a == *b) {
+    a++;
+    b++;
+  }
+  return *a == *b;
+}
+
+// exFAT: files and directories made by Linux (out/run/ex.img, see scripts/make-exfat-image.sh)
+// are read back, then the common tests below run on the exFAT volume.
+static void exfat_pre_tests(fat_volume_t *v) {
+  fat_dirent_t ent, dir;
+  fat_file_t f;
+  uint32_t got = 0, off, i, count = 0, predir = 0;
+  int ok = 1;
+  fat_iter_t it;
+  char name[32];
+
+  check(strcmp_label(v->label, "EXTEST"), "exFAT volume label");
+  check(fat_lookup(v, v->root_cluster, "hello.txt", &ent) && ent.size == 17, "exFAT: HELLO.TXT found, 17 bytes");
+  check(fat_lookup(v, v->root_cluster, "A fairly long file name that needs several name entries.txt", &ent) && ent.size == 5,
+        "exFAT: long name (4 name records)");
+  if (fat_lookup(v, v->root_cluster, "PRE.BIN", &ent) && ent.size == 3000000 && fat_file_open(v, &ent, &f)) {
+    for (off = 0; off < 3000000 && ok; off += 200000) {
+      if (!fat_file_read(&f, off, g_test_buf, 200000, &got) || got != 200000) {
+        ok = 0;
+        break;
+      }
+      for (i = 0; i < 200000; i++) {
+        uint32_t p = off + i;
+
+        if (g_test_buf[i] != (uint8_t)(p * 13u + p / 97u)) {
+          ok = 0;
+          break;
+        }
+      }
+    }
+    check(ok, "exFAT: PRE.BIN (3 MB, written by Linux) reads back correctly");
+  } else {
+    check(0, "exFAT: PRE.BIN present");
+  }
+  // Grow and patch a file Linux wrote (contiguous clusters: the driver must switch it to a FAT chain).
+  if (fat_lookup(v, v->root_cluster, "PRE.BIN", &ent) && fat_file_open(v, &ent, &f)) {
+    uint32_t w = 0;
+
+    for (i = 0; i < 100000; i++) {
+      uint32_t p = 3000000u + i;
+
+      g_test_buf[i] = (uint8_t)(p * 13u + p / 97u);
+    }
+    check(fat_file_write(&f, 3000000, g_test_buf, 100000, &w) && w == 100000 && f.ent.size == 3100000,
+          "exFAT: appended 100000 bytes to PRE.BIN");
+    memset(g_test_buf, 0xAA, 5000);
+    check(fat_file_write(&f, 1000003, g_test_buf, 5000, &w) && w == 5000, "exFAT: overwrote 5000 bytes inside PRE.BIN");
+    ok = fat_lookup(v, v->root_cluster, "PRE.BIN", &ent) && ent.size == 3100000 && fat_file_open(v, &ent, &f) &&
+         fat_file_read(&f, 2999990, g_test_buf, 200, &got) && got == 200;
+    for (i = 0; ok && i < 200; i++) {
+      uint32_t p = 2999990u + i;
+
+      ok = g_test_buf[i] == (uint8_t)(p * 13u + p / 97u);
+    }
+    check(ok, "exFAT: PRE.BIN reads back across the old end");
+  }
+  check(fat_lookup(v, v->root_cluster, "PREDIR", &dir) && (dir.attr & FAT_ATTR_DIR), "exFAT: PREDIR is a directory");
+  predir = dir.first_cluster;
+  fat_iter_open(v, predir, &it);
+  while (fat_iter_next(&it, &ent)) {
+    count++;
+  }
+  check(count == 200, "exFAT: PREDIR lists 200 entries (several directory clusters)");
+  ok = 1;
+  for (i = 1; i <= 200 && ok; i += 17) {
+    int n = (int)str_copy(name, "f", sizeof(name));
+    uint32_t j;
+
+    n += u32_to_str(i, name + n);
+    str_copy(name + n, ".txt", sizeof(name) - (size_t)n);
+    if (!fat_lookup(v, predir, name, &ent) || ent.size != i || !fat_read_file(v, &ent, g_test_back, 256, &got) ||
+        got != i) {
+      ok = 0;
+      break;
+    }
+    for (j = 0; j < i; j++) {
+      if (g_test_back[j] != (uint8_t)(j % 251u)) {
+        ok = 0;
+      }
+    }
+  }
+  check(ok, "exFAT: spot-checked files in PREDIR");
+  for (i = 201; i <= 330; i++) {                                  // grow the directory by writing into it
+    int n = (int)str_copy(name, "g", sizeof(name));
+
+    n += u32_to_str(i, name + n);
+    str_copy(name + n, ".txt", sizeof(name) - (size_t)n);
+    if (!fat_write_file(v, predir, name, g_test_buf, i)) {
+      break;
+    }
+  }
+  check(i == 331, "exFAT: 130 files added to PREDIR (directory grew, its entry was updated)");
+}
+
 void fs_selftest(void) {
-  fat_volume_t *v = fs_volume(0);
+  fat_volume_t *v = 0;
   fat_dirent_t ent;
   uint32_t got = 0, testdir = 0, sub = 0, i;
   char name[64];
+  int vi;
+
+  for (vi = 0; vi < fs_volume_count(); vi++) {
+    if (fs_volume(vi)->exfat) {
+      v = fs_volume(vi);
+      break;
+    }
+  }
+  if (!v) {
+    v = fs_volume(0);
+  }
 
   if (!v) {
     console_write_string("[fstest] no volume\r\n");
     return;
   }
   console_write_string("[fstest] start\r\n");
+  if (v->exfat) {
+    exfat_pre_tests(v);
+  }
 
   // Large multi-cluster file
   fill_pattern(g_test_buf, 200000);
