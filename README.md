@@ -30,7 +30,7 @@ About (user programs in `\APPS`) and Setup.
 5. Storage and filesystem (AHCI, NVMe, FAT16/FAT32 done, see `docs/STORAGE.md`); USB storage, exFAT/NTFS and our own filesystem still to do
 6. Windowing system (done: window manager, see `docs/WINDOW_MANAGER.md`); double buffering done; a compositor (per-window surfaces composed on the fly) still to do
 7. Desktop shell: taskbar and Start menu (done); file explorer and taskbar clock with date and a saved, adjustable time zone done; notifications done (toasts above the taskbar, `desktop_notify`; the Console's `notify` command tries one), and programs raise them with the `notify` syscall
-8. Installer (done for fixed disks, see `docs/INSTALLER.md`); building a bootable USB image from the build still to do
+8. Installer (done for fixed disks, see `docs/INSTALLER.md`); a bootable USB image is built with `make CC=clang usb-image` (see `docs/USB_IMAGE.md`; the kernel cannot read USB storage yet, so a stick boots but has no programs until USB storage is done)
 9. Optional: PE loader and a small Win32 subset
 
 ## Build and run

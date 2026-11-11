@@ -149,7 +149,7 @@ ifeq ($(TESTS),1)
 KERNEL_TEST_OBJS += $(KERNEL_UEFI_SCHEDULER_TEST_OBJ) $(KERNEL_UEFI_CONTEXT_SWITCH_TEST_OBJ) $(KERNEL_UEFI_TCB_TEST_OBJ) $(KERNEL_UEFI_STACK_GUARD_TEST_OBJ) $(KERNEL_UEFI_TIMER_TEST_OBJ) $(KERNEL_UEFI_GDT_TEST_OBJ)
 endif
 
-.PHONY: help all check-tools check-uefi-tools check-qemu-tools check-vm-disk-tools check-vbox-tools dirs kernel bootloader textedit installer-layout installer-package uefi-loader qemu-run test-run vm-disk vm-test vm-shell fault-test vbox-disk vbox-vm-create vbox-vm-delete vbox-run clean
+.PHONY: help all check-tools check-uefi-tools check-qemu-tools check-vm-disk-tools check-vbox-tools dirs kernel bootloader textedit installer-layout installer-package uefi-loader qemu-run test-run usb-image vm-disk vm-test vm-shell fault-test vbox-disk vbox-vm-create vbox-vm-delete vbox-run clean
 
 help:
 	@echo "Targets:"
@@ -165,6 +165,7 @@ help:
 	@echo "  textedit          Build text editor assembly object"
 	@echo "  installer-layout  Stage artifacts into installer layout folder"
 	@echo "  installer-package Stage UEFI payload + install.sh for deployment"
+	@echo "  usb-image         Build out/winclone-usb.img (GPT + FAT32 ESP) for a USB stick; Python only"
 	@echo "  vm-disk           Create bootable QEMU disk image with installer"
 	@echo "  vm-test           Automated VM test suite (boot → kernel validation)"
 	@echo "  vm-shell          Interactive QEMU session for manual testing"
@@ -467,6 +468,9 @@ qemu-run: uefi-loader $(OVMF_VARS) check-qemu-tools
 
 test-run:
 	@$(MAKE) TESTS=1 qemu-run
+
+usb-image: uefi-loader
+	python scripts/make-usb-image.py $(OUT_DIR)/winclone-usb.img
 
 $(VM_DISK): installer-package | dirs check-vm-disk-tools
 	@echo "Creating bootable VM disk image..."
