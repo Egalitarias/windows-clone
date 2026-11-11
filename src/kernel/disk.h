@@ -26,6 +26,10 @@ typedef struct {
 // Bring up the controllers and enumerate disks. Returns the disk count.
 int disk_init(void);
 
+// Rebuild the USB part of the disk list after a stick was plugged in or removed. Disk and block
+// device numbers may change: call fs_rescan() afterwards.
+int disk_refresh_usb(void);
+
 int disk_count(void);
 const disk_info_t *disk_get(int index);
 

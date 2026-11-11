@@ -39,10 +39,14 @@ polled from the desktop loop (`usbhid_poll`, same event type as the PS/2 driver,
 repeat). Tested in QEMU with `qemu-xhci` + `usb-kbd` + `usb-mouse` and the PS/2 controller turned off
 (`scripts/qemu-screenshot.py --usb-hid`): the pointer moves and clicks, text is typed with Shift.
 
-Limits: USB 2.0 and SuperSpeed hubs work (up to 5 tiers, at most 15 ports each; found at boot, tested with
-QEMU's usb-hub), 512-byte blocks only for storage,
-disks up to 2 TiB (READ CAPACITY(10)), one controller command or transfer at a time, no hot plug
-(devices are found at boot). Keyboards: US layout, no LEDs (Caps Lock works but its light does not).
+Hot plug: the desktop checks the root ports (and the ports of every hub, every other round) about four times a second, so sticks, keyboards, mice and hubs can be plugged in and pulled out
+while the system runs. A toast says what happened; after a stick comes or goes the volumes are remounted (`fs_rescan`), so numbering can shift and open files on
+any volume are invalidated (the Files window needs Refresh). Pulling a stick that is being written can leave the file system dirty: there is no
+"safely remove" step.
+
+Limits: USB 2.0 and SuperSpeed hubs work (up to 5 tiers, at most 15 ports each; tested with QEMU's usb-hub only), 512-byte blocks only for storage,
+disks up to 2 TiB (READ CAPACITY(10)), one controller command or transfer at a time, no interrupt-driven hot plug (polling; a plug is noticed within a fraction of a second but the desktop
+pauses while the new device is set up). Keyboards: US layout, no LEDs (Caps Lock works but its light does not).
 Mice: three buttons, movement and a wheel (a mouse whose report descriptor has X, Y and a wheel is switched to report protocol; others stay in boot protocol without a wheel); absolute pointers (touch screens, tablets) are ignored.
 Not tried on real hardware yet. The kernel takes the controller over from the firmware (BIOS handoff);
 on PCs that emulate a PS/2 keyboard through the BIOS that emulation goes away, which is why the

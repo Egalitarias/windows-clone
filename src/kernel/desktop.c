@@ -13,6 +13,7 @@
 #include "wm.h"
 #include "syswin.h"
 #include "usbstor.h"
+#include "disk.h"
 
 // The shell: wallpaper, desktop icons, taskbar (Start button, one button per
 // window, clock), Start menu and the mouse cursor. Windows themselves belong to
@@ -156,6 +157,28 @@ static int toast_y(int i) { return bar_y() - (i + 1) * (TOAST_H + TOAST_GAP); }
 static void toast_invalidate(void) {
   int top = toast_y(TOAST_MAX - 1);
   wm_invalidate(toast_x() - 1, top, TOAST_W + 2, bar_y() - top);
+}
+
+// USB sticks and input devices coming and going: remount the volumes after a disk change.
+static void usb_hotplug(void) {
+  int ev = usbstor_hotplug_poll();
+
+  if (ev & (USB_HOT_DISK_ADDED | USB_HOT_DISK_REMOVED)) {
+    scheduler_preempt_disable();                // nobody may be in the middle of a FAT operation
+    disk_refresh_usb();
+    fs_rescan();
+    scheduler_preempt_enable();
+    console_printf("[usb] disks changed: %d volume(s) mounted\r\n", fs_volume_count());
+  }
+  if (ev & USB_HOT_DISK_ADDED) {
+    desktop_notify("USB drive connected");
+  } else if (ev & USB_HOT_DISK_REMOVED) {
+    desktop_notify("USB drive removed");
+  } else if (ev & USB_HOT_INPUT_ADDED) {
+    desktop_notify("USB keyboard or mouse connected");
+  } else if (ev & USB_HOT_INPUT_REMOVED) {
+    desktop_notify("USB keyboard or mouse removed");
+  }
 }
 
 void desktop_notify(const char *text) {
@@ -734,6 +757,7 @@ static __attribute__((noreturn)) void desktop_run(void) {
     app_console_poll();
     syswin_poll();
     toast_drain_posts();
+    usb_hotplug();
     while (ps2_poll(&ev) || usbhid_poll(&ev)) {
       if (ev.type == PS2_EVENT_KEY) {
         if (ev.pressed && ev.ch == 27) {

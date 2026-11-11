@@ -37,12 +37,25 @@ int disk_init(void) {
     const nvme_disk_t *d = nvme_disk(i);
     add_disk(DISK_BUS_NVME, i, d->sectors, d->model, i);
   }
-  n = usbstor_init();
-  for (i = 0; i < n; i++) {
-    const usb_disk_t *u = usbstor_disk(i);
-    add_disk(DISK_BUS_USB, i, u->sectors, u->model, i);
-  }
+  usbstor_init();
+  disk_refresh_usb();
   return g_count;
+}
+
+int disk_refresh_usb(void) {
+  int i, n = 0;
+
+  while (g_count > 0 && g_disks[g_count - 1].bus == DISK_BUS_USB) {    // the USB disks are the last ones
+    g_count--;
+  }
+  for (i = 0; i < usbstor_disk_count(); i++) {
+    const usb_disk_t *u = usbstor_disk(i);
+
+    if (u && u->present) {
+      add_disk(DISK_BUS_USB, i, u->sectors, u->model, n++);
+    }
+  }
+  return n;
 }
 
 int disk_count(void) { return g_count; }

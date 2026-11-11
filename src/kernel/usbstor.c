@@ -52,6 +52,7 @@
 #define TRB_STATUS        4
 #define TRB_LINK          6
 #define TRB_CMD_ENABLE    9
+#define TRB_CMD_DISABLE   10
 #define TRB_CMD_ADDRESS   11
 #define TRB_CMD_CONFIGURE 12
 #define TRB_CMD_EVALUATE  13
@@ -105,6 +106,10 @@ typedef struct {
   int depth;                 // number of hubs between this device and the root port
   int dev_class;             // bDeviceClass (9 = hub)
   int tt_slot, tt_port;      // low/full-speed device behind a high-speed hub: its transaction translator
+  int parent;                // slot of the hub it hangs off (0 = a root port)
+  int parent_port;           // port on that hub, or the root port
+  uint32_t child_seen;       // hub: bit n set = something was found on port n (and not seen leaving)
+  int disk_index;            // storage: entry in g_disks
   int is_hub;
   int hub_ports;             // downstream ports (hubs only)
   uint32_t hub_ttt;          // think time field of the hub's slot context
@@ -141,6 +146,7 @@ typedef struct {
   uint8_t *input;            // input context (one page)
   uint64_t input_phys;
   xdev_t dev[XHCI_MAX_SLOTS + 1];
+  uint32_t root_seen;        // bit (port - 1): a device was found on that root port
   int ready;
 } xhci_t;
 
@@ -149,6 +155,18 @@ static int g_x_count = 0;
 static usb_disk_t g_disks[USB_MAX_DISKS];
 static int g_disk_count = 0;
 static int g_hid_active = 0;           // keyboard / mouse endpoints being polled
+static int g_hot_events = 0;           // USB_HOT_* bits since the last usbstor_hotplug_poll
+
+static int free_disk_slot(void) {
+  int i;
+
+  for (i = 0; i < USB_MAX_DISKS; i++) {
+    if (!g_disks[i].present) {
+      return i;
+    }
+  }
+  return -1;
+}
 
 // ---- MMIO and small helpers --------------------------------------------------
 
@@ -591,7 +609,7 @@ static void parse_config(xdev_t *d, const uint8_t *p, uint32_t len) {
     if (type == 4 && dlen >= 9) {                         // interface
       uint8_t cls = p[i + 5], sub = p[i + 6], proto = p[i + 7];
 
-      in_storage = (cls == 8 && sub == 6 && proto == 0x50 && p[i + 3] == 0 && g_disk_count < USB_MAX_DISKS);
+      in_storage = (cls == 8 && sub == 6 && proto == 0x50 && p[i + 3] == 0 && free_disk_slot() >= 0);
       if (in_storage) {
         d->iface = p[i + 2];
       }
@@ -840,7 +858,7 @@ static void hid_arm(xhci_t *x, xdev_t *d, hid_t *h) {
 static int parse_mouse_desc(const uint8_t *p, uint32_t len, hid_t *h);
 
 static void enumerate_device(xhci_t *x, int xi, uint32_t port, int speed, uint32_t route, int depth, int tt_slot,
-                             int tt_port);
+                             int tt_port, int parent, int parent_port);
 
 // Hub class requests (USB 2.0 11.24, USB 3.0 10.14), sent on the hub's endpoint 0.
 #define HUB_GET_STATUS        0
@@ -876,6 +894,7 @@ static void hub_scan_port(xhci_t *x, int xi, xdev_t *h, uint32_t port) {
     console_printf("[usb] hub port %u: too many hubs deep, ignored\r\n", port);
     return;
   }
+  h->child_seen |= 1u << port;
   hub_port_feature(x, h, port, 0, HUB_C_PORT_CONNECTION);
   hub_port_feature(x, h, port, 1, HUB_PORT_RESET);
   start = timer_get_ms();
@@ -913,7 +932,7 @@ static void hub_scan_port(xhci_t *x, int xi, xdev_t *h, uint32_t port) {
     }
   }
   route = h->route | (port << (4 * h->depth));
-  enumerate_device(x, xi, (uint32_t)h->port, speed, route, h->depth + 1, tt_slot, tt_port);
+  enumerate_device(x, xi, (uint32_t)h->port, speed, route, h->depth + 1, tt_slot, tt_port, h->slot, (int)port);
 }
 
 // Read the hub descriptor, tell the controller this is a hub, power the ports and enumerate
@@ -954,14 +973,19 @@ static void hub_start(xhci_t *x, int xi, xdev_t *h) {
 }
 
 static void enumerate_device(xhci_t *x, int xi, uint32_t port, int speed, uint32_t route, int depth, int tt_slot,
-                             int tt_port) {
-  int k;
+                             int tt_port, int parent, int parent_port) {
+  int k, idx;
   xdev_t *d;
   uint32_t total;
   usb_disk_t *disk;
 
   d = address_device(x, port, speed, route, depth, tt_slot, tt_port);
-  if (d == 0 || !fix_ep0_mps(x, d)) {
+  if (d == 0) {
+    return;
+  }
+  d->parent = parent;
+  d->parent_port = parent_port;
+  if (!fix_ep0_mps(x, d)) {
     return;
   }
   // Configuration descriptor: header first for the total length, then all of it.
@@ -1005,10 +1029,15 @@ static void enumerate_device(xhci_t *x, int xi, uint32_t port, int speed, uint32
     h->active = 1;
     g_hid_active++;
     hid_arm(x, d, h);
+    g_hot_events |= USB_HOT_INPUT_ADDED;
     console_printf("[usb] port %u: %s\r\n", port, h->kind == 1 ? "keyboard" : "mouse");
   }
   if (d->has_storage) {
-    disk = &g_disks[g_disk_count];
+    idx = free_disk_slot();
+    if (idx < 0) {
+      return;
+    }
+    disk = &g_disks[idx];
     memset(disk, 0, sizeof(*disk));
     if (!storage_probe(x, d, disk)) {
       console_printf("[usb] port %u: storage device did not answer (or is not 512-byte blocks)\r\n", port);
@@ -1016,8 +1045,13 @@ static void enumerate_device(xhci_t *x, int xi, uint32_t port, int speed, uint32
     }
     disk->controller = xi;
     disk->slot = d->slot;
+    disk->present = 1;
     d->is_storage = 1;
-    g_disk_count++;
+    d->disk_index = idx;
+    if (idx >= g_disk_count) {
+      g_disk_count = idx + 1;
+    }
+    g_hot_events |= USB_HOT_DISK_ADDED;
   }
 }
 
@@ -1027,7 +1061,7 @@ static void enumerate_port(xhci_t *x, int xi, uint32_t port) {
   if (!reset_port(x, port, &speed)) {
     return;
   }
-  enumerate_device(x, xi, port, speed, 0, 0, 0, 0);
+  enumerate_device(x, xi, port, speed, 0, 0, 0, 0, 0, (int)port);
 }
 
 
@@ -1388,6 +1422,188 @@ int usbhid_poll(ps2_event_t *ev) {
 
 static int usb_scan(void);
 
+// ---- Hot plug ------------------------------------------------------------------
+// Nothing here relies on interrupts: root ports are read for their connect state, hub ports
+// are asked with GET_STATUS, and what differs from what we know is enumerated or released.
+
+#define HOTPLUG_MS 250
+
+// A keyboard or mouse went away: forget held keys and buttons so nothing sticks.
+static void hid_gone(int kind) {
+  if (kind == 1) {
+    memset(g_kbd_prev, 0, sizeof(g_kbd_prev));
+    g_kbd_mods = 0;
+    g_rep_key = 0;
+  } else if (g_mouse_buttons != 0) {
+    mouse_emit(0, 0, 0, 0);
+  }
+}
+
+// Drop a device and everything behind it: stop its endpoints, tell the controller (Disable
+// Slot) and give its memory back.
+static void device_release(xhci_t *x, xdev_t *d) {
+  int k, s;
+  uint32_t slot = (uint32_t)d->slot;
+
+  for (s = 1; s <= XHCI_MAX_SLOTS; s++) {
+    xdev_t *c = &x->dev[s];
+
+    if (c != d && c->used && c->parent == (int)slot) {
+      device_release(x, c);
+    }
+  }
+  for (k = 0; k < d->hid_count; k++) {
+    hid_t *h = &d->hid[k];
+
+    if (h->active) {
+      h->active = 0;
+      g_hid_active--;
+    }
+    hid_gone(h->kind);
+    g_hot_events |= USB_HOT_INPUT_REMOVED;
+  }
+  if (d->is_storage) {
+    g_disks[d->disk_index].present = 0;
+    g_hot_events |= USB_HOT_DISK_REMOVED;
+  }
+  command(x, 0, (TRB_CMD_DISABLE << 10) | (slot << 24), 0);
+  x->dcbaa[slot] = 0;
+  for (k = 0; k < d->hid_count; k++) {
+    if (d->hid[k].ring.phys) {
+      pmm_free_page(d->hid[k].ring.phys);
+    }
+    if (d->hid[k].buf_phys) {
+      pmm_free_page(d->hid[k].buf_phys);
+    }
+  }
+  if (d->bulk_in.phys) {
+    pmm_free_page(d->bulk_in.phys);
+  }
+  if (d->bulk_out.phys) {
+    pmm_free_page(d->bulk_out.phys);
+  }
+  if (d->ep0.phys) {
+    pmm_free_page(d->ep0.phys);
+  }
+  if (d->ctx_phys) {
+    pmm_free_page(d->ctx_phys);
+  }
+  memset(d, 0, sizeof(*d));
+}
+
+static void release_at(xhci_t *x, int parent, int port) {
+  int s;
+
+  for (s = 1; s <= XHCI_MAX_SLOTS; s++) {
+    xdev_t *d = &x->dev[s];
+
+    if (d->used && d->parent == parent && d->parent_port == port) {
+      device_release(x, d);
+    }
+  }
+}
+
+static void poll_root(xhci_t *x, int xi) {
+  uint32_t port;
+
+  for (port = 1; port <= x->max_ports; port++) {
+    uintptr_t reg = x->op + OP_PORTSC + 0x10u * (port - 1);
+    uint32_t v = rd32(reg), bit = 1u << (port - 1);
+    int seen = (x->root_seen & bit) != 0, conn = (v & PORT_CCS) != 0, chg = (v & (1u << 17)) != 0;
+
+    if (chg) {
+      wr32(reg, (v & PORT_PP) | PORT_CHANGE_BITS);
+    }
+    if (seen && (!conn || chg)) {                           // unplugged (or replaced)
+      release_at(x, 0, (int)port);
+      x->root_seen &= ~bit;
+      seen = 0;
+      console_printf("[usb] port %u: device removed\r\n", port);
+    }
+    if (!seen && conn) {
+      x->root_seen |= bit;
+      enumerate_port(x, xi, port);
+      wr32(reg, (rd32(reg) & PORT_PP) | PORT_CHANGE_BITS);
+    }
+  }
+}
+
+static void poll_hubs(xhci_t *x, int xi) {
+  int s;
+
+  for (s = 1; s <= XHCI_MAX_SLOTS; s++) {
+    xdev_t *h = &x->dev[s];
+    uint32_t p;
+
+    if (!h->used || !h->is_hub) {
+      continue;
+    }
+    for (p = 1; p <= (uint32_t)h->hub_ports; p++) {
+      uint32_t st, bit = 1u << p;
+      int seen, conn, chg;
+
+      if (!hub_port_status(x, h, p, &st)) {                 // the hub itself is not answering
+        break;
+      }
+      seen = (h->child_seen & bit) != 0;
+      conn = (st & 1u) != 0;
+      chg = (st & (1u << 16)) != 0;
+      if (chg) {
+        hub_port_feature(x, h, p, 0, HUB_C_PORT_CONNECTION);
+      }
+      if (seen && (!conn || chg)) {
+        release_at(x, h->slot, (int)p);
+        h->child_seen &= ~bit;
+        seen = 0;
+        console_printf("[usb] hub port %u: device removed\r\n", p);
+      }
+      if (!seen && conn) {
+        hub_scan_port(x, xi, h, p);
+      }
+    }
+  }
+}
+
+int usbstor_hotplug_poll(void) {
+  static uint64_t last = 0;
+  static unsigned int tick = 0;
+  uint64_t now = timer_get_ms(), flags;
+  int i, ev;
+
+  if (g_x_count == 0 || now - last < HOTPLUG_MS) {
+    return 0;
+  }
+  last = now;
+  __asm__ volatile("pushfq; popq %0" : "=r"(flags) : : "memory");
+  scheduler_preempt_disable();                              // storage transfers share the event ring
+  __asm__ volatile("sti" : : : "memory");
+  for (i = 0; i < g_x_count; i++) {
+    xhci_t *x = &g_x[i];
+    uint32_t e[4];
+
+    if (!x->ready) {
+      continue;
+    }
+    while (event_next(x, e)) {                              // keep the event ring from filling up
+      if (((e[3] >> 10) & 0x3Fu) == TRB_EV_TRANSFER) {
+        hid_event(x, e);
+      }
+    }
+    poll_root(x, i);
+    if ((tick & 1u) == 0) {                                 // hubs every other round: each port costs a transfer
+      poll_hubs(x, i);
+    }
+  }
+  tick++;
+  if (!(flags & 0x200ULL)) {
+    __asm__ volatile("cli" : : : "memory");
+  }
+  scheduler_preempt_enable();
+  ev = g_hot_events;
+  g_hot_events = 0;
+  return ev;
+}
+
 // Disks are brought up with interrupts off, but USB needs real time (port resets, command
 // time-outs) and the clock only ticks from the timer interrupt. So interrupts are on while
 // the bus is scanned, with task switching held off so nothing else runs meanwhile.
@@ -1399,6 +1615,7 @@ int usbstor_init(void) {
   scheduler_preempt_disable();
   __asm__ volatile("sti" : : : "memory");
   n = usb_scan();
+  g_hot_events = 0;
   if (!(flags & 0x200ULL)) {
     __asm__ volatile("cli" : : : "memory");
   }
@@ -1412,6 +1629,7 @@ static int usb_scan(void) {
 
   g_x_count = 0;
   g_disk_count = 0;
+  memset(g_disks, 0, sizeof(g_disks));
   for (index = 0; index < XHCI_MAX_CONTROLLERS; index++) {
     xhci_t *x = &g_x[g_x_count];
     uint32_t port;
@@ -1427,11 +1645,19 @@ static int usb_scan(void) {
     x->ready = 1;
     for (port = 1; port <= x->max_ports; port++) {
       if (rd32(x->op + OP_PORTSC + 0x10u * (port - 1)) & PORT_CCS) {
+        x->root_seen |= 1u << (port - 1);
         enumerate_port(x, g_x_count - 1, port);
       }
     }
   }
-  return g_disk_count;
+  {
+    int i, present = 0;
+
+    for (i = 0; i < g_disk_count; i++) {
+      present += g_disks[i].present;
+    }
+    return present;
+  }
 }
 
 int usbstor_disk_count(void) { return g_disk_count; }
@@ -1450,7 +1676,7 @@ static int transfer_locked(int index, uint64_t lba, uint32_t count, uint8_t *buf
   }
   x = &g_x[disk->controller];
   d = &x->dev[disk->slot];
-  if (!x->ready || !d->is_storage || lba + count > disk->sectors || lba > 0xFFFFFFFFu) {
+  if (!disk->present || !x->ready || !d->is_storage || lba + count > disk->sectors || lba > 0xFFFFFFFFu) {
     return 0;
   }
   while (count > 0) {
