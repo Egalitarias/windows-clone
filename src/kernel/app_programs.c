@@ -146,7 +146,7 @@ static void program_paint(wm_window_t *win, int cx, int cy, int cw, int ch) {
 }
 
 // Start a program in this window. Returns 1 if it was started.
-static int start_program(prog_t *pr, const char *path) {
+static int start_program(prog_t *pr, const char *path, const char *arg) {
   int h;
 
   if (pr->handle >= 0) {
@@ -154,7 +154,7 @@ static int start_program(prog_t *pr, const char *path) {
     redraw(pr);
     return 0;
   }
-  h = process_spawn(path);
+  h = process_spawn_arg(path, arg);
   if (h < 0) {
     set_status(pr, "Could not start ", path);
     redraw(pr);
@@ -185,7 +185,7 @@ static void program_mouse(wm_window_t *win, int lx, int ly, int event) {
     size_t n = str_copy(path, "/APPS/", sizeof(path));
     n += str_copy(path + n, prog_name(hot), sizeof(path) - n);
     str_copy(path + n, ".BIN", sizeof(path) - n);
-    start_program(pr, path);
+    start_program(pr, path, 0);
   }
   if (hot != pr->btn_hot) {
     pr->btn_hot = hot;
@@ -285,7 +285,7 @@ void app_programs_open(void) {
 }
 
 // Run `path` in an idle Programs window, or in a new one if all are busy.
-void app_programs_run(const char *path) {
+void app_programs_run(const char *path, const char *arg) {
   prog_t *pr = 0;
   int i;
 
@@ -299,7 +299,7 @@ void app_programs_run(const char *path) {
   }
   if (pr) {
     wm_raise(pr->win);
-    start_program(pr, path);
+    start_program(pr, path, arg);
   }
 }
 

@@ -342,8 +342,22 @@ static void cmd_run(int argc, char **argv) {
     console_printf("run: no such program: %s\r\n", path);
     return;
   }
-  console_printf("starting %s\r\n", path);
-  app_programs_run(path);
+  // The words after the program name, joined with single spaces, are its argument.
+  {
+    char arg[PROCESS_ARG_MAX];
+    size_t len = 0;
+    int a;
+
+    for (a = 2; a < argc; a++) {
+      if (a > 2 && len < sizeof(arg) - 1) {
+        arg[len++] = ' ';
+      }
+      len += str_copy(arg + len, argv[a], sizeof(arg) - len);
+    }
+    arg[len] = 0;
+    console_printf("starting %s%s%s\r\n", path, len ? " " : "", arg);
+    app_programs_run(path, len ? arg : 0);
+  }
 }
 
 // ---- entry point -----------------------------------------------------------

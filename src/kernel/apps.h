@@ -19,7 +19,7 @@ void app_message_open(const char *title, const char *line1, const char *line2, c
 
 // Programs: run user-mode programs from /APPS and show their output.
 void app_programs_open(void);
-void app_programs_run(const char *path);   // open the window and start `path`
+void app_programs_run(const char *path, const char *arg);   // open the window and start `path` (arg may be 0)
 void app_programs_poll(void);              // called by the desktop loop
 // Console: a window showing the kernel log (what console_printf prints).
 void app_console_open(void);
