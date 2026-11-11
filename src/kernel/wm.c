@@ -1,6 +1,8 @@
 #include "wm.h"
 #include "timer.h"
 #include "fb.h"
+#include "paging.h"
+#include "pmm.h"
 
 #define BTN_W   20
 #define BTN_H   18
@@ -17,6 +19,7 @@
 #define COL_BTN_IDLE     FB_RGB(150, 155, 170)
 #define COL_CLOSE        FB_RGB(200, 60, 60)
 #define COL_SHADOW       FB_RGB(10, 20, 50)
+#define DRAG_OPACITY     215
 
 typedef enum {
   CAP_NONE = 0,
@@ -90,8 +93,24 @@ void wm_invalidate(int x, int y, int w, int h) {
   if (y1 > g_dy1) g_dy1 = y1;
 }
 
-void wm_invalidate_window(const wm_window_t *win) {
+void wm_damage_window(const wm_window_t *win) {
   wm_invalidate(win->x, win->y, win->w + WM_SHADOW, win->h + WM_SHADOW);
+}
+
+void wm_invalidate_window(const wm_window_t *win) {
+  ((wm_window_t *)win)->content_dirty = 1;
+  wm_damage_window(win);
+}
+
+void wm_set_opacity(wm_window_t *win, int opacity) {
+  if (!win) {
+    return;
+  }
+  opacity = opacity < 0 ? 0 : (opacity > 255 ? 255 : opacity);
+  if (opacity != win->opacity) {
+    win->opacity = opacity;
+    wm_damage_window(win);
+  }
 }
 
 void wm_invalidate_all(void) {
@@ -111,6 +130,63 @@ int wm_take_dirty(int *x, int *y, int *w, int *h) {
   *w = g_dx1 - g_dx0;
   *h = g_dy1 - g_dy0;
   g_dirty = 0;
+  return 1;
+}
+
+// ---- surfaces --------------------------------------------------------------
+
+static void free_surface(wm_window_t *win) {
+  uint32_t i;
+
+  if (win->surf) {
+    uint64_t phys = (uint64_t)(uintptr_t)win->surf;
+    for (i = 0; i < win->surf_pages; i++) {
+      pmm_free_page(phys + (uint64_t)i * PAGE_SIZE);
+    }
+  }
+  win->surf = 0;
+  win->surf_pages = 0;
+  win->surf_w = 0;
+  win->surf_h = 0;
+}
+
+// Make sure the window has a surface of its current size. Returns 0 if there is no memory
+// (the window is then drawn straight onto the screen). A new or resized surface is stale.
+static int ensure_surface(wm_window_t *win) {
+  uint64_t bytes = fb_surface_pixels_bytes(win->w, win->h);
+  uint32_t pages = (uint32_t)((bytes + PAGE_SIZE - 1) / PAGE_SIZE);
+  uint64_t phys;
+
+  if (pages == 0) {
+    return 0;
+  }
+  if (win->surf && win->surf_pages >= pages && win->surf_pages <= 4 * pages + 4) {
+    if (win->surf_w != win->w || win->surf_h != win->h) {
+      win->surf_w = win->w;
+      win->surf_h = win->h;
+      win->content_dirty = 1;
+      win->frame_dirty = 1;
+    }
+    return 1;
+  }
+  free_surface(win);
+  phys = pmm_alloc_pages(pages);
+  if (phys == 0) {
+    return 0;
+  }
+  if (!paging_map_range(phys, (uint64_t)pages * PAGE_SIZE)) {
+    uint32_t i;
+    for (i = 0; i < pages; i++) {
+      pmm_free_page(phys + (uint64_t)i * PAGE_SIZE);
+    }
+    return 0;
+  }
+  win->surf = (uint32_t *)(uintptr_t)phys;
+  win->surf_pages = pages;
+  win->surf_w = win->w;
+  win->surf_h = win->h;
+  win->content_dirty = 1;
+  win->frame_dirty = 1;
   return 1;
 }
 
@@ -160,6 +236,14 @@ wm_window_t *wm_create(const char *title, int x, int y, int w, int h) {
   win->min_w = 160;
   win->min_h = WM_TITLE_H + 60;
   win->data = 0;
+  win->surf = 0;
+  win->surf_w = 0;
+  win->surf_h = 0;
+  win->surf_pages = 0;
+  win->content_dirty = 1;
+  win->frame_dirty = 1;
+  win->frame_focused = -1;
+  win->opacity = 255;
   win->paint = 0;
   win->key = 0;
   win->mouse = 0;
@@ -186,7 +270,8 @@ void wm_close(wm_window_t *win) {
     g_cap = CAP_NONE;
     g_cap_win = 0;
   }
-  wm_invalidate_window(win);
+  wm_damage_window(win);
+  free_surface(win);
   pos = order_pos(win);
   if (pos >= 0) {
     for (i = pos; i < g_count - 1; i++) {
@@ -214,7 +299,7 @@ void wm_raise(wm_window_t *win) {
       g_order[i] = g_order[i + 1];
     }
     g_order[g_count - 1] = idx;
-    wm_invalidate_window(win);
+    wm_damage_window(win);
   }
   invalidate_taskbar();    // focus highlight moves
 }
@@ -224,11 +309,11 @@ void wm_minimize(wm_window_t *win) {
     return;
   }
   win->minimized = 1;
-  wm_invalidate_window(win);
+  wm_damage_window(win);
   invalidate_taskbar();
   // The focus ring changes for whichever window is now on top.
   if (wm_focused()) {
-    wm_invalidate_window(wm_focused());
+    wm_damage_window(wm_focused());
   }
 }
 
@@ -238,7 +323,7 @@ void wm_restore(wm_window_t *win) {
   }
   win->minimized = 0;
   wm_raise(win);
-  wm_invalidate_window(win);
+  wm_damage_window(win);
   invalidate_taskbar();
 }
 
@@ -275,6 +360,7 @@ void wm_set_title(wm_window_t *win, const char *title) {
     return;
   }
   copy_title(win->title, title);
+  win->frame_dirty = 1;
   wm_invalidate(win->x, win->y, win->w, WM_TITLE_H);
   invalidate_taskbar();
 }
@@ -298,11 +384,11 @@ void wm_move(wm_window_t *win, int x, int y) {
   if (y > max_y) {
     y = max_y;
   }
-  wm_invalidate_window(win);
+  wm_damage_window(win);
   win->maximized = 0;
   win->x = x;
   win->y = y;
-  wm_invalidate_window(win);
+  wm_damage_window(win);
 }
 
 void wm_set_client_size(wm_window_t *win, int cw, int ch) {
@@ -341,19 +427,21 @@ static int btn_x_max(const wm_window_t *win)   { return btn_x_close(win) - BTN_W
 static int btn_x_min(const wm_window_t *win)   { return btn_x_max(win) - BTN_W - BTN_GAP; }
 static int btn_y(const wm_window_t *win)       { return win->y + 3; }
 
-static void paint_window(wm_window_t *win, int focused) {
+// The frame: title bar with buttons, and a one-pixel border. The client area is not
+// touched, so the frame can be redrawn without repainting the content. Works on whatever
+// target is current (the window's surface, or the screen).
+static void draw_frame(const wm_window_t *win, int focused) {
   int x = win->x, y = win->y, w = win->w, h = win->h;
-  int cx, cy, cw, ch;
-  int sx, sy;
   int by = btn_y(win);
   int max_chars;
   char shown[WM_TITLE_CHARS];
   int i;
+  uint32_t frame = focused ? COL_FRAME : COL_FRAME_IDLE;
 
-  if (!win->maximized) {
-    fb_fill_rect(x + WM_SHADOW, y + WM_SHADOW, w, h, COL_SHADOW);
-  }
-  fb_fill_rect(x, y, w, h, focused ? COL_FRAME : COL_FRAME_IDLE);
+  fb_fill_rect(x, y, w, WM_TITLE_H, frame);
+  fb_fill_rect(x, y + WM_TITLE_H, 1, h - WM_TITLE_H, frame);
+  fb_fill_rect(x + w - 1, y + WM_TITLE_H, 1, h - WM_TITLE_H, frame);
+  fb_fill_rect(x, y + h - 1, w, 1, frame);
   fb_fill_rect(x + 1, y + 1, w - 2, WM_TITLE_H - 1, focused ? COL_TITLE : COL_TITLE_IDLE);
 
   max_chars = (btn_x_min(win) - (x + 8) - 4) / FB_FONT_WIDTH;
@@ -371,8 +459,13 @@ static void paint_window(wm_window_t *win, int focused) {
   fb_fill_rect(btn_x_max(win) + 5, by + 4, 10, 2, COL_TITLE_TEXT);
   fb_fill_rect(btn_x_close(win), by, BTN_W, BTN_H, focused ? COL_CLOSE : COL_BTN_IDLE);
   fb_draw_text(btn_x_close(win) + 6, by + 5, "x", COL_TITLE_TEXT, 1);
+}
 
-  // Client area, with the clip narrowed to it for the application.
+// The client area: background, then the application's paint callback with the clip
+// narrowed to the client rectangle.
+static void draw_client(wm_window_t *win) {
+  int cx, cy, cw, ch;
+
   wm_client_rect(win, &cx, &cy, &cw, &ch);
   fb_fill_rect(cx, cy, cw, ch, COL_CLIENT);
   if (win->paint && cw > 0 && ch > 0) {
@@ -388,25 +481,84 @@ static void paint_window(wm_window_t *win, int focused) {
       fb_set_clip(ox0, oy0, ow, oh);
     }
   }
+}
 
-  // Resize grip
-  if (!win->maximized) {
-    // Triangle of six dots in the bottom-right corner.
-    for (sy = 0; sy < 3; sy++) {
-      for (sx = 0; sx + sy < 3; sx++) {
-        fb_fill_rect(x + w - 6 - sx * 4, y + h - 6 - sy * 4, 2, 2, FB_RGB(120, 125, 140));
-      }
+// Triangle of six dots in the bottom-right corner (drawn over the client area).
+static void draw_grip(const wm_window_t *win) {
+  int sx, sy;
+
+  for (sy = 0; sy < 3; sy++) {
+    for (sx = 0; sx + sy < 3; sx++) {
+      fb_fill_rect(win->x + win->w - 6 - sx * 4, win->y + win->h - 6 - sy * 4, 2, 2, FB_RGB(120, 125, 140));
     }
   }
 }
 
+// Soft drop shadow along the right and bottom edges, blended over what is below.
+static void draw_shadow(const wm_window_t *win) {
+  int x = win->x, y = win->y, w = win->w, h = win->h, i;
+
+  for (i = 0; i < WM_SHADOW; i++) {
+    int a = 90 - i * 90 / WM_SHADOW;                       // darkest at the window edge
+
+    if (h - WM_SHADOW - i > 0) {                           // right of the window
+      fb_fill_rect_alpha(x + w + i, y + WM_SHADOW + i, 1, h - WM_SHADOW - i, COL_SHADOW, a);
+    }
+    if (w - 2 * i > 0) {                                   // below it, rounding the corner
+      fb_fill_rect_alpha(x + WM_SHADOW + i, y + h + i, w - 2 * i, 1, COL_SHADOW, a);
+    }
+  }
+}
+
+static void paint_window(wm_window_t *win, int focused) {
+  if (ensure_surface(win)) {
+    int stale_frame = win->frame_dirty || win->frame_focused != focused;
+
+    if (stale_frame || win->content_dirty) {
+      fb_set_target(win->surf, win->w, win->h, win->x, win->y);
+      if (stale_frame) {
+        draw_frame(win, focused);
+      }
+      if (win->content_dirty) {
+        draw_client(win);
+      }
+      if (!win->maximized) {
+        draw_grip(win);
+      }
+      fb_reset_target();
+      win->frame_dirty = 0;
+      win->frame_focused = focused;
+      win->content_dirty = 0;
+    }
+    if (!win->maximized) {
+      draw_shadow(win);
+    }
+    fb_composite(win->x, win->y, win->w, win->h, win->surf, win->w, win->opacity);
+    return;
+  }
+  // No memory for a surface: draw straight onto the screen.
+  if (!win->maximized) {
+    draw_shadow(win);
+  }
+  draw_frame(win, focused);
+  draw_client(win);
+  if (!win->maximized) {
+    draw_grip(win);
+  }
+}
+
 void wm_paint_windows(void) {
-  int i;
+  int i, cx, cy, cw, ch;
   wm_window_t *top = wm_focused();
 
+  fb_get_clip(&cx, &cy, &cw, &ch);
   for (i = 0; i < g_count; i++) {
     wm_window_t *win = &g_win[g_order[i]];
-    if (!win->minimized) {
+
+    // Windows that do not touch the area being repainted are left alone (their surfaces
+    // stay as they are until they are next shown).
+    if (!win->minimized && win->x < cx + cw && win->x + win->w + WM_SHADOW > cx &&
+        win->y < cy + ch && win->y + win->h + WM_SHADOW > cy) {
       paint_window(win, win == top);
     }
   }
@@ -444,10 +596,10 @@ int wm_mouse_down(int x, int y, int double_click) {
   }
   prev_top = wm_focused();
   if (prev_top && prev_top != win) {
-    wm_invalidate_window(prev_top);    // old focus loses its highlight
+    wm_damage_window(prev_top);        // old focus loses its highlight
   }
   wm_raise(win);
-  wm_invalidate_window(win);
+  wm_damage_window(win);
 
   by = btn_y(win);
   if (in_rect(x, y, btn_x_close(win), by, BTN_W, BTN_H)) {
@@ -481,6 +633,7 @@ int wm_mouse_down(int x, int y, int double_click) {
       g_cap_win = win;
       g_cap_ox = x - win->x;
       g_cap_oy = y - win->y;
+      wm_set_opacity(win, DRAG_OPACITY);     // see-through while it is carried
     }
     return 1;
   }
@@ -518,10 +671,10 @@ void wm_mouse_move(int x, int y, unsigned int buttons) {
     if (nx < 80 - win->w) nx = 80 - win->w;
     if (nx > g_desk_w - 80) nx = g_desk_w - 80;
     if (nx != win->x || ny != win->y) {
-      wm_invalidate_window(win);
+      wm_damage_window(win);
       win->x = nx;
       win->y = ny;
-      wm_invalidate_window(win);
+      wm_damage_window(win);
     }
   } else if (g_cap == CAP_RESIZE) {
     int nw = g_cap_w + (x - g_cap_x), nh = g_cap_h + (y - g_cap_y);
@@ -549,6 +702,9 @@ void wm_mouse_move(int x, int y, unsigned int buttons) {
 }
 
 void wm_mouse_up(int x, int y) {
+  if (g_cap == CAP_MOVE && g_cap_win) {
+    wm_set_opacity(g_cap_win, 255);
+  }
   if (g_cap == CAP_CLIENT && g_cap_win && g_cap_win->mouse) {
     int cx, cy, cw, ch;
     wm_client_rect(g_cap_win, &cx, &cy, &cw, &ch);

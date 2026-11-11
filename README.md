@@ -28,7 +28,7 @@ About (user programs in `\APPS`) and Setup.
 3. Keyboard and mouse input (PS/2 interrupt-driven, and USB keyboards and mice on xHCI ports, done; hubs, wheel and USB 1.x/2.x-only controllers (EHCI/OHCI/UHCI) still to do), timer and clock (done)
 4. Syscalls and user mode (done: processes with their own address spaces, file and window syscalls, Notes as a user program; see `docs/SYSCALL_PLAN.md`); user-space library and ELF loader done (programs are ELF64 executables, see `docs/SYSCALL_PLAN.md`); a high-half kernel still to do
 5. Storage and filesystem (AHCI, NVMe, FAT16/FAT32 done, see `docs/STORAGE.md`); USB storage (xHCI, mass storage, done: see `docs/USB_IMAGE.md`), exFAT/NTFS and our own filesystem still to do
-6. Windowing system (done: window manager, see `docs/WINDOW_MANAGER.md`); double buffering done; a compositor (per-window surfaces composed on the fly) still to do
+6. Windowing system (done: window manager, see `docs/WINDOW_MANAGER.md`); double buffering done; a compositor done (per-window surfaces composed with alpha: soft shadows, translucent drag; see `docs/WINDOW_MANAGER.md`)
 7. Desktop shell: taskbar and Start menu (done); file explorer and taskbar clock with date and a saved, adjustable time zone done; notifications done (toasts above the taskbar, `desktop_notify`; the Console's `notify` command tries one), and programs raise them with the `notify` syscall
 8. Installer (done for fixed disks, see `docs/INSTALLER.md`); a bootable USB image is built with `make CC=clang usb-image` (see `docs/USB_IMAGE.md`; the kernel reads USB sticks, so it boots from one)
 9. Optional: PE loader and a small Win32 subset

@@ -3,10 +3,13 @@
 
 #include "console.h"
 
-// Window manager: a fixed pool of overlapping top-level windows with z-order,
-// focus, move / resize / minimize / maximize / close, and a dirty-rectangle
-// model. The shell (desktop.c) owns the wallpaper, taskbar and menus and calls
-// wm_paint_windows() between them.
+// Window manager and compositor: a fixed pool of overlapping top-level windows with
+// z-order, focus, move / resize / minimize / maximize / close, and a dirty-rectangle
+// model. Every window is drawn into its own surface (frame and client area); the screen
+// is composed from the surfaces, back to front, with soft drop shadows and optional
+// translucency. A window's paint callback therefore runs only when its content changes
+// (wm_invalidate_window), not when it is moved, uncovered or refocused. The shell
+// (desktop.c) owns the wallpaper, taskbar and menus and calls wm_paint_windows() between them.
 //
 // Callbacks are plain function pointers and MUST be assigned at run time (in
 // code), never from static initialisers: the kernel is loaded without
@@ -50,6 +53,15 @@ struct wm_window {
   // Called about once a second while the window is not minimized (clocks,
   // uptime displays). Call wm_invalidate_window() if something changed.
   void (*tick)(wm_window_t *win);
+
+  // Compositor state (private to wm.c).
+  uint32_t *surf;            // w x h pixels of the whole window, in the screen's pixel format
+  int surf_w, surf_h;
+  uint32_t surf_pages;
+  int content_dirty;         // the paint callback must run again
+  int frame_dirty;           // title, buttons, border must be redrawn
+  int frame_focused;         // focus state the frame was last drawn with
+  int opacity;               // 0..255, 255 = opaque
 };
 
 // desk_w x desk_h is the full screen; the bottom `taskbar_h` rows belong to
@@ -80,7 +92,12 @@ void wm_client_rect(const wm_window_t *win, int *cx, int *cy, int *cw, int *ch);
 // Dirty region (a single bounding rectangle). The shell repaints it with the
 // fb clip set to it, then clears it.
 void wm_invalidate(int x, int y, int w, int h);
+// The window's content changed: its paint callback runs again and the screen is updated.
 void wm_invalidate_window(const wm_window_t *win);
+// Only the screen needs updating (moved, uncovered, focus changed): the surface is reused.
+void wm_damage_window(const wm_window_t *win);
+// 0..255; below 255 the window is translucent (255 = opaque, the default).
+void wm_set_opacity(wm_window_t *win, int opacity);
 void wm_invalidate_all(void);
 int wm_take_dirty(int *x, int *y, int *w, int *h);
 

@@ -47,6 +47,19 @@ void fb_set_clip(int x, int y, int w, int h);
 void fb_reset_clip(void);
 void fb_get_clip(int *x, int *y, int *w, int *h);
 
+// Surfaces. fb_set_target makes `pixels` (w x h, fb_surface_pixels_bytes(w, h) bytes, in
+// the screen's own pixel format) the drawing target; the surface's first pixel stands for
+// screen position (org_x, org_y), so code that draws with screen coordinates works
+// unchanged. The clip is reset to the surface; fb_reset_target restores the screen and
+// the clip it had. No nesting, and not while presenting. fb_composite copies a surface
+// onto the current target (alpha 255 = opaque, lower = translucent), limited by the clip;
+// fb_fill_rect_alpha blends a colour over what is there.
+void fb_set_target(uint32_t *pixels, int w, int h, int org_x, int org_y);
+void fb_reset_target(void);
+uint64_t fb_surface_pixels_bytes(int w, int h);
+void fb_composite(int x, int y, int w, int h, const uint32_t *src, int src_stride, int alpha);
+void fb_fill_rect_alpha(int x, int y, int w, int h, uint32_t rgb, int alpha);
+
 // Vertical gradient from top to bottom inside the rectangle.
 void fb_fill_gradient(int x, int y, int w, int h, uint32_t top_rgb, uint32_t bottom_rgb);
 

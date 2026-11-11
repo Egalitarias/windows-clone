@@ -499,10 +499,10 @@ static void taskbar_click(int x) {
         wm_minimize(win);
       } else {
         if (top) {
-          wm_invalidate_window(top);
+          wm_damage_window(top);
         }
         wm_raise(win);
-        wm_invalidate_window(win);
+        wm_damage_window(win);
       }
       return;
     }
