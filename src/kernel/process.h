@@ -2,6 +2,7 @@
 #define KERNEL_PROCESS_H
 
 #include "console.h"
+#include "tcb.h"
 
 // User program loader: ELF64 executables and flat binaries (see src/user/user.ld).
 //
@@ -47,7 +48,6 @@ typedef struct {
   void *kstack_alloc;         // kmalloc'd block holding the kernel stack
   uint64_t kstack_top;
   uint64_t cr3;               // physical address of the process's PML4 (its own address space)
-  uint64_t saved_rsp;         // kernel context to return to when the program exits
   uint64_t initial_sp;        // user RSP at the entry point (0 = the default for ELF programs)
   int is_pe;                  // a Windows (PE) program: has a heap block and the Win32 DLL
   uint64_t heap_phys, heap_pages;   // PE programs: the heap at PE_HEAP_BASE (the Win32 runtime manages it)
@@ -57,9 +57,14 @@ typedef struct {
   void *io;                   // the program's console (set by process_spawn), or 0
   const char *arg;            // argument string given to process_spawn_arg, or 0
   void *files;                // open-file table (sysfile.c), or 0
-  int running;                // inside process_run (user code or one of its syscalls)
-  int in_syscall;             // between process_syscall_enter() and process_syscall_leave()
-  unsigned int preempt_level; // scheduler_preempt_level() when the current syscall began
+  task_uctx_t fb_uctx;        // run state when the program is not run by a scheduler task (see tcb.h)
+  // Threads (PE programs; see process_thread_create).
+  uint64_t die_stub;          // WIN32.DLL's __winclone_die: a thread killed while in user mode is redirected there
+  uint64_t tls_off, tls_len, tls_total;   // the program's TLS template: offset in the image, bytes, bytes with zero fill
+  void *threads;              // the extra threads' records (kmalloc'd table), or 0
+  int live_threads;           // extra thread tasks that have not finished
+  void *main_tcb;             // the task running the main thread
+  int exiting;                // the process is ending (exit() or a fault in some thread)
 } process_t;
 
 // Load the program (ELF or flat binary) at `path` (like "/APPS/HELLO.BIN", searched on every
@@ -77,6 +82,17 @@ int process_create(const char *path, process_t *p);
 // For SYS_PEINFO: the current process is a PE program: fills out[0..3] = heap base, heap
 // size, program image base, Win32 DLL base and returns 1; 0 for any other program.
 int process_pe_info(uint64_t out[4]);
+
+// Threads (PE programs). Each extra thread is a scheduler task that runs in the program's address
+// space with its own user stack, kernel stack and thread block (TEB); the program's main thread is
+// the task that called process_run. thread_create(start_stub, fn, arg) starts `start_stub` in
+// the new thread, which finds fn and arg at gs:[0x300] and gs:[0x308]; it returns the thread id or
+// a negative errno. Ending the process (exit(), a fault, the main thread returning) ends every
+// thread: the others are flagged, woken, and redirected to exit from user mode.
+int64_t process_thread_create(uint64_t start_stub, uint64_t fn, uint64_t arg);
+void process_thread_exit(uint64_t code);
+// Nonzero when this thread has been asked to end: blocking syscalls then return early.
+int process_kill_pending(void);
 
 // Run the program to completion. Blocks until it calls exit(); the exit code is
 // stored in p->exit_code and returned.

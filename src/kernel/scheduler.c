@@ -5,7 +5,7 @@
 #include "irqlock.h"
 #include "timer.h"
 
-#define SCHEDULER_MAX_TASKS 8U
+#define SCHEDULER_MAX_TASKS 32U
 #define SCHEDULER_PRIORITY_LEVELS 256U
 #define SCHEDULER_INVALID_INDEX SCHEDULER_MAX_TASKS
 #define SCHEDULER_INITIAL_RFLAGS 0x202ULL
@@ -606,7 +606,8 @@ static void scheduler_wake_sleepers(void) {
     // Sleepers wake at their deadline; an input wait with a non-zero wake_ms is a
     // wait with a timeout and wakes then too (or earlier, on scheduler_wake_all).
     if (t != 0 && t->state == TASK_STATE_BLOCKED &&
-        (t->wait_kind == TASK_WAIT_SLEEP || (t->wait_kind == TASK_WAIT_INPUT && t->wake_ms != 0)) &&
+        (t->wait_kind == TASK_WAIT_SLEEP ||
+         ((t->wait_kind == TASK_WAIT_INPUT || t->wait_kind == TASK_WAIT_FUTEX) && t->wake_ms != 0)) &&
         now >= t->wake_ms) {
       scheduler_task_unblock(t);
     }

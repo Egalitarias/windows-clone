@@ -665,6 +665,10 @@ static int64_t event_wait(uint64_t id, uint64_t out_uaddr, uint64_t block, uint6
       scheduler_wait_end();
       return SYSCALL_EBADF;                         // closed, and nothing is left to read
     }
+    if (process_kill_pending()) {
+      scheduler_wait_end();
+      return SYSCALL_EINTR;
+    }
     // Same pattern as read(0): leave the run queue until the next event. Interrupts
     // are off, so nothing can be pushed between the check and the block.
     if (deadline != 0 && timer_get_ms() >= deadline) {

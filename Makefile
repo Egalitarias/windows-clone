@@ -482,8 +482,8 @@ WIN32_CRT_LIBPATH := "-libpath:$(MSVC_ROOT)/lib/x64" "-libpath:$(WINSDK_ROOT)/Li
 # The C runtime part of the runtime uses SSE (doubles travel in XMM registers) and declares the
 # UCRT functions itself: the UCRT headers would mark them dllimport.
 WIN32_SSE_CFLAGS := $(filter-out -mno-sse,$(WIN32_CFLAGS)) -fno-math-errno -D_CRT_SECURE_NO_WARNINGS
-WIN32_RT_OBJS := $(WIN32_DIR)/kernel32.obj $(WIN32_DIR)/user32.obj $(WIN32_DIR)/gdi32.obj $(WIN32_DIR)/crt.obj $(WIN32_DIR)/crtfmt.obj $(WIN32_DIR)/crtmath.obj
-WIN32_TESTS := hello badimp wingui winmsg fptest crttest
+WIN32_RT_OBJS := $(WIN32_DIR)/kernel32.obj $(WIN32_DIR)/user32.obj $(WIN32_DIR)/gdi32.obj $(WIN32_DIR)/crt.obj $(WIN32_DIR)/crtfmt.obj $(WIN32_DIR)/crtmath.obj $(WIN32_DIR)/threads.obj $(WIN32_DIR)/threads.obj
+WIN32_TESTS := hello badimp wingui winmsg fptest crttest thrtest
 WIN32_EXES := $(patsubst %,$(WIN32_DIR)/%.exe,$(WIN32_TESTS))
 
 $(WIN32_DIR)/%.obj: src/win32/%.c src/win32/internal.h
@@ -531,6 +531,13 @@ $(WIN32_DIR)/t_crttest.obj: src/win32/tests/crttest.c
 $(WIN32_DIR)/crttest.exe: $(WIN32_DIR)/t_crttest.obj
 	$(UEFI_LLD_LINK) -subsystem:console -entry:mainCRTStartup -nodefaultlib -out:$@ $^ $(WIN32_LIBPATH) $(WIN32_CRT_LIBPATH) msvcrt.lib vcruntime.lib ucrt.lib kernel32.lib
 
+$(WIN32_DIR)/t_thrtest.obj: src/win32/tests/thrtest.c
+	@mkdir -p $(WIN32_DIR)
+	$(CC) --target=x86_64-pc-windows-msvc -O1 -fno-stack-protector -Wall -Wno-microsoft -Wno-deprecated-declarations $(WIN32_INCLUDES) -c $< -o $@
+
+$(WIN32_DIR)/thrtest.exe: $(WIN32_DIR)/t_thrtest.obj
+	$(UEFI_LLD_LINK) -subsystem:console -entry:mainCRTStartup -nodefaultlib -out:$@ $^ $(WIN32_LIBPATH) $(WIN32_CRT_LIBPATH) msvcrt.lib vcruntime.lib ucrt.lib kernel32.lib
+
 $(WIN32_DIR)/winmsg.exe: $(WIN32_DIR)/t_winmsg.obj $(WIN32_DIR)/t_crt.obj $(WIN32_DIR)/t_entry_gui.obj
 	$(UEFI_LLD_LINK) -subsystem:windows -entry:WinMainCRTStartup -nodefaultlib -out:$@ $^ $(WIN32_LIBPATH) kernel32.lib user32.lib
 
@@ -544,6 +551,7 @@ win32-apps: $(WIN32_DIR)/win32.dll $(WIN32_EXES)
 	cp $(WIN32_DIR)/winmsg.exe $(UEFI_DIR)/APPS/WINMSG.EXE
 	cp $(WIN32_DIR)/fptest.exe $(UEFI_DIR)/APPS/WINFP.EXE
 	cp $(WIN32_DIR)/crttest.exe $(UEFI_DIR)/APPS/WINCRT.EXE
+	cp $(WIN32_DIR)/thrtest.exe $(UEFI_DIR)/APPS/WINTHR.EXE
 else
 win32-apps:
 	@echo "win32-apps: Windows SDK or Visual Studio headers not found; skipping the Win32 runtime and PE test programs (see WINSDK_ROOT in the Makefile)"

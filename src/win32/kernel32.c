@@ -137,7 +137,9 @@ static void heap_init(void) {
   }
 }
 
-void *rt_alloc(size_t n) {
+static rtlock_t g_heap_lock;
+
+static void *rt_alloc_locked(size_t n) {
   uint64_t need;
   uint8_t *p;
 
@@ -176,6 +178,15 @@ void *rt_alloc(size_t n) {
   return p;
 }
 
+void *rt_alloc(size_t n) {
+  void *p;
+
+  rt_lock(&g_heap_lock);
+  p = rt_alloc_locked(n);
+  rt_unlock(&g_heap_lock);
+  return p;
+}
+
 static int heap_owns(const void *p) {
   heap_init();
   return (const uint8_t *)p >= g_heap + HDR && (const uint8_t *)p < g_heap_top && (((uintptr_t)p) & 15u) == 0;
@@ -183,7 +194,9 @@ static int heap_owns(const void *p) {
 
 void rt_free(void *p) {
   if (p != 0 && heap_owns(p)) {
+    rt_lock(&g_heap_lock);
     ((hdr_t *)((uint8_t *)p - HDR))->size &= ~1ull;
+    rt_unlock(&g_heap_lock);
   }
 }
 
@@ -293,10 +306,9 @@ EXPORT BOOL WINAPI GlobalUnlock(HGLOBAL p) { (void)p; return TRUE; }
 
 // ---- Last error ------------------------------------------------------------------------------
 
-static DWORD g_last_error;
-
-EXPORT DWORD WINAPI GetLastError(void) { return g_last_error; }
-EXPORT void WINAPI SetLastError(DWORD e) { g_last_error = e; }
+// The last error lives in the thread block (TEB offset 0x68): one per thread.
+EXPORT DWORD WINAPI GetLastError(void) { return *(DWORD *)(rt_teb() + 0x68); }
+EXPORT void WINAPI SetLastError(DWORD e) { *(DWORD *)(rt_teb() + 0x68) = e; }
 
 static DWORD map_error(sl_t e) {
   switch (e) {
@@ -322,12 +334,9 @@ EXPORT DECLSPEC_NORETURN VOID WINAPI ExitProcess(UINT code) {
   }
 }
 
-EXPORT DECLSPEC_NORETURN VOID WINAPI ExitThread(DWORD code) { ExitProcess(code); }
 EXPORT BOOL WINAPI TerminateProcess(HANDLE h, UINT code) { (void)h; ExitProcess(code); return FALSE; }
 EXPORT HANDLE WINAPI GetCurrentProcess(void) { return (HANDLE)(intptr_t)-1; }
-EXPORT HANDLE WINAPI GetCurrentThread(void) { return (HANDLE)(intptr_t)-2; }
 EXPORT DWORD WINAPI GetCurrentProcessId(void) { return (DWORD)sc3(KS_GETPID, 0, 0, 0); }
-EXPORT DWORD WINAPI GetCurrentThreadId(void) { return (DWORD)sc3(KS_GETPID, 0, 0, 0); }
 
 // Reached when the program's entry point returns: the loader put its address on the stack.
 EXPORT_SPECIAL __attribute__((naked)) void __winclone_return(void) {
@@ -480,50 +489,13 @@ EXPORT VOID WINAPI GetSystemInfo(LPSYSTEM_INFO si) {
   si->wProcessorArchitecture = PROCESSOR_ARCHITECTURE_AMD64;
 }
 
-// ---- Locks (one thread: nothing to do) and thread-local storage ---------------------------------
-
-EXPORT VOID WINAPI InitializeCriticalSection(LPCRITICAL_SECTION c) { memset(c, 0, sizeof(*c)); }
-EXPORT BOOL WINAPI InitializeCriticalSectionEx(LPCRITICAL_SECTION c, DWORD n, DWORD f) { (void)n; (void)f; memset(c, 0, sizeof(*c)); return TRUE; }
-EXPORT VOID WINAPI EnterCriticalSection(LPCRITICAL_SECTION c) { (void)c; }
-EXPORT VOID WINAPI LeaveCriticalSection(LPCRITICAL_SECTION c) { (void)c; }
-EXPORT BOOL WINAPI TryEnterCriticalSection(LPCRITICAL_SECTION c) { (void)c; return TRUE; }
-EXPORT VOID WINAPI DeleteCriticalSection(LPCRITICAL_SECTION c) { (void)c; }
-
-static void *g_tls[64];
-static int g_tls_used[64];
-
-EXPORT DWORD WINAPI TlsAlloc(void) {
-  DWORD i;
-
-  for (i = 0; i < 64; ++i) {
-    if (!g_tls_used[i]) {
-      g_tls_used[i] = 1;
-      g_tls[i] = 0;
-      return i;
-    }
-  }
-  return TLS_OUT_OF_INDEXES;
-}
-
-EXPORT BOOL WINAPI TlsFree(DWORD i) { if (i < 64) { g_tls_used[i] = 0; return TRUE; } return FALSE; }
-EXPORT LPVOID WINAPI TlsGetValue(DWORD i) { SetLastError(0); return i < 64 ? g_tls[i] : 0; }
-EXPORT BOOL WINAPI TlsSetValue(DWORD i, LPVOID v) { if (i < 64) { g_tls[i] = v; return TRUE; } return FALSE; }
-
-EXPORT HANDLE WINAPI CreateThread(LPSECURITY_ATTRIBUTES a, SIZE_T s, LPTHREAD_START_ROUTINE f, LPVOID p, DWORD fl, LPDWORD id) {
-  (void)a; (void)s; (void)f; (void)p; (void)fl; (void)id;
-  SetLastError(ERROR_NOT_SUPPORTED);
-  return 0;
-}
-
-EXPORT DWORD WINAPI WaitForSingleObject(HANDLE h, DWORD ms) { (void)h; if (ms != 0 && ms != INFINITE) { sc3(KS_SLEEP, (sl_t)ms, 0, 0); } return WAIT_TIMEOUT; }
+// Locks, thread-local storage, threads and waiting: see threads.c.
 
 // ---- Time ----------------------------------------------------------------------------------------
 // There is no wall clock for programs yet: time counts from 2026-01-01 00:00 at boot.
 
 EXPORT DWORD WINAPI GetTickCount(void) { return (DWORD)sc3(KS_UPTIME, 0, 0, 0); }
 EXPORT ULONGLONG WINAPI GetTickCount64(void) { return (ULONGLONG)sc3(KS_UPTIME, 0, 0, 0); }
-EXPORT VOID WINAPI Sleep(DWORD ms) { sc3(KS_SLEEP, (sl_t)ms, 0, 0); }
-EXPORT BOOL WINAPI SwitchToThread(void) { sc3(KS_YIELD, 0, 0, 0); return TRUE; }
 
 EXPORT BOOL WINAPI QueryPerformanceFrequency(LARGE_INTEGER *f) { f->QuadPart = 1000000; return TRUE; }
 EXPORT BOOL WINAPI QueryPerformanceCounter(LARGE_INTEGER *c) { c->QuadPart = (LONGLONG)sc3(KS_UPTIME, 0, 0, 0) * 1000; return TRUE; }
@@ -726,13 +698,14 @@ int rt_vsnprintf(char *buf, size_t size, const char *fmt, va_list ap) {
 
 // ---- Handles, console and files -------------------------------------------------------------------
 
-enum { H_FREE = 0, H_CONIN, H_CONOUT, H_CONERR, H_FILE, H_FIND };
-
 typedef struct {
   int kind;
   int fd;
+  void *obj;                   // H_THREAD, H_EVENT, ...: the object (threads.c)
   char pattern[64];            // H_FIND: the file name pattern
 } hent_t;
+
+static rtlock_t g_h_lock;
 
 #define MAX_HANDLES 64
 static hent_t g_h[MAX_HANDLES];
@@ -766,15 +739,48 @@ static HANDLE h_alloc(int kind, int fd) {
   int i;
 
   h_setup();
+  rt_lock(&g_h_lock);
   for (i = 3; i < MAX_HANDLES; ++i) {
     if (g_h[i].kind == H_FREE) {
-      g_h[i].kind = kind;
       g_h[i].fd = fd;
+      g_h[i].obj = 0;
+      g_h[i].kind = kind;
+      rt_unlock(&g_h_lock);
       return h_make(i);
     }
   }
+  rt_unlock(&g_h_lock);
   SetLastError(ERROR_TOO_MANY_OPEN_FILES);
   return INVALID_HANDLE_VALUE;
+}
+
+HANDLE rt_handle_new(int kind, void *obj) {
+  HANDLE h = h_alloc(kind, -1);
+
+  if (h != INVALID_HANDLE_VALUE) {
+    h_get(h)->obj = obj;
+  }
+  return h;
+}
+
+void *rt_handle_obj(HANDLE h, int *kind) {
+  hent_t *e = h_get(h);
+
+  if (e == 0) {
+    return 0;
+  }
+  if (kind != 0) {
+    *kind = e->kind;
+  }
+  return e->obj;
+}
+
+void rt_handle_free(HANDLE h) {
+  hent_t *e = h_get(h);
+
+  if (e != 0) {
+    e->kind = H_FREE;
+  }
 }
 
 EXPORT HANDLE WINAPI GetStdHandle(DWORD which) {
@@ -946,6 +952,14 @@ EXPORT BOOL WINAPI CloseHandle(HANDLE h) {
   if (e == 0) {
     SetLastError(ERROR_INVALID_HANDLE);
     return FALSE;
+  }
+  if (e->kind >= H_THREAD) {
+    int kind = e->kind;
+    void *obj = e->obj;
+
+    e->kind = H_FREE;
+    rt_obj_close(kind, obj);
+    return TRUE;
   }
   if (e->kind == H_FILE || e->kind == H_FIND) {
     r = sc3(KS_CLOSE, e->fd, 0, 0);

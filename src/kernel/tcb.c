@@ -3,6 +3,7 @@
 #include "heap.h"
 #include "paging.h"
 #include "pmm.h"
+#include "string.h"
 #include "stack_guard.h"
 
 static TCB g_tcb_pool[TCB_MAX_TASKS];
@@ -90,6 +91,8 @@ static void tcb_free_slot(TCB *tcb) {
   tcb->cr3 = 0;
   tcb->kernel_rsp0 = 0;
   tcb->gs_base = 0;
+  memset(&tcb->uctx, 0, sizeof(tcb->uctx));
+  tcb->thread = 0;
   tcb->wait_kind = 0;
   tcb->wake_ms = 0;
   tcb->user_stack_base = 0;

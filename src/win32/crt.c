@@ -46,7 +46,6 @@
 #undef __toascii
 typedef struct cfile cfile_t;
 
-int rt_errno;
 static unsigned long g_doserrno;
 
 X int *_errno(void) { return &rt_errno; }
@@ -1254,6 +1253,7 @@ struct cfile {
   int wlen;
 };
 
+static rtlock_t g_crt_lock;                 // stdio: the stream table, the buffers and the file position
 #define FBUF 4096
 static cfile_t g_std[3];
 static cfile_t *g_open[64];
@@ -1320,15 +1320,20 @@ static void flush_all(void) {
 }
 
 X int fflush(cfile_t *f) {
+  int r = 0;
+
+  rt_lock(&g_crt_lock);
   if (f == 0) {
     flush_all();
-    return 0;
+  } else {
+    r = flush_w(f) ? 0 : -1;
   }
-  return flush_w(f) ? 0 : -1;
+  rt_unlock(&g_crt_lock);
+  return r;
 }
 X int _flushall(void) { flush_all(); return 0; }
 
-static size_t f_write(cfile_t *f, const void *buf, size_t n) {
+static size_t f_write_u(cfile_t *f, const void *buf, size_t n) {
   const char *p = (const char *)buf;
   size_t left = n;
 
@@ -1363,6 +1368,15 @@ static size_t f_write(cfile_t *f, const void *buf, size_t n) {
   return n - left;
 }
 
+static size_t f_write(cfile_t *f, const void *buf, size_t n) {
+  size_t r;
+
+  rt_lock(&g_crt_lock);
+  r = f_write_u(f, buf, n);
+  rt_unlock(&g_crt_lock);
+  return r;
+}
+
 static int f_fill(cfile_t *f) {
   DWORD got = 0;
 
@@ -1385,7 +1399,7 @@ static int f_fill(cfile_t *f) {
   return 1;
 }
 
-static int f_getc(cfile_t *f) {
+static int f_getc_u(cfile_t *f) {
   if (!f->readable) {
     f->err = 1;
     return -1;
@@ -1400,6 +1414,15 @@ static int f_getc(cfile_t *f) {
     return -1;
   }
   return f->rbuf[f->rpos++];
+}
+
+static int f_getc(cfile_t *f) {
+  int r;
+
+  rt_lock(&g_crt_lock);
+  r = f_getc_u(f);
+  rt_unlock(&g_crt_lock);
+  return r;
 }
 
 X int fgetc(cfile_t *f) { return f_getc(f); }
@@ -1484,7 +1507,7 @@ X size_t _fread_nolock(void *b, size_t s, size_t n, cfile_t *f) { return fread(b
 X size_t _fwrite_nolock(const void *b, size_t s, size_t n, cfile_t *f) { return fwrite(b, s, n, f); }
 X int _fflush_nolock(cfile_t *f) { return fflush(f); }
 
-static long long f_tell(cfile_t *f) {
+static long long f_tell_u(cfile_t *f) {
   LARGE_INTEGER zero, pos;
 
   if (f->is_std) {
@@ -1498,7 +1521,7 @@ static long long f_tell(cfile_t *f) {
   return pos.QuadPart - (f->rlen - f->rpos) - (f->ungot >= 0 ? 1 : 0);
 }
 
-static int f_seek(cfile_t *f, long long off, int whence) {
+static int f_seek_u(cfile_t *f, long long off, int whence) {
   LARGE_INTEGER d, np;
 
   if (f->is_std) {
@@ -1515,13 +1538,31 @@ static int f_seek(cfile_t *f, long long off, int whence) {
   return SetFilePointerEx(f->h, d, &np, whence == 0 ? FILE_BEGIN : (whence == 1 ? FILE_CURRENT : FILE_END)) ? 0 : -1;
 }
 
+static long long f_tell(cfile_t *f) {
+  long long r;
+
+  rt_lock(&g_crt_lock);
+  r = f_tell_u(f);
+  rt_unlock(&g_crt_lock);
+  return r;
+}
+
+static int f_seek(cfile_t *f, long long off, int whence) {
+  int r;
+
+  rt_lock(&g_crt_lock);
+  r = f_seek_u(f, off, whence);
+  rt_unlock(&g_crt_lock);
+  return r;
+}
+
 X int fseek(cfile_t *f, int32_t off, int whence) { return f_seek(f, off, whence); }
 X int _fseeki64(cfile_t *f, long long off, int whence) { return f_seek(f, off, whence); }
 X int32_t ftell(cfile_t *f) { return (int32_t)f_tell(f); }
 X long long _ftelli64(cfile_t *f) { return f_tell(f); }
 X void rewind(cfile_t *f) { f_seek(f, 0, 0); f->err = 0; }
 
-X int fclose(cfile_t *f) {
+static int fclose_u(cfile_t *f) {
   int i, r = 0;
 
   if (f == 0) {
@@ -1543,7 +1584,16 @@ X int fclose(cfile_t *f) {
   return r;
 }
 
-X cfile_t *fopen(const char *path, const char *mode) {
+X int fclose(cfile_t *f) {
+  int r;
+
+  rt_lock(&g_crt_lock);
+  r = fclose_u(f);
+  rt_unlock(&g_crt_lock);
+  return r;
+}
+
+static cfile_t *fopen_u(const char *path, const char *mode) {
   cfile_t *f;
   int plus = 0, i;
   DWORD access, disp;
@@ -1598,6 +1648,15 @@ X cfile_t *fopen(const char *path, const char *mode) {
       break;
     }
   }
+  return f;
+}
+
+X cfile_t *fopen(const char *path, const char *mode) {
+  cfile_t *f;
+
+  rt_lock(&g_crt_lock);
+  f = fopen_u(path, mode);
+  rt_unlock(&g_crt_lock);
   return f;
 }
 

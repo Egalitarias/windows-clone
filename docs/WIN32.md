@@ -51,8 +51,7 @@ subset of the Win32 API.
 
 Not supported: structured exception handling (an exception ends the process like any other
 fault; the `.pdata` tables are ignored and `__C_specific_handler` always says "keep looking"), C++
-exceptions (`_CxxThrowException` ends the program with a message), threads (`CreateThread`
-fails), COM.
+exceptions (`_CxxThrowException` ends the program with a message), COM.
 
 Each program runs in its own address space as before; a PE program next to ELF programs is
 fine. The kernel keeps each task's x87/SSE state apart (FXSAVE/FXRSTOR at every task switch,
@@ -68,8 +67,7 @@ headers). Highlights:
   `GlobalAlloc`, `VirtualAlloc/Free`); files and the console (`GetStdHandle`, `ReadFile`, `WriteFile`,
   `WriteConsole*`, `CreateFileA`, `CloseHandle`, `SetFilePointer`, `GetFileSize`, `DeleteFileA`,
   `CreateDirectoryA`, `GetFileAttributesA`, `FindFirstFileA`/`FindNextFileA`); time (`GetTickCount*`,
-  `QueryPerformanceCounter`, `Sleep`, `GetSystemTime`, `GetLocalTime`); locks and TLS slots (single
-  thread, so locks do nothing); string helpers (`lstr*`, `MultiByteToWideChar` for ASCII); `GetLastError`.
+  `QueryPerformanceCounter`, `Sleep`, `GetSystemTime`, `GetLocalTime`); threads, locks and TLS slots (see "Threads"); string helpers (`lstr*`, `MultiByteToWideChar` for ASCII); `GetLastError`.
   Paths are translated: `C:\DIR\FILE.TXT` is `/DIR/FILE.TXT` on the default volume.
 - **user32**: `RegisterClass[Ex]A`, `CreateWindowExA`, `ShowWindow`, `UpdateWindow`, `DestroyWindow`,
   `GetMessage`, `PeekMessage`, `TranslateMessage`, `DispatchMessage`, `PostMessage`, `SendMessage`,
@@ -93,7 +91,7 @@ Missing on purpose (for now): child windows and the standard controls (`BUTTON`,
 dialogs, memory DCs and bitmaps (`CreateCompatibleDC`, `BitBlt`), clipboard, resources, fonts other
 than the built-in one, right and middle mouse buttons, wide-character (`W`) window functions
 (only `DefWindowProcW`, `GetMessageW`, ...), real wall-clock time (time counts from 2026-01-01 at
-boot), environment variables, and anything about threads or sockets.
+boot), environment variables, and anything about sockets.
 
 ## The C runtime
 
@@ -136,6 +134,49 @@ does not have (`FlsAlloc` and `EncodePointer` are there, the locale, code page a
 functions are not); C++ (`msvcp140`: `std::string`, iostreams; `operator new` works through
 `malloc`, but exceptions do not); wide `printf` is narrowed to ASCII; text mode does not
 translate `\r\n`; `fopen` takes the same translated paths as `CreateFileA`.
+
+## Threads
+
+`CreateThread`, `_beginthreadex` and friends work: a program can run up to 16 threads (the main
+one and 15 more), and the system as a whole 32 tasks (`SCHEDULER_MAX_TASKS`, which was 8).
+
+**In the kernel** (`src/kernel/process.c`), an extra thread is one more scheduler task that runs in
+the program's address space: `SYS_THREAD_CREATE(start_stub, fn, arg)` allocates a 64 KiB user
+stack and a thread block (a TEB with its own copy of the TLS data, mapped next to the stack in
+the process's page tables, slot `i` at `THREAD_VBASE + i * 128 KiB`), a kernel stack, and starts
+a task whose function enters ring 3 at `start_stub` with `IA32_GS_BASE` pointing at the new TEB
+(`TCB.gs_base`; the scheduler loads it at every switch). Per-task user-mode state that used to
+be per-process (where an exit or fault returns to, "inside a syscall", the preempt level) lives
+in `TCB.uctx`, so a fault in any thread's syscall unwinds that thread.
+
+Ending a process ends all its threads. When the main thread returns, calls `exit`/`ExitProcess`,
+or any thread faults or calls `exit`, the others are asked to end (`request_kill`): a task blocked
+in a syscall is woken and its wait returns `-EINTR`, a task that was preempted in ring 3 has its
+saved frame redirected to WIN32.DLL's `__winclone_die` (a bare `syscall` with `rax` = exit and
+`rdi` = the exit code), and the syscall exit path checks the flag on the way out. `process_destroy`
+then waits until every thread task has gone before it frees the address space, so nothing is left
+running in freed memory. `ExitThread` ends only the calling thread (on the main thread it ends the
+program); the thread's exit code is kept in user mode.
+
+**Blocking** is one kernel primitive, a futex: `SYS_FUTEX_WAIT(addr, expected, timeout_ms)` blocks
+while the 32-bit word at `addr` still holds `expected` (checked with interrupts off, so a wake-up
+cannot be lost), `SYS_FUTEX_WAKE` wakes every waiter (they re-check, so this costs nothing but time).
+
+**In WIN32.DLL** (`src/win32/threads.c`) everything else is built on that. All waiting goes through
+one futex word that every state change increments: a waiter reads it, checks its condition, and
+sleeps until the word changes or the timeout passes. This gives: thread, event (manual and
+auto-reset), mutex (recursive, owner-checked) and semaphore handles with `WaitForSingleObject`,
+`WaitForMultipleObjects` (any or all), `GetExitCodeThread`, `CREATE_SUSPENDED`/`ResumeThread`;
+`CRITICAL_SECTION` (works as `InitializeCriticalSection` or zero-initialised),
+`SRWLOCK`, `CONDITION_VARIABLE`, `InitOnceExecuteOnce`, `WaitOnAddress`; `Sleep`; `TlsAlloc` slots in
+the TEB, so each thread has its own; `GetLastError` and `errno` per thread; `_beginthread[ex]`. The
+runtime's own shared state is locked: the heap, the handle table, stdio streams, and the
+float-printing buffers.
+
+Not supported: `SuspendThread` and `TerminateThread` (fail), thread priorities and affinity (ignored),
+fibers, thread pools, APCs and alertable waits, window messages across threads (create a window
+and run its message loop on one thread), `strtok`/`gmtime`/`asctime` static buffers are shared
+by all threads, `DLL_THREAD_ATTACH` callbacks.
 
 ## Building programs for it
 
@@ -182,6 +223,13 @@ finds `NAME.BIN` or `NAME.EXE` in `\APPS`, or `run /PATH/NAME.EXE`).
 virtual FAT drive is not a good place for that). It runs, on the real desktop:
 
 - `WINHELLO.EXE`: console output, the command line, the heap, a file round trip (exit code 7);
+- `WINTHR.EXE` (`tests/thrtest.c`, `/MD`): 45 checks of threads: join and exit codes, a critical
+  section and interlocked counters over four threads (80000 increments each way), auto-reset and
+  manual events, a bounded producer/consumer with a mutex and semaphores, per-thread TLS, last
+  error and `errno`, four threads hammering `malloc`/`sprintf` with floats, SRW lock + condition
+  variable + `InitOnce`, timeouts and suspended start, 40 threads in a row. Run with an argument
+  it ends in other ways with four threads spinning or waiting: the main thread returns (exit code
+  3), a thread calls `exit(5)`, a thread writes to address 0 (exit code 270);
 - `WINCRT.EXE` (`tests/crttest.c`, built with `/MD`): 119 checks of the C runtime: `printf` (integers,
   exact doubles, widths, wide strings), `sscanf`, string functions, `strtod`/`strtol`, math,
   `malloc`/`qsort`/`bsearch`, file I/O round trips, `gmtime`/`strftime`/`mktime`, `setjmp`/`longjmp`,
@@ -200,7 +248,7 @@ screenshot (`python scripts/qemu-screenshot.py out/run/shot.png 28`).
 
 ## Limits worth knowing
 
-- One thread. Anything that waits for another thread or process never wakes up.
+- At most 15 extra threads per program, 64 KiB of stack each (the main thread has 16 KiB), 32 tasks on the whole system.
 - A 16 KiB stack: the CRT's `printf` is frugal, but deep recursion or big local arrays will fault.
 - The 2 MiB heap and 16 KiB stack are fixed; a program that needs more fails its allocations.
 - Programs larger than about 900 KB (together with the runtime) do not fit the load window.

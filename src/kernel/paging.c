@@ -504,6 +504,40 @@ static void paging_unmap_user_locked(uint64_t virt_start, uint64_t size) {
   }
 }
 
+// Remove user mappings from the address space `cr3` (not necessarily the active one).
+static void paging_unmap_user_in_locked(uint64_t cr3, uint64_t virt_start, uint64_t size) {
+  uint64_t *pml4 = (uint64_t *)(uintptr_t)cr3;
+  uint64_t addr = align_down(virt_start, PAGE_SIZE_BYTES);
+  uint64_t end = align_up(virt_start + size, PAGE_SIZE_BYTES);
+
+  if (cr3 == 0 || cr3 == (uint64_t)(uintptr_t)g_pml4 || virt_start >= USER_VA_LIMIT) {
+    return;
+  }
+  for (; addr < end && addr < USER_VA_LIMIT; addr += PAGE_SIZE_BYTES) {
+    uint64_t entry = pml4[page_index(addr, 39)];
+    uint64_t *t;
+
+    if ((entry & PAGE_PRESENT) == 0) {
+      continue;
+    }
+    t = (uint64_t *)(uintptr_t)(entry & 0x000FFFFFFFFFF000ULL);
+    entry = t[page_index(addr, 30)];
+    if ((entry & PAGE_PRESENT) == 0) {
+      continue;
+    }
+    t = (uint64_t *)(uintptr_t)(entry & 0x000FFFFFFFFFF000ULL);
+    entry = t[page_index(addr, 21)];
+    if ((entry & PAGE_PRESENT) == 0) {
+      continue;
+    }
+    t = (uint64_t *)(uintptr_t)(entry & 0x000FFFFFFFFFF000ULL);
+    t[page_index(addr, 12)] = 0;
+    if (read_cr3() == cr3) {
+      __asm__ volatile("invlpg (%0)" : : "r"((void *)(uintptr_t)addr) : "memory");
+    }
+  }
+}
+
 // ---- Locking ------------------------------------------------------------------
 // The page tables (the kernel's shared lower levels, the table pool, and the PML4
 // copy made for a new address space) are edited from several tasks and the timer
@@ -562,6 +596,13 @@ void paging_destroy_address_space(uint64_t cr3) {
   uint64_t flags = irq_save();
 
   paging_destroy_address_space_locked(cr3);
+  irq_restore(flags);
+}
+
+void paging_unmap_user_in(uint64_t cr3, uint64_t virt_start, uint64_t size) {
+  uint64_t flags = irq_save();
+
+  paging_unmap_user_in_locked(cr3, virt_start, size);
   irq_restore(flags);
 }
 

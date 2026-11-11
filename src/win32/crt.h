@@ -14,7 +14,9 @@
 #define _CRTIMP __declspec(dllexport)
 #include "internal.h"
 
-extern int rt_errno;
+// errno, per thread (a TEB field).
+static inline int *rt_errno_ptr(void) { return (int *)(rt_teb() + 0x310); }
+#define rt_errno (*rt_errno_ptr())
 
 #define RT_EDOM   33
 #define RT_ERANGE 34

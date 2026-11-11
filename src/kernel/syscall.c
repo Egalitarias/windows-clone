@@ -126,6 +126,10 @@ static int64_t sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
       scheduler_wait_end();
       return 0;
     }
+    if (process_kill_pending()) {
+      scheduler_wait_end();
+      return SYSCALL_EINTR;
+    }
     // Leave the run queue until input arrives (process_input_push wakes us).
     // Interrupts are off, so nothing can push between the check and the block.
     scheduler_block_current(TASK_WAIT_INPUT, 0);
@@ -150,12 +154,58 @@ static int64_t sys_sleep(uint64_t ms) {
       scheduler_wait_end();
       return (int64_t)(now - start);
     }
+    if (process_kill_pending()) {
+      scheduler_wait_end();
+      return SYSCALL_EINTR;
+    }
     // Leave the run queue; the timer tick wakes us at the deadline. Without a
     // running scheduler this is a plain halt until the tick advances.
     if (scheduler_is_running()) {
       scheduler_block_current(TASK_WAIT_SLEEP, start + ms);
     }
     __asm__ volatile("sti; hlt; cli" : : : "memory");
+  }
+}
+
+// Futex: wait while the 32-bit word at `addr` still holds `expected`. Waiters are woken by any
+// futex_wake (all of them: the caller re-checks its condition), by the timeout, or by a request
+// to end the thread. Interrupts are off, so nothing can change the word between the check and the block.
+static int64_t sys_futex_wait(uint64_t addr, uint64_t expected, uint64_t timeout_ms) {
+  uint64_t deadline = 0;
+  TCB *self = scheduler_current_tcb();
+
+  if ((addr & 3ULL) != 0 || !paging_user_range_ok(addr, 4)) {
+    return SYSCALL_EFAULT;
+  }
+  if (*(volatile uint32_t *)(uintptr_t)addr != (uint32_t)expected) {
+    return SYSCALL_EAGAIN;
+  }
+  if (timeout_ms == 0) {
+    return SYSCALL_ETIMEDOUT;
+  }
+  if (timeout_ms != ~0ULL) {
+    deadline = timer_get_ms() + timeout_ms;
+    if (deadline == 0) {
+      deadline = 1;
+    }
+  }
+  if (self == 0 || !scheduler_is_running()) {
+    return SYSCALL_ETIMEDOUT;                         // nobody could ever wake us
+  }
+  for (;;) {
+    if (process_kill_pending()) {
+      scheduler_wait_end();
+      return SYSCALL_EINTR;
+    }
+    scheduler_block_current(TASK_WAIT_FUTEX, deadline);
+    __asm__ volatile("sti; hlt; cli" : : : "memory");
+    if (self->wait_kind != TASK_WAIT_FUTEX) {          // woken (or the deadline passed)
+      scheduler_wait_end();
+      if (process_kill_pending()) {
+        return SYSCALL_EINTR;
+      }
+      return (deadline != 0 && timer_get_ms() >= deadline) ? SYSCALL_ETIMEDOUT : 0;
+    }
   }
 }
 
@@ -191,6 +241,16 @@ static int64_t syscall_dispatch_inner(uint64_t nr, uint64_t a1, uint64_t a2, uin
       for (;;) {
         __asm__ volatile("hlt");
       }
+    case SYS_THREAD_CREATE:
+      return process_thread_create(a1, a2, a3);
+    case SYS_THREAD_EXIT:
+      process_thread_exit(a1);
+      return SYSCALL_ENOSYS;
+    case SYS_FUTEX_WAIT:
+      return sys_futex_wait(a1, a2, a3);
+    case SYS_FUTEX_WAKE:
+      scheduler_wake_all(TASK_WAIT_FUTEX);
+      return 0;
     case SYS_WRITE:
       return sys_write(a1, a2, a3);
     case SYS_YIELD:

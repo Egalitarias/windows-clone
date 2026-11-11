@@ -31,6 +31,14 @@ static process_t *current_process(void) {
   return g_fallback;
 }
 
+// The run state of the task executing now (see task_uctx_t); a process that is not run by a
+// scheduler task keeps it in the process itself.
+static task_uctx_t *cur_uctx(process_t *p) {
+  TCB *self = scheduler_current_tcb();
+
+  return (self != 0 && self->address_space == p) ? &self->uctx : &p->fb_uctx;
+}
+
 uint64_t process_current_pid(void) {
   process_t *p = current_process();
 
@@ -674,6 +682,9 @@ static int pe_setup_teb(process_t *p, uint8_t *m0) {
       console_printf("[PE] thread-local storage of %llu bytes does not fit\r\n", total);
       return 0;
     }
+    p->tls_off = start - lo;
+    p->tls_len = len;
+    p->tls_total = total;
     memcpy(teb + 4096, m0 + (start - lo), (size_t)len);
     pe_put(teb, 0x800, tlsdata);                                   // TLS slot 0
     memset(m0 + (idx - lo), 0, 4);                                 // _tls_index = 0
@@ -712,6 +723,9 @@ static int pe_finish(process_t *p, image_t *img) {
     // Entered through the runtime's start function, which runs the TLS callbacks and then the
     // program's own entry point (found with SYS_PEINFO).
     uint32_t start = pe_export(m1, &g_pe[1], "__winclone_start");
+    uint32_t die = pe_export(m1, &g_pe[1], "__winclone_die");
+
+    p->die_stub = die != 0 ? g_pe[1].load_base + die : 0;
 
     if (start != 0) {
       img->entry = g_pe[1].load_base + start;
@@ -757,9 +771,11 @@ static int pe_setup(const uint8_t *head, uint64_t have, uint64_t size, image_t *
 static int process_create_locked(const char *path, process_t *p) {
   fat_volume_t *vol = 0;
   fat_dirent_t ent;
-  fat_file_t file, dll_file;
-  image_t img;
-  static uint8_t head[4096];                    // process_create holds the preempt lock, so one copy will do
+  // Tasks have 4 KiB stacks, and process_create holds the preempt lock, so one copy of the big
+  // locals will do (the image description alone is over a kilobyte).
+  static fat_file_t file, dll_file;
+  static image_t img;
+  static uint8_t head[4096];
   uint32_t got = 0, head_len = 0;
   int is_pe = 0;
   uint64_t stack_virt = PROCESS_STACK_TOP - (uint64_t)PROCESS_STACK_PAGES * 4096ULL;
@@ -914,13 +930,249 @@ int process_create(const char *path, process_t *p) {
   return rc;
 }
 
-// Called by the exit syscall on the process's kernel stack: jump back into
-// process_run's caller. Never returns.
-static void process_exit_handler(uint64_t code) {
+// ---- Threads --------------------------------------------------------------------------------
+
+#define THREAD_VBASE        0x00007F0001000000ULL   // slot i: a guard page, the stack, then the TEB pages
+#define THREAD_STRIDE       0x20000ULL
+#define THREAD_MAX          15
+#define THREAD_STACK_PAGES  16U
+#define THREAD_PAGES        (THREAD_STACK_PAGES + PE_RESERVED_PAGES)
+
+typedef struct {
+  int used;
+  uint64_t tid;
+  void *proc;                 // the process_t
+  uint64_t phys;              // the stack pages, then the TEB pages
+  uint64_t stack_virt, stack_top;   // stack_top is also the TEB's address
+  uint64_t stub;              // user code the thread starts at
+  void *kstack_alloc;
+  uint64_t kstack_top;
+  TCB *tcb;                   // the task running the thread, once it has started
+} thread_t;
+
+static uint64_t g_next_tid = 0x1000;
+
+static void thread_wait_tick(void) {
+  __asm__ volatile("sti; hlt" : : : "memory");
+}
+
+// Ask `t` to end. A task blocked in a syscall is woken (its wait sees the flag); one that was
+// preempted in ring 3 is redirected to WIN32.DLL's __winclone_die, which makes the exit syscall.
+static void request_kill(process_t *p, TCB *t) {
+  uint64_t flags = irq_save();
+
+  t->uctx.kill = 1;
+  if (t->state == TASK_STATE_BLOCKED) {
+    scheduler_task_unblock(t);
+  } else if (t->state == TASK_STATE_READY && t->stack_pointer != 0 && p->die_stub != 0) {
+    uint64_t *frame = (uint64_t *)t->stack_pointer;
+
+    if ((frame[16] & 3ULL) == 3ULL) {             // saved CS: ring 3 (rax ... r15, rip, cs, rflags, rsp, ss)
+      frame[0] = SYS_EXIT;                        // rax
+      frame[5] = p->exit_code;                    // rdi
+      frame[15] = p->die_stub;                    // rip
+    }
+  }
+  irq_restore(flags);
+}
+
+// Start ending the process from `except`'s point of view: every other thread, the main one
+// included, is asked to end.
+static void kill_others(process_t *p, TCB *except) {
+  thread_t *tab = (thread_t *)p->threads;
+  int i;
+
+  p->exiting = 1;
+  if (p->main_tcb != 0 && (TCB *)p->main_tcb != except) {
+    request_kill(p, (TCB *)p->main_tcb);
+  }
+  for (i = 0; tab != 0 && i < THREAD_MAX; ++i) {
+    if (tab[i].used && tab[i].tcb != 0 && tab[i].tcb != except) {
+      request_kill(p, tab[i].tcb);
+    }
+  }
+}
+
+// The main thread is done: end the others and wait until their tasks have gone.
+static void threads_stop(process_t *p) {
+  if (p->threads == 0) {
+    return;
+  }
+  p->exiting = 1;
+  kill_others(p, scheduler_current_tcb());
+  while (p->live_threads > 0) {
+    thread_wait_tick();
+  }
+  kfree(p->threads);
+  p->threads = 0;
+}
+
+static void thread_put(uint8_t *page, uint32_t off, uint64_t v) {
+  put64le(page + off, v);
+}
+
+static int thread_task(void *arg) {
+  thread_t *t = (thread_t *)arg;
+  process_t *p = (process_t *)t->proc;
+  TCB *self = scheduler_current_tcb();
+  uint64_t flags, cr3 = p->cr3;
+
+  flags = irq_save();
+  memset(&self->uctx, 0, sizeof(self->uctx));
+  self->address_space = p;
+  self->cr3 = p->cr3;
+  self->kernel_rsp0 = t->kstack_top;
+  self->gs_base = t->stack_top;
+  self->thread = t;
+  t->tcb = self;
+  paging_activate(p->cr3);
+  gdt_set_kernel_stack(t->kstack_top);
+  cpu_set_gs_base(t->stack_top);
+  irq_restore(flags);
+
+  if (!p->exiting) {
+    self->uctx.running = 1;
+    user_run(t->stub, t->stack_top - 0x28ULL, &self->uctx.saved_rsp);
+    self->uctx.running = 0;
+  }
+
+  // Release what belongs to this thread; the process stays.
+  paging_unmap_user_in(cr3, t->stack_virt, (uint64_t)THREAD_PAGES * 4096ULL);
+  free_pages(t->phys, THREAD_PAGES);
+  kfree(t->kstack_alloc);
+  flags = irq_save();
+  self->address_space = 0;
+  self->cr3 = 0;
+  self->gs_base = 0;
+  self->kernel_rsp0 = 0;
+  self->thread = 0;
+  paging_activate(0);
+  cpu_set_gs_base(0);
+  t->used = 0;
+  t->tcb = 0;
+  p->live_threads--;                  // the last use of p: process_destroy may go on from here
+  irq_restore(flags);
+  return 0;
+}
+
+int64_t process_thread_create(uint64_t stub, uint64_t fn, uint64_t arg) {
+  process_t *p = current_process();
+  thread_t *tab, *t;
+  uint64_t base, flags;
+  uint8_t *teb, *kstack;
+  int i;
+
+  if (p == 0 || !p->is_pe || scheduler_current_tcb() == 0) {
+    return SYSCALL_ENOSYS;
+  }
+  if (p->exiting) {
+    return SYSCALL_EBUSY;
+  }
+  if (!paging_user_range_ok(stub, 1) || !paging_user_range_ok(fn, 1)) {
+    return SYSCALL_EFAULT;
+  }
+  if (p->threads == 0) {
+    p->threads = kmalloc(sizeof(thread_t) * THREAD_MAX);
+    if (p->threads == 0) {
+      return SYSCALL_ENOMEM;
+    }
+    memset(p->threads, 0, sizeof(thread_t) * THREAD_MAX);
+  }
+  tab = (thread_t *)p->threads;
+  for (i = 0; i < THREAD_MAX && tab[i].used; ++i) {
+  }
+  if (i == THREAD_MAX) {
+    return SYSCALL_ENOMEM;
+  }
+  t = &tab[i];
+  memset(t, 0, sizeof(*t));
+  t->used = 1;
+  t->proc = p;
+  t->stub = stub;
+  t->tid = g_next_tid++;
+  base = THREAD_VBASE + (uint64_t)i * THREAD_STRIDE;
+  t->stack_virt = base + 4096ULL;
+  t->stack_top = t->stack_virt + (uint64_t)THREAD_STACK_PAGES * 4096ULL;
+  t->phys = pmm_alloc_pages(THREAD_PAGES);
+  t->kstack_alloc = kmalloc(PROCESS_KSTACK_SIZE + 16U);
+  if (t->phys == 0 || t->kstack_alloc == 0 || !paging_map_range(t->phys, (uint64_t)THREAD_PAGES * 4096ULL) ||
+      !paging_map_user_in(p->cr3, t->stack_virt, t->phys, (uint64_t)THREAD_PAGES * 4096ULL, 1)) {
+    if (t->phys != 0) {
+      free_pages(t->phys, THREAD_PAGES);
+    }
+    if (t->kstack_alloc != 0) {
+      kfree(t->kstack_alloc);
+    }
+    t->used = 0;
+    return SYSCALL_ENOMEM;
+  }
+  zero_pages(t->phys, THREAD_PAGES);
+  kstack = (uint8_t *)(((uintptr_t)t->kstack_alloc + 15U) & ~(uintptr_t)15U);
+  t->kstack_top = (uint64_t)(uintptr_t)(kstack + PROCESS_KSTACK_SIZE);
+
+  // The thread block: like the main thread's (pe_setup_teb), with its own TLS copy.
+  teb = (uint8_t *)(uintptr_t)(t->phys + (uint64_t)THREAD_STACK_PAGES * 4096ULL);
+  thread_put(teb, 0x08, t->stack_top);
+  thread_put(teb, 0x10, t->stack_virt);
+  thread_put(teb, 0x30, t->stack_top);
+  thread_put(teb, 0x40, p->pid);
+  thread_put(teb, 0x48, t->tid);
+  thread_put(teb, 0x58, t->stack_top + 0x800ULL);
+  thread_put(teb, 0x60, PE_HEAP_BASE + 0x400ULL);
+  thread_put(teb, 0x300, fn);
+  thread_put(teb, 0x308, arg);
+  if (p->tls_total != 0) {
+    memcpy(teb + 4096, (const uint8_t *)(uintptr_t)(p->image_phys + p->tls_off), (size_t)p->tls_len);
+    thread_put(teb, 0x800, t->stack_top + 4096ULL);
+  }
+
+  flags = irq_save();
+  p->live_threads++;
+  irq_restore(flags);
+  if (!scheduler_add_task("thread", thread_task, t)) {
+    flags = irq_save();
+    p->live_threads--;
+    irq_restore(flags);
+    paging_unmap_user_in(p->cr3, t->stack_virt, (uint64_t)THREAD_PAGES * 4096ULL);
+    free_pages(t->phys, THREAD_PAGES);
+    kfree(t->kstack_alloc);
+    t->used = 0;
+    return SYSCALL_ENOMEM;
+  }
+  return (int64_t)t->tid;
+}
+
+int process_kill_pending(void) {
   process_t *p = current_process();
 
-  p->exit_code = code;
-  user_return(p->saved_rsp, code);
+  return p != 0 && cur_uctx(p)->kill;
+}
+
+// Called by the exit syscall on the process's kernel stack: jump back into process_run's
+// caller (or, for an extra thread, into its task function). An extra thread calling exit()
+// ends the whole program. Never returns.
+static void process_exit_handler(uint64_t code) {
+  process_t *p = current_process();
+  TCB *self = scheduler_current_tcb();
+
+  if (!p->exiting) {
+    p->exit_code = code;
+    kill_others(p, self);
+  }
+  user_return(cur_uctx(p)->saved_rsp, p->exit_code);
+}
+
+void process_thread_exit(uint64_t code) {
+  process_t *p = current_process();
+  TCB *self = scheduler_current_tcb();
+
+  if (p == 0) {
+    return;
+  }
+  if (self != 0 && self->thread != 0) {
+    user_return(self->uctx.saved_rsp, code);
+  }
+  process_exit_handler(code);                       // the main thread: the program ends
 }
 
 uint64_t process_run(process_t *p) {
@@ -940,11 +1192,15 @@ uint64_t process_run(process_t *p) {
   flags = irq_save();
   self = scheduler_current_tcb();
   if (self != 0) {
+    memset(&self->uctx, 0, sizeof(self->uctx));
+    self->thread = 0;
     self->address_space = p;
     self->cr3 = p->cr3;
     self->kernel_rsp0 = p->kstack_top;
     self->gs_base = p->gs_base;
+    p->main_tcb = self;
   } else {
+    memset(&p->fb_uctx, 0, sizeof(p->fb_uctx));
     g_fallback = p;
   }
   paging_activate(p->cr3);
@@ -953,9 +1209,13 @@ uint64_t process_run(process_t *p) {
   irq_restore(flags);
 
   // The program starts as if called: RSP is 8 mod 16 at function entry.
-  p->running = 1;
-  code = user_run(p->entry, p->initial_sp != 0 ? p->initial_sp : PROCESS_STACK_TOP - 8ULL, &p->saved_rsp);
-  p->running = 0;
+  if (p->is_pe && p->heap_phys != 0) {
+    put64le((uint8_t *)(uintptr_t)p->heap_phys + 0x40, p->pid);                 // TEB ClientId
+    put64le((uint8_t *)(uintptr_t)p->heap_phys + 0x48, p->pid);
+  }
+  cur_uctx(p)->running = 1;
+  code = user_run(p->entry, p->initial_sp != 0 ? p->initial_sp : PROCESS_STACK_TOP - 8ULL, &cur_uctx(p)->saved_rsp);
+  cur_uctx(p)->running = 0;
   p->exit_code = code;
   return code;
 }
@@ -967,6 +1227,7 @@ void process_destroy(process_t *p) {
   if (p == 0 || !p->loaded) {
     return;
   }
+  threads_stop(p);
   // Leave the address space before freeing it, and make sure the scheduler does
   // not switch back to it.
   flags = irq_save();
@@ -996,22 +1257,27 @@ void process_destroy(process_t *p) {
 int process_handle_user_fault(uint64_t vector, uint64_t error_code, uint64_t rip, uint64_t fault_addr) {
   process_t *p = current_process();
 
-  if (p == 0 || !p->running) {
+  if (p == 0 || !cur_uctx(p)->running) {
     return 0;
   }
   console_printf("[PROC] pid %llu killed: exception %llu (error 0x%llx) at rip 0x%llx, address 0x%llx\r\n",
                  p->pid, vector, error_code, rip, fault_addr);
-  p->exit_code = PROCESS_EXIT_FAULT_BASE + vector;
+  if (!p->exiting) {
+    p->exit_code = PROCESS_EXIT_FAULT_BASE + vector;
+    kill_others(p, scheduler_current_tcb());
+  }
   // We are on the process's kernel stack; unwind to the code that called process_run.
-  user_return(p->saved_rsp, p->exit_code);
+  user_return(cur_uctx(p)->saved_rsp, p->exit_code);
 }
 
 void process_syscall_enter(void) {
   process_t *p = current_process();
 
   if (p != 0) {
-    p->preempt_level = scheduler_preempt_level();
-    p->in_syscall = 1;
+    task_uctx_t *u = cur_uctx(p);
+
+    u->preempt_level = scheduler_preempt_level();
+    u->in_syscall = 1;
   }
 }
 
@@ -1019,7 +1285,13 @@ void process_syscall_leave(void) {
   process_t *p = current_process();
 
   if (p != 0) {
-    p->in_syscall = 0;
+    task_uctx_t *u = cur_uctx(p);
+
+    u->in_syscall = 0;
+    if (u->kill) {                                  // another thread ended the process: leave now
+      scheduler_preempt_restore(u->preempt_level);
+      user_return(u->saved_rsp, p->exit_code);
+    }
   }
 }
 
@@ -1031,17 +1303,20 @@ int process_handle_kernel_fault(uint64_t vector, uint64_t error_code, uint64_t r
   if (vector == 2 || vector == 8 || vector == 18) {
     return 0;
   }
-  if (p == 0 || !p->running || !p->in_syscall) {
+  if (p == 0 || !cur_uctx(p)->running || !cur_uctx(p)->in_syscall) {
     return 0;
   }
   console_printf("[PROC] pid %llu killed: kernel fault in syscall: exception %llu (error 0x%llx) at rip 0x%llx, address 0x%llx\r\n",
                  p->pid, vector, error_code, rip, fault_addr);
   // The aborted syscall may have been holding the FAT driver's preempt lock.
-  scheduler_preempt_restore(p->preempt_level);
-  p->in_syscall = 0;
-  p->exit_code = PROCESS_EXIT_FAULT_BASE + vector;
+  scheduler_preempt_restore(cur_uctx(p)->preempt_level);
+  cur_uctx(p)->in_syscall = 0;
+  if (!p->exiting) {
+    p->exit_code = PROCESS_EXIT_FAULT_BASE + vector;
+    kill_others(p, scheduler_current_tcb());
+  }
   // We are on the process's kernel stack; unwind to the code that called process_run.
-  user_return(p->saved_rsp, p->exit_code);
+  user_return(cur_uctx(p)->saved_rsp, p->exit_code);
 }
 
 // ---- Spawning programs as scheduler tasks -----------------------------------
@@ -2148,6 +2423,18 @@ static int pe_supervisor_task(void *arg) {
   h = process_spawn_arg("/APPS/WINCRT.EXE", "crt args");
   failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
                         "WINCRT.EXE: a program built with the dynamic C runtime (/MD) passed all its checks");
+  h = process_spawn("/APPS/WINTHR.EXE");
+  failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
+                        "WINTHR.EXE: threads, critical sections, events, mutexes, semaphores, TLS and a shared heap passed all checks");
+  h = process_spawn_arg("/APPS/WINTHR.EXE", "ret");
+  failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 3,
+                        "the main thread returned while four threads spun or waited: the program ended with its code");
+  h = process_spawn_arg("/APPS/WINTHR.EXE", "exit");
+  failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 5,
+                        "a thread called exit(5): the whole program ended with 5");
+  h = process_spawn_arg("/APPS/WINTHR.EXE", "fault");
+  failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == PROCESS_EXIT_FAULT_BASE + 14,
+                        "a thread took a page fault: the whole program ended with the fault code");
   h = process_spawn("/APPS/WINBAD.EXE");
   failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0xC0000139ULL,
                         "calling an import the runtime lacks ends the program with its own code");

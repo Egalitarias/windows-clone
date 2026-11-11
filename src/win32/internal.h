@@ -58,6 +58,10 @@ typedef long long sl_t;               // "long" is 32 bits in the Windows ABI: s
 #define KS_SCREEN      30
 #define KS_NOTIFY      31
 #define KS_PEINFO      32
+#define KS_THREAD_CREATE 33
+#define KS_THREAD_EXIT 34
+#define KS_FUTEX_WAIT  35
+#define KS_FUTEX_WAKE  36
 
 #define KS_O_RDONLY 0
 #define KS_O_WRONLY 1
@@ -108,6 +112,59 @@ typedef struct {
 #define SCKEY_END    0x81
 #define SCKEY_PGUP   0x82
 #define SCKEY_PGDN   0x83
+
+// ---- threads ----
+// The thread block (TEB) the kernel builds for every thread is at gs:[0x30]; the fields this runtime
+// uses: 0x48 thread id, 0x68 last error, 0x300 start routine and 0x308 argument (a new thread),
+// 0x310 C errno, 0x318 the thread's object (threads.c), 0xC00 the 64 TLS slots (TlsAlloc).
+static inline char *rt_teb(void) {
+  char *t;
+
+  __asm__("movq %%gs:0x30, %0" : "=r"(t));
+  return t;
+}
+static inline DWORD rt_tid(void) {
+  DWORD t;
+
+  __asm__("movl %%gs:0x48, %0" : "=r"(t));
+  return t;
+}
+
+// A lock for the runtime's own data: recursive, and waiting yields the CPU (no blocking calls
+// are made while holding one).
+typedef struct {
+  volatile LONG state;
+  volatile DWORD owner;
+  int depth;
+} rtlock_t;
+
+static inline void rt_lock(rtlock_t *l) {
+  DWORD me = rt_tid();
+
+  if (l->state != 0 && l->owner == me) {
+    ++l->depth;
+    return;
+  }
+  while (__sync_lock_test_and_set(&l->state, 1) != 0) {
+    sc3(KS_YIELD, 0, 0, 0);
+  }
+  l->owner = me;
+  l->depth = 1;
+}
+
+static inline void rt_unlock(rtlock_t *l) {
+  if (--l->depth == 0) {
+    l->owner = 0;
+    __sync_lock_release(&l->state);
+  }
+}
+
+// Handles for kernel-object-like things (threads, events, mutexes, semaphores): see threads.c.
+enum { H_FREE = 0, H_CONIN, H_CONOUT, H_CONERR, H_FILE, H_FIND, H_THREAD, H_EVENT, H_MUTEX, H_SEM };
+HANDLE rt_handle_new(int kind, void *obj);
+void *rt_handle_obj(HANDLE h, int *kind);
+void rt_handle_free(HANDLE h);
+void rt_obj_close(int kind, void *obj);
 
 // ---- shared helpers (kernel32.c) ----
 void *rt_memcpy(void *d, const void *s, size_t n);

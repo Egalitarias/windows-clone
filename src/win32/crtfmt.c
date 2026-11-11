@@ -323,7 +323,17 @@ static void fmt_int(out_t *o, unsigned long long v, int neg, int base, int upper
   }
 }
 
+static rtlock_t g_fmt_lock;
+static void fmt_float_locked(out_t *o, double v, char conv, int fl, int width, int prec);
+
+// The digit buffers are static: one thread at a time.
 static void fmt_float(out_t *o, double v, char conv, int fl, int width, int prec) {
+  rt_lock(&g_fmt_lock);
+  fmt_float_locked(o, v, conv, fl, width, prec);
+  rt_unlock(&g_fmt_lock);
+}
+
+static void fmt_float_locked(out_t *o, double v, char conv, int fl, int width, int prec) {
   union { double d; uint64_t u; } c;
   int neg, n, upper = (conv == 'E' || conv == 'G' || conv == 'F' || conv == 'A'), finite = 1;
   char sign = 0;

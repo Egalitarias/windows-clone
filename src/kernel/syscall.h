@@ -39,6 +39,10 @@
 #define SYS_NOTIFY     31   // notify(text) -> 0; shows a toast (text over 33 characters is cut)
 #define SYS_SCREEN     30   // screen_size() -> (width << 16) | height of the display
 #define SYS_PEINFO     32   // peinfo(uint64_t out[4]) -> 0; heap base, heap size, exe base, DLL base (PE programs only, else -ENOSYS)
+#define SYS_THREAD_CREATE 33   // thread_create(start_stub, fn, arg) -> thread id; PE programs only. A new task runs start_stub in the same address space (fn and arg wait in its TEB at +0x300/+0x308)
+#define SYS_THREAD_EXIT   34   // thread_exit(code): ends the calling thread (the whole program when it is the main thread)
+#define SYS_FUTEX_WAIT    35   // futex_wait(addr, expected, timeout_ms) -> 0 woken, -EAGAIN if *addr != expected, -ETIMEDOUT; timeout ~0 waits forever
+#define SYS_FUTEX_WAKE    36   // futex_wake(addr, count) -> 0; wakes futex waiters (all of them: callers re-check)
 #define SYS_READDIR 8   // readdir(fd, sysfile_dirent_t *out) -> 1 entry stored, 0 at the end
                         // read(fd, ...) and write(fd, ...) also take file descriptors (see sysfile.h)
 
@@ -58,6 +62,9 @@
 #define SYSCALL_ENOTDIR (-20)
 #define SYSCALL_EISDIR  (-21)
 #define SYSCALL_EBADF   (-9)
+#define SYSCALL_EINTR   (-4)
+#define SYSCALL_EAGAIN  (-11)
+#define SYSCALL_ETIMEDOUT (-110)
 #define SYSCALL_EINVAL  (-22)
 #define SYSCALL_EMFILE  (-24)
 #define SYSCALL_EFBIG   (-27)
