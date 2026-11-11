@@ -107,6 +107,7 @@ static void tz_save(void) {
 
   g_tz_dirty = 0;
   if (v == 0) {
+    desktop_notify("Time zone not saved: no disk");
     return;
   }
   if (value < 0) {
@@ -123,8 +124,109 @@ static void tz_save(void) {
   buf[n++] = '\n';
   if (!fat_write_file(v, v->root_cluster, TZ_FILE, buf, (uint32_t)n)) {
     console_printf("[clock] could not save the time zone to %s\r\n", TZ_FILE);
+    desktop_notify("Could not save the time zone");
+  } else {
+    desktop_notify("Time zone saved");
   }
 }
+
+// ---- notifications (toasts) --------------------------------------------------
+// Short messages stacked above the taskbar's right end. Each fades out after
+// TOAST_LIFE_MS or when clicked. Only the desktop task may call desktop_notify.
+
+#define TOAST_MAX      4
+#define TOAST_W        300
+#define TOAST_H        32
+#define TOAST_GAP      6
+#define TOAST_CHARS    33
+#define TOAST_LIFE_MS  5000
+#define COL_TOAST      FB_RGB(36, 42, 60)
+#define COL_TOAST_BAR  FB_RGB(90, 190, 130)
+
+static int bar_y(void);
+static char g_toast_text[TOAST_MAX][TOAST_CHARS + 1];
+static uint64_t g_toast_expire[TOAST_MAX];
+static int g_toast_count = 0;                // index 0 is the oldest, drawn lowest
+
+static int toast_x(void) { return (int)fb_width() - TOAST_W - 8; }
+static int toast_y(int i) { return bar_y() - (i + 1) * (TOAST_H + TOAST_GAP); }
+
+static void toast_invalidate(void) {
+  int top = toast_y(TOAST_MAX - 1);
+  wm_invalidate(toast_x() - 1, top, TOAST_W + 2, bar_y() - top);
+}
+
+void desktop_notify(const char *text) {
+  int i, n;
+
+  if (g_toast_count == TOAST_MAX) {         // full: the oldest makes room
+    for (i = 1; i < TOAST_MAX; i++) {
+      for (n = 0; n <= TOAST_CHARS; n++) {
+        g_toast_text[i - 1][n] = g_toast_text[i][n];
+      }
+      g_toast_expire[i - 1] = g_toast_expire[i];
+    }
+    g_toast_count--;
+  }
+  for (n = 0; n < TOAST_CHARS && text[n]; n++) {
+    g_toast_text[g_toast_count][n] = text[n];
+  }
+  g_toast_text[g_toast_count][n] = 0;
+  g_toast_expire[g_toast_count] = timer_get_ms() + TOAST_LIFE_MS;
+  g_toast_count++;
+  toast_invalidate();
+}
+
+static void toast_remove(int idx) {
+  int i, n;
+
+  for (i = idx + 1; i < g_toast_count; i++) {
+    for (n = 0; n <= TOAST_CHARS; n++) {
+      g_toast_text[i - 1][n] = g_toast_text[i][n];
+    }
+    g_toast_expire[i - 1] = g_toast_expire[i];
+  }
+  g_toast_count--;
+  toast_invalidate();
+}
+
+static void toast_expire(uint64_t now) {
+  int i = 0;
+
+  while (i < g_toast_count) {
+    if (now >= g_toast_expire[i]) {
+      toast_remove(i);
+    } else {
+      i++;
+    }
+  }
+}
+
+// Returns 1 if the click hit a toast (which is then dismissed).
+static int toast_click(int x, int y) {
+  int i;
+
+  for (i = 0; i < g_toast_count; i++) {
+    if (x >= toast_x() && x < toast_x() + TOAST_W && y >= toast_y(i) && y < toast_y(i) + TOAST_H) {
+      toast_remove(i);
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static void draw_toasts(void) {
+  int i;
+
+  for (i = 0; i < g_toast_count; i++) {
+    int x = toast_x(), y = toast_y(i);
+    fb_fill_rect(x, y, TOAST_W, TOAST_H, COL_TOAST);
+    fb_draw_rect(x, y, TOAST_W, TOAST_H, COL_TASKBAR_EDGE);
+    fb_fill_rect(x, y, 4, TOAST_H, COL_TOAST_BAR);
+    fb_draw_text(x + 14, y + 12, g_toast_text[i], COL_WHITE, 1);
+  }
+}
+
 static int g_icon_selected = -1;
 static uint64_t g_last_click_ms = 0;
 static int g_last_click_x = -9999, g_last_click_y = -9999;
@@ -139,7 +241,8 @@ static int in_rect(int px, int py, int x, int y, int w, int h) {
   return px >= x && py >= y && px < x + w && py < y + h;
 }
 
-static int bar_y(void) { return (int)fb_height() - TASKBAR_H; }
+static int bar_y(void) {
+  return (int)fb_height() - TASKBAR_H; }
 static int menu_x(void) { return START_X; }
 static int menu_y(void) { return bar_y() - MENU_COUNT * MENU_ITEM_H - 4; }
 
@@ -240,6 +343,7 @@ static void paint_scene(void) {
   if (g_menu_open) {
     draw_menu();
   }
+  draw_toasts();
 }
 
 // ---- cursor ----------------------------------------------------------------
@@ -379,6 +483,9 @@ static void select_icon(int which) {
 static void handle_click(int x, int y, int double_click) {
   int i;
 
+  if (toast_click(x, y)) {
+    return;
+  }
   // Start button
   if (in_rect(x, y, START_X, bar_y() + 6, START_W, TASKBAR_H - 12)) {
     toggle_menu();
@@ -642,6 +749,7 @@ static __attribute__((noreturn)) void desktop_run(void) {
       if (now - last_second >= 1000) {
         last_second = now;
         update_clock();
+        toast_expire(now);
         if (g_tz_dirty && now - g_tz_changed_ms >= TZ_SAVE_DELAY_MS) {
           tz_save();
         }

@@ -166,6 +166,7 @@ static void cmd_help(void) {
   console_printf("  pwd, cd DIR, ls [DIR]   look around the current volume\r\n");
   console_printf("  cat FILE             show a text file\r\n");
   console_printf("  run PROG [ARG]       start a program (PROG alone means /APPS/PROG.BIN)\r\n");
+  console_printf("  notify [TEXT]        show a notification\r\n");
   console_printf("  shutdown             power off\r\n");
 }
 
@@ -397,6 +398,12 @@ void shell_exec(const char *input) {
     cmd_cat(argc, argv);
   } else if (str_eq_nocase(argv[0], "run")) {
     cmd_run(argc, argv);
+  } else if (str_eq_nocase(argv[0], "notify")) {
+    const char *t = input;
+    while (is_space(*t)) { t++; }
+    t += 6;                                   // past "notify"
+    while (is_space(*t)) { t++; }
+    desktop_notify(*t ? t : "Hello from the Console");
   } else if (str_eq_nocase(argv[0], "shutdown")) {
     desktop_shut_down();
   } else {
