@@ -127,6 +127,14 @@ static void uw_mouse(wm_window_t *win, int lx, int ly, int event) {
   ev_push(u, type, lx, ly, wm_key_mods());       // mouse events: ch = modifier bits
 }
 
+static void uw_wheel(wm_window_t *win, int lx, int ly, int delta) {
+  uwin_t *u = (uwin_t *)win->data;
+
+  if (u->state == UW_ACTIVE) {
+    ev_push(u, SYSWIN_EV_WHEEL, lx, ly, (uint32_t)delta);
+  }
+}
+
 static void uw_closing(wm_window_t *win) {
   uwin_t *u = (uwin_t *)win->data;
 
@@ -200,6 +208,7 @@ void syswin_poll(void) {
         win->paint = uw_paint;
         win->key = uw_key;
         win->mouse = uw_mouse;
+        win->wheel = uw_wheel;
         win->closing = uw_closing;
         win->resized = uw_resized;
         u->win = win;

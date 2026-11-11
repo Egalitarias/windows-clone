@@ -530,6 +530,16 @@ int main(void) {
       select_index(g_sel);                          // keep the selection in view
     } else if (ev.type == EV_MOUSE_DOWN) {
       click(ev.x, ev.y, ulib_mods(&ev));
+    } else if (ev.type == EV_WHEEL) {
+      int max = g_count - ROWS;
+
+      g_scroll -= (int)ev.ch * 3;
+      if (g_scroll > max) {
+        g_scroll = max;
+      }
+      if (g_scroll < 0) {
+        g_scroll = 0;
+      }
     } else if (ev.type == EV_MOUSE_DOUBLE) {
       if (ev.y >= LIST_TOP && ev.y < H - STATUS_H && g_sel >= 0 &&
           g_sel == g_scroll + (ev.y - LIST_TOP) / ROW_H) {

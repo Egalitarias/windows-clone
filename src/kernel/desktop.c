@@ -778,6 +778,9 @@ static __attribute__((noreturn)) void desktop_run(void) {
           wm_mouse_up(g_mouse_x, g_mouse_y);
         }
         g_buttons = ev.buttons;
+        if (ev.wheel != 0) {
+          wm_wheel(g_mouse_x, g_mouse_y, ev.wheel);
+        }
       }
     }
 

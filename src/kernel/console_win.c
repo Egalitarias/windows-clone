@@ -182,6 +182,14 @@ static void console_mouse(wm_window_t *win, int lx, int ly, int event) {
   wm_invalidate_window(win);
 }
 
+// Wheel: three lines per notch; up goes back in the log (paint clamps g_scroll).
+static void console_wheel(wm_window_t *win, int lx, int ly, int delta) {
+  (void)lx;
+  (void)ly;
+  g_scroll += delta * 3;
+  wm_invalidate_window(win);
+}
+
 // Typing: printable characters build the line, Backspace edits it, Enter runs it.
 static void console_key(wm_window_t *win, char ch) {
   if (ch == '\n' || ch == '\r') {
@@ -231,6 +239,7 @@ void app_console_open(void) {
   g_seen_total = 0;
   win->paint = console_paint;
   win->mouse = console_mouse;
+  win->wheel = console_wheel;
   win->key = console_key;
   win->closing = console_closing;
   win->min_w = 320;

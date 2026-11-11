@@ -82,7 +82,14 @@ typedef struct {
   int kind;                  // 1 keyboard, 2 mouse
   uint8_t ep, iface, interval;
   uint16_t mps;
-  uint32_t reqlen;           // bytes asked for per report (at most 8)
+  uint32_t reqlen;           // bytes asked for per report (at most 8 in boot protocol)
+  uint16_t desc_len;         // length of the HID report descriptor (from the HID descriptor)
+  int report_mode;           // mouse in report protocol: fields found in the report descriptor
+  int has_id;                // reports start with a report ID byte
+  uint8_t rid;
+  uint32_t rep_len;          // bytes in one report (with the ID)
+  int btn_off, x_off, y_off, w_off;   // bit offsets of buttons 1..3, X, Y, wheel
+  int x_sz, y_sz, w_sz;      // field sizes in bits
   uint32_t dci;
   ring_t ring;
   uint8_t *buf;
@@ -595,6 +602,10 @@ static void parse_config(xdev_t *d, const uint8_t *p, uint32_t len) {
         d->hid[hid].iface = p[i + 2];
         d->hid[hid].ep = 0;
       }
+    } else if (type == 0x21 && dlen >= 9 && hid >= 0) {   // HID descriptor: first class descriptor is the report one
+      if (p[i + 5] >= 1 && p[i + 6] == 0x22) {
+        d->hid[hid].desc_len = (uint16_t)(p[i + 7] | (p[i + 8] << 8));
+      }
     } else if (type == 5 && dlen >= 7) {                  // endpoint
       uint16_t mps = (uint16_t)(p[i + 4] | (p[i + 5] << 8));
       uint8_t attr = p[i + 3] & 3u;
@@ -826,6 +837,8 @@ static void hid_arm(xhci_t *x, xdev_t *d, hid_t *h) {
   ring_doorbell(x, (uint32_t)d->slot, h->dci);
 }
 
+static int parse_mouse_desc(const uint8_t *p, uint32_t len, hid_t *h);
+
 static void enumerate_device(xhci_t *x, int xi, uint32_t port, int speed, uint32_t route, int depth, int tt_slot,
                              int tt_port);
 
@@ -980,7 +993,14 @@ static void enumerate_device(xhci_t *x, int xi, uint32_t port, int speed, uint32
   for (k = 0; k < d->hid_count; k++) {
     hid_t *h = &d->hid[k];
 
-    control(x, d, 0x21, 0x0B, 0, h->iface, 0, 0);          // SET_PROTOCOL: boot protocol
+    if (h->kind == 2 && h->desc_len > 0 && control(x, d, 0x81, 6, 0x2200, h->iface, h->desc_len < 1024 ? h->desc_len : 1024, 1) &&
+        parse_mouse_desc(x->dbuf, h->desc_len < 1024 ? h->desc_len : 1024, h) &&
+        control(x, d, 0x21, 0x0B, 1, h->iface, 0, 0)) {   // SET_PROTOCOL: report protocol, the mouse has a wheel
+      h->report_mode = 1;
+      h->reqlen = h->rep_len;
+    } else {
+      control(x, d, 0x21, 0x0B, 0, h->iface, 0, 0);        // SET_PROTOCOL: boot protocol
+    }
     control(x, d, 0x21, 0x0A, 0, h->iface, 0, 0);          // SET_IDLE: only report changes
     h->active = 1;
     g_hid_active++;
@@ -1134,12 +1154,125 @@ static void kbd_report(const uint8_t *r) {
   }
 }
 
-static void mouse_report(const uint8_t *r) {
-  ps2_event_t ev;
-  int dx = (signed char)r[1], dy = (signed char)r[2];
-  uint8_t buttons = r[0] & 7u;
+// Bits [off, off + size) of a report as a signed or unsigned number (size <= 16).
+static int field_get(const uint8_t *b, int off, int size, int sign) {
+  int v = 0, i;
 
-  if (dx == 0 && dy == 0 && buttons == g_mouse_buttons) {
+  for (i = 0; i < size; i++) {
+    int bit = off + i;
+
+    v |= ((b[bit >> 3] >> (bit & 7)) & 1) << i;
+  }
+  if (sign && size < 32 && (v & (1 << (size - 1)))) {
+    v -= 1 << size;
+  }
+  return v;
+}
+
+// Walk a HID report descriptor for a mouse report with X, Y and a wheel (Generic Desktop
+// 0x30 / 0x31 / 0x38) and note where each field sits. Returns 1 if all three are there in
+// one report that fits an interrupt transfer.
+static int parse_mouse_desc(const uint8_t *p, uint32_t len, hid_t *h) {
+  uint32_t i = 0, page = 0, rsize = 0, rcount = 0, rid = 0;
+  uint32_t pos[16];
+  uint32_t usages[16], umin = 0, umax = 0;
+  int nus = 0, have_range = 0, lmin = 0;
+  int xr = -1, yr = -1, wr = -1, br = -1;
+  int bo = 0, xo = 0, yo = 0, wo = 0, xs = 0, ys = 0, ws = 0;
+  uint32_t k;
+
+  for (k = 0; k < 16; k++) {
+    pos[k] = 0;
+  }
+  while (i < len) {
+    uint8_t b = p[i];
+    uint32_t sz = b & 3u, val = 0, type = (b >> 2) & 3u, tag = b >> 4;
+    int sval;
+
+    if (b == 0xFE) {                                       // long item: skip
+      i += 3u + (i + 1 < len ? p[i + 1] : 0u);
+      continue;
+    }
+    if (sz == 3) {
+      sz = 4;
+    }
+    if (i + 1 + sz > len) {
+      break;
+    }
+    for (k = 0; k < sz; k++) {
+      val |= (uint32_t)p[i + 1 + k] << (8 * k);
+    }
+    sval = sz == 1 ? (int)(signed char)val : (sz == 2 ? (int)(short)val : (int)val);
+    i += 1 + sz;
+    if (type == 1) {                                       // global
+      if (tag == 0) page = val;
+      else if (tag == 1) lmin = sval;
+      else if (tag == 7) rsize = val;
+      else if (tag == 8) rid = val < 16 ? val : 15;
+      else if (tag == 9) rcount = val;
+    } else if (type == 2) {                                // local
+      if (tag == 0 && nus < 16) usages[nus++] = val & 0xFFFFu;
+      else if (tag == 1) umin = val & 0xFFFFu;
+      else if (tag == 2) { umax = val & 0xFFFFu; have_range = 1; }
+    } else if (type == 0) {                                // main
+      if (tag == 8) {                                      // Input
+        uint32_t idx;
+
+        for (idx = 0; idx < rcount && idx < 256; idx++) {
+          uint32_t u = 0;
+          int off = (int)(pos[rid] + idx * rsize);
+
+          if (!(val & 1u)) {                               // data, not constant
+            if (nus > 0) {
+              u = usages[idx < (uint32_t)nus ? idx : (uint32_t)nus - 1];
+            } else if (have_range && umin + idx <= umax) {
+              u = umin + idx;
+            }
+            if (page == 9 && u == 1 && br < 0) {
+              br = (int)rid;
+              bo = off;
+            } else if (page == 1 && u == 0x30 && xr < 0) {
+              xr = (int)rid; xo = off; xs = (int)rsize; (void)lmin;
+            } else if (page == 1 && u == 0x31 && yr < 0) {
+              yr = (int)rid; yo = off; ys = (int)rsize;
+            } else if (page == 1 && u == 0x38 && wr < 0) {
+              wr = (int)rid; wo = off; ws = (int)rsize;
+            }
+          }
+        }
+        pos[rid] += rcount * rsize;
+      }
+      nus = 0;
+      have_range = 0;
+    }
+  }
+  if (xr < 0 || yr != xr || wr != xr || br != xr || xs > 16 || ys > 16 || ws > 16 || xs == 0 || ys == 0 || ws == 0) {
+    return 0;
+  }
+  h->has_id = xr != 0;
+  h->rid = (uint8_t)xr;
+  h->rep_len = (pos[xr] + 7u) / 8u + (h->has_id ? 1u : 0u);
+  if (h->rep_len > 64) {
+    return 0;
+  }
+  {
+    int shift = h->has_id ? 8 : 0;
+
+    h->btn_off = bo + shift;
+    h->x_off = xo + shift;
+    h->y_off = yo + shift;
+    h->w_off = wo + shift;
+  }
+  h->x_sz = xs;
+  h->y_sz = ys;
+  h->w_sz = ws;
+  return 1;
+}
+
+static void mouse_emit(int dx, int dy, uint8_t buttons, int wheel) {
+  ps2_event_t ev;
+
+  if (dx == 0 && dy == 0 && wheel == 0 && buttons == g_mouse_buttons) {
     return;
   }
   g_mouse_buttons = buttons;
@@ -1147,9 +1280,25 @@ static void mouse_report(const uint8_t *r) {
   ev.type = PS2_EVENT_MOUSE;
   ev.dx = dx;
   ev.dy = dy;
+  ev.wheel = wheel;
   ev.buttons = buttons;                                    // same bit order as PS2_MOUSE_*
   ev.mods = hid_mods();
   hq_push(&ev);
+}
+
+static void mouse_report(const uint8_t *r) {
+  mouse_emit((signed char)r[1], (signed char)r[2], r[0] & 7u, 0);
+}
+
+// Report protocol: fields where the report descriptor put them. HID wheel: positive = forward.
+static void mouse_report_desc(const hid_t *h) {
+  const uint8_t *r = h->buf;
+
+  if (h->has_id && r[0] != h->rid) {
+    return;
+  }
+  mouse_emit(field_get(r, h->x_off, h->x_sz, 1), field_get(r, h->y_off, h->y_sz, 1),
+             (uint8_t)field_get(r, h->btn_off, 3, 0), field_get(r, h->w_off, h->w_sz, 1));
 }
 
 // A transfer event: if it belongs to a keyboard or mouse endpoint, decode the report and
@@ -1175,7 +1324,9 @@ static void hid_event(xhci_t *x, const uint32_t ev[4]) {
 
       if (h->kind == 1 && got >= 8) {
         kbd_report(h->buf);
-      } else if (h->kind == 2 && got >= 3) {
+      } else if (h->kind == 2 && h->report_mode && got >= h->rep_len) {
+        mouse_report_desc(h);
+      } else if (h->kind == 2 && !h->report_mode && got >= 3) {
         mouse_report(h->buf);
       }
       hid_arm(x, d, h);

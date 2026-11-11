@@ -52,6 +52,8 @@ typedef struct {
   int dx;
   int dy;
   unsigned int buttons;
+  // Mouse wheel notches since the last packet: positive = scrolled up (away from the user).
+  int wheel;
 } ps2_event_t;
 
 // Initialise the controller and devices and hook IRQ1 / IRQ12. Returns

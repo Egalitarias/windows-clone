@@ -247,6 +247,7 @@ wm_window_t *wm_create(const char *title, int x, int y, int w, int h) {
   win->paint = 0;
   win->key = 0;
   win->mouse = 0;
+  win->wheel = 0;
   win->closing = 0;
   win->resized = 0;
   win->tick = 0;
@@ -699,6 +700,20 @@ void wm_mouse_move(int x, int y, unsigned int buttons) {
     wm_client_rect(win, &cx, &cy, &cw, &ch);
     win->mouse(win, x - cx, y - cy, WM_MOUSE_MOVE);
   }
+}
+
+void wm_wheel(int x, int y, int delta) {
+  wm_window_t *win = window_at(x, y);
+  int cx, cy, cw, ch;
+
+  if (!win || !win->wheel || delta == 0) {
+    return;
+  }
+  wm_client_rect(win, &cx, &cy, &cw, &ch);
+  if (!in_rect(x, y, cx, cy, cw, ch)) {
+    return;
+  }
+  win->wheel(win, x - cx, y - cy, delta);
 }
 
 void wm_mouse_up(int x, int y) {

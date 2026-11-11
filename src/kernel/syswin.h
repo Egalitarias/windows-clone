@@ -28,6 +28,7 @@
 #define SYSWIN_EV_MOUSE_UP   4
 #define SYSWIN_EV_CLOSE      5         // the user closed the window; call win_close()
 #define SYSWIN_EV_MOUSE_DOUBLE 6       // x, y; sent right after the MOUSE_DOWN of a double click
+#define SYSWIN_EV_WHEEL      8         // x, y = pointer; ch = signed notches (int), positive = scrolled up
 #define SYSWIN_EV_RESIZE     7         // x, y = the new client size; the surface is new and cleared: redraw
 
 // Non-printing keys arrive as EV_KEY with these codes in ch (same values as PS2_KEY_*).

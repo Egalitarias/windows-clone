@@ -60,6 +60,7 @@ static int g_nrows;
 static int g_cur;                                   // cursor: index into g_text, 0..g_len
 static int g_want;                                  // column Up/Down try to keep
 static int g_top;                                   // first visible row
+static int g_free;                                  // the wheel scrolled the view: do not pull it back to the cursor
 static int g_anchor = -1;                           // selection start (-1 = none); the cursor is the other end
 static char g_clip[MAX + 1];
 
@@ -161,10 +162,10 @@ static void redraw(void) {
   build_rows();
   cr = row_of(g_cur);
   cc = g_cur - g_rs[cr];
-  if (cr < g_top) {
+  if (!g_free && cr < g_top) {
     g_top = cr;
   }
-  if (cr >= g_top + ROWS) {
+  if (!g_free && cr >= g_top + ROWS) {
     g_top = cr - ROWS + 1;
   }
   has_sel = sel_range(&sa, &sb);
@@ -418,7 +419,20 @@ int main(void) {
       redraw();
       continue;
     }
+    if (ev.type == EV_WHEEL) {                      // scroll the view, leave the cursor where it is
+      g_top -= (int)ev.ch * 3;
+      if (g_top > g_nrows - ROWS) {
+        g_top = g_nrows - ROWS;
+      }
+      if (g_top < 0) {
+        g_top = 0;
+      }
+      g_free = 1;
+      redraw();
+      continue;
+    }
     if (ev.type == EV_MOUSE_DOWN) {                 // click: place the cursor; drag selects
+      g_free = 0;
       if (ulib_mods(&ev) & MOD_SHIFT) {             // Shift+click extends the selection
         begin_move(1);
         set_cursor(pos_at(ev.x, ev.y));
@@ -446,6 +460,7 @@ int main(void) {
     if (ev.type != EV_KEY) {
       continue;
     }
+    g_free = 0;
     shift = (ev.x & MOD_SHIFT) != 0;
     ctrl = (ev.x & MOD_CTRL) != 0;
 

@@ -118,6 +118,8 @@ static int mouse_send(uint8_t value) {
   return inb(PS2_DATA) == 0xFA;
 }
 
+static int g_mouse_wheel = 0;               // IntelliMouse mode: 4-byte packets
+
 int ps2_init(void) {
   int found = 0;
   uint8_t config;
@@ -141,6 +143,12 @@ int ps2_init(void) {
     found |= PS2_HAS_KEYBOARD;
   }
   mouse_send(0xF6);           // defaults
+  // IntelliMouse: the magic sample-rate sequence 200, 100, 80; a mouse with a wheel then
+  // answers the ID request with 3 and sends 4-byte packets.
+  if (mouse_send(0xF3) && mouse_send(200) && mouse_send(0xF3) && mouse_send(100) && mouse_send(0xF3) &&
+      mouse_send(80) && mouse_send(0xF2) && wait_read_ready() && inb(PS2_DATA) == 3) {
+    g_mouse_wheel = 1;
+  }
   if (mouse_send(0xF4)) {     // enable data reporting
     found |= PS2_HAS_MOUSE;
   }
@@ -254,9 +262,9 @@ static int decode_key(uint8_t code, ps2_event_t *ev) {
   return 1;
 }
 
-// ---- Mouse decoding (3-byte standard packets) ------------------------------
+// ---- Mouse decoding (3-byte standard packets, 4 with a wheel) ------------------------------
 
-static uint8_t g_packet[3];
+static uint8_t g_packet[4];
 static int g_packet_len = 0;
 
 static int decode_mouse(uint8_t byte, ps2_event_t *ev) {
@@ -266,7 +274,7 @@ static int decode_mouse(uint8_t byte, ps2_event_t *ev) {
     return 0;  // out of sync: first byte always has bit 3 set
   }
   g_packet[g_packet_len++] = byte;
-  if (g_packet_len < 3) {
+  if (g_packet_len < (g_mouse_wheel ? 4 : 3)) {
     return 0;
   }
   g_packet_len = 0;
@@ -277,6 +285,11 @@ static int decode_mouse(uint8_t byte, ps2_event_t *ev) {
   ev->dx = dx;
   ev->dy = -dy;  // PS/2 reports +y up; the screen has +y down
   ev->buttons = g_packet[0] & 0x07;
+  if (g_mouse_wheel) {
+    int z = g_packet[3] & 0x0F;                      // 4-bit signed; PS/2 reports "toward the user" as positive
+
+    ev->wheel = -(z & 8 ? z - 16 : z);
+  }
   return 1;
 }
 
@@ -294,6 +307,7 @@ int ps2_poll(ps2_event_t *ev) {
     ev->dx = 0;
     ev->dy = 0;
     ev->buttons = 0;
+    ev->wheel = 0;
     if (aux) {
       if (decode_mouse(byte, ev)) {
         ev->mods = (g_shift ? PS2_MOD_SHIFT : 0U) | (g_ctrl ? PS2_MOD_CTRL : 0U) | (g_alt ? PS2_MOD_ALT : 0U);

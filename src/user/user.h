@@ -129,6 +129,7 @@ static inline long mkdir(const char *path) { return syscall3(SYS_MKDIR, (long)pa
 #define EV_MOUSE_UP   4
 #define EV_CLOSE      5   // the user closed the window; call win_close() and exit
 #define EV_MOUSE_DOUBLE 6 // x, y: right after the EV_MOUSE_DOWN of a double click
+#define EV_WHEEL      8   // x, y = pointer; (int)ch = notches, positive = scrolled up
 #define EV_RESIZE     7   // x, y = new client size; the surface is new and cleared: redraw
 
 // Non-printing keys arrive as EV_KEY with these values in ch.

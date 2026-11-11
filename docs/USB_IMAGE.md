@@ -43,7 +43,7 @@ Limits: USB 2.0 and SuperSpeed hubs work (up to 5 tiers, at most 15 ports each; 
 QEMU's usb-hub), 512-byte blocks only for storage,
 disks up to 2 TiB (READ CAPACITY(10)), one controller command or transfer at a time, no hot plug
 (devices are found at boot). Keyboards: US layout, no LEDs (Caps Lock works but its light does not).
-Mice: three buttons and movement, no wheel; absolute pointers (touch screens, tablets) are ignored.
+Mice: three buttons, movement and a wheel (a mouse whose report descriptor has X, Y and a wheel is switched to report protocol; others stay in boot protocol without a wheel); absolute pointers (touch screens, tablets) are ignored.
 Not tried on real hardware yet. The kernel takes the controller over from the firmware (BIOS handoff);
 on PCs that emulate a PS/2 keyboard through the BIOS that emulation goes away, which is why the
 USB keyboard driver matters there.

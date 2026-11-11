@@ -45,6 +45,8 @@ struct wm_window {
   // Mouse in client coordinates. Once pressed inside the client area, move and
   // up events keep coming to the same window until the button is released.
   void (*mouse)(wm_window_t *win, int lx, int ly, int event);
+  // Mouse wheel over the client area (client coordinates); delta > 0 = scrolled up.
+  void (*wheel)(wm_window_t *win, int lx, int ly, int delta);
   // Called once just before the window is destroyed.
   void (*closing)(wm_window_t *win);
   // Called after the user finished resizing the window (mouse released) or maximized /
@@ -113,6 +115,9 @@ void wm_tick(void);
 int wm_mouse_down(int x, int y, int double_click);
 void wm_mouse_move(int x, int y, unsigned int buttons);
 void wm_mouse_up(int x, int y);
+// Wheel notches at screen position (x, y): goes to the window under the pointer, if it has a
+// wheel callback and the pointer is over its client area.
+void wm_wheel(int x, int y, int delta);
 void wm_key(char ch);
 // Modifier bits (PS2_MOD_*) of the input event being delivered: a key callback or a
 // mouse callback may read them with wm_key_mods(). The shell sets them before each
