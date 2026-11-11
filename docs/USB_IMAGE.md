@@ -34,8 +34,15 @@ named `usb0`, so booting from the stick works: the kernel finds `\APPS` on it. T
 (`qemu-xhci` + `usb-storage`): boot from the image alone, Notes and Files start from it, and a
 changed `TZ.CFG` is written back (checked with `scripts/fat32-ls.py --check`).
 
-Limits: devices must sit in the PC's own USB ports (no hubs), 512-byte blocks only, disks up to
-2 TiB (READ CAPACITY(10)), one controller command or transfer at a time, no hot plug (devices are
-found at boot). Not tried on real hardware yet. The kernel takes the controller over from the
-firmware (BIOS handoff), which on PCs that emulate a PS/2 keyboard through the BIOS can switch that
-emulation off: a USB keyboard and mouse driver is still needed.
+USB keyboards and mice work through the same driver: boot-protocol HID on interrupt endpoints,
+polled from the desktop loop (`usbhid_poll`, same event type as the PS/2 driver, with software key
+repeat). Tested in QEMU with `qemu-xhci` + `usb-kbd` + `usb-mouse` and the PS/2 controller turned off
+(`scripts/qemu-screenshot.py --usb-hid`): the pointer moves and clicks, text is typed with Shift.
+
+Limits: devices must sit in the PC's own USB ports (no hubs), 512-byte blocks only for storage,
+disks up to 2 TiB (READ CAPACITY(10)), one controller command or transfer at a time, no hot plug
+(devices are found at boot). Keyboards: US layout, no LEDs (Caps Lock works but its light does not).
+Mice: three buttons and movement, no wheel; absolute pointers (touch screens, tablets) are ignored.
+Not tried on real hardware yet. The kernel takes the controller over from the firmware (BIOS handoff);
+on PCs that emulate a PS/2 keyboard through the BIOS that emulation goes away, which is why the
+USB keyboard driver matters there.

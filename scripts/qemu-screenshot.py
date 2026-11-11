@@ -6,6 +6,7 @@ Usage: python scripts/qemu-screenshot.py [options] [output.png] [wait-seconds] [
 Options:
     --nvme IMAGE   also attach IMAGE as an NVMe disk (repeatable)
     --usb IMAGE    also attach IMAGE as a USB stick (first boot choice; repeatable)
+    --usb-hid      attach a USB keyboard and mouse (and turn the PS/2 controller off)
     --no-esp       do not attach the virtual FAT boot disk (boot from --nvme only)
     --no-data      do not attach out/run/data.img
 
@@ -67,6 +68,7 @@ def main():
     argv = sys.argv[1:]
     nvme_images = []
     usb_images = []
+    usb_hid = False
     no_esp = no_data = False
     rest = []
     i = 0
@@ -77,6 +79,9 @@ def main():
         elif argv[i] == "--usb":
             usb_images.append(argv[i + 1])
             i += 2
+        elif argv[i] == "--usb-hid":
+            usb_hid = True
+            i += 1
         elif argv[i] == "--no-esp":
             no_esp = True
             i += 1
@@ -102,7 +107,7 @@ def main():
         os.remove(ppm)
 
     cmd = [
-        qemu, "-machine", "q35", "-m", "512", "-display", "none", "-vga", "std",
+        qemu, "-machine", "q35,i8042=off" if usb_hid else "q35", "-m", "512", "-display", "none", "-vga", "std",
         "-serial", "file:" + os.path.join(run_dir, "serial.log"),
         "-monitor", "tcp:127.0.0.1:%d,server,nowait" % MONITOR_PORT,
         "-drive", "if=pflash,format=raw,readonly=on,file=" + code,
@@ -113,8 +118,10 @@ def main():
     for n, image in enumerate(nvme_images):
         cmd += ["-drive", "if=none,id=nvm%d,format=raw,file=%s" % (n, image),
                 "-device", "nvme,serial=winclone%d,drive=nvm%d" % (n, n)]
-    if usb_images:
+    if usb_images or usb_hid:
         cmd += ["-device", "qemu-xhci,id=xhci"]
+    if usb_hid:
+        cmd += ["-device", "usb-kbd,bus=xhci.0", "-device", "usb-mouse,bus=xhci.0"]
     for n, image in enumerate(usb_images):
         cmd += ["-drive", "if=none,id=usb%d,format=raw,file=%s" % (n, image),
                 "-device", "usb-storage,bus=xhci.0,drive=usb%d,bootindex=%d" % (n, n)]

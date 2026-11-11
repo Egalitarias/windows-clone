@@ -2,6 +2,7 @@
 #include "paging.h"
 #include "pci.h"
 #include "pmm.h"
+#include "scheduler.h"
 #include "string.h"
 #include "timer.h"
 
@@ -77,6 +78,18 @@ typedef struct {
 } ring_t;
 
 typedef struct {
+  int active;                // polling this endpoint
+  int kind;                  // 1 keyboard, 2 mouse
+  uint8_t ep, iface, interval;
+  uint16_t mps;
+  uint32_t reqlen;           // bytes asked for per report (at most 8)
+  uint32_t dci;
+  ring_t ring;
+  uint8_t *buf;
+  uint64_t buf_phys;
+} hid_t;
+
+typedef struct {
   int used;
   int slot;
   int speed;
@@ -90,6 +103,9 @@ typedef struct {
   uint8_t cfg_value, iface;
   uint32_t tag;
   int is_storage;
+  int has_storage;           // found a mass-storage interface
+  hid_t hid[2];              // boot keyboard / mouse interfaces
+  int hid_count;
 } xdev_t;
 
 typedef struct {
@@ -117,6 +133,7 @@ static xhci_t g_x[XHCI_MAX_CONTROLLERS];
 static int g_x_count = 0;
 static usb_disk_t g_disks[USB_MAX_DISKS];
 static int g_disk_count = 0;
+static int g_hid_active = 0;           // keyboard / mouse endpoints being polled
 
 // ---- MMIO and small helpers --------------------------------------------------
 
@@ -183,31 +200,50 @@ static void ring_doorbell(const xhci_t *x, uint32_t slot, uint32_t target) {
   wr32(x->db + 4u * slot, target);
 }
 
+// Fetch the next event if one is pending (non-blocking). Returns 1 and fills out[4].
+static int event_next(xhci_t *x, uint32_t out[4]) {
+  trb_t *t = &x->ev[x->ev_deq];
+  uint32_t c = t->d[3];
+  uint64_t erdp;
+
+  if ((c & 1u) != x->ev_cycle) {
+    return 0;
+  }
+  out[0] = t->d[0];
+  out[1] = t->d[1];
+  out[2] = t->d[2];
+  out[3] = c;
+  x->ev_deq++;
+  if (x->ev_deq == EVENT_TRBS) {
+    x->ev_deq = 0;
+    x->ev_cycle ^= 1u;
+  }
+  erdp = x->ev_phys + (uint64_t)x->ev_deq * sizeof(trb_t);
+  wr64(x->rt + 0x20 + 0x18, erdp | (1u << 3));         // interrupter 0 ERDP, clear EHB
+  return 1;
+}
+
+static void hid_event(xhci_t *x, const uint32_t ev[4]);
+
 // Wait for an event of `type` (for transfer events also matching slot and endpoint id,
-// ep_id 0 = any). Other events are discarded. Returns 1 and fills out[4].
+// ep_id 0 = any). Reports of keyboards and mice that arrive meanwhile are handled;
+// other events are discarded. Returns 1 and fills out[4].
 static int event_wait(xhci_t *x, uint32_t type, uint32_t slot, uint32_t ep_id, uint32_t out[4]) {
   uint64_t start = timer_get_ms();
 
   for (;;) {
-    trb_t *t = &x->ev[x->ev_deq];
-    uint32_t c = t->d[3];
+    uint32_t ev[4];
 
-    if ((c & 1u) == x->ev_cycle) {
-      uint32_t d0 = t->d[0], d1 = t->d[1], d2 = t->d[2];
-      uint32_t et = (c >> 10) & 0x3Fu;
-      uint64_t erdp;
+    if (event_next(x, ev)) {
+      uint32_t et = (ev[3] >> 10) & 0x3Fu;
 
-      x->ev_deq++;
-      if (x->ev_deq == EVENT_TRBS) {
-        x->ev_deq = 0;
-        x->ev_cycle ^= 1u;
-      }
-      erdp = x->ev_phys + (uint64_t)x->ev_deq * sizeof(trb_t);
-      wr64(x->rt + 0x20 + 0x18, erdp | (1u << 3));     // interrupter 0 ERDP, clear EHB
       if (et == type && (type == TRB_EV_COMMAND ||
-                         ((c >> 24) == slot && (ep_id == 0 || ((c >> 16) & 0x1Fu) == ep_id)))) {
-        out[0] = d0; out[1] = d1; out[2] = d2; out[3] = c;
+                         ((ev[3] >> 24) == slot && (ep_id == 0 || ((ev[3] >> 16) & 0x1Fu) == ep_id)))) {
+        out[0] = ev[0]; out[1] = ev[1]; out[2] = ev[2]; out[3] = ev[3];
         return 1;
+      }
+      if (et == TRB_EV_TRANSFER) {
+        hid_event(x, ev);
       }
       continue;
     }
@@ -513,10 +549,11 @@ static int fix_ep0_mps(xhci_t *x, xdev_t *d) {
   return command(x, x->input_phys, (TRB_CMD_EVALUATE << 10) | ((uint32_t)d->slot << 24), 0) == CC_SUCCESS;
 }
 
-// Look through the configuration for a SCSI bulk-only mass-storage interface.
-static int parse_config(xdev_t *d, const uint8_t *p, uint32_t len) {
+// Look through the configuration for a SCSI bulk-only mass-storage interface and for
+// boot-protocol keyboards and mice. Fills d->has_storage, d->hid[] and d->hid_count.
+static void parse_config(xdev_t *d, const uint8_t *p, uint32_t len) {
   uint32_t i = 0;
-  int in_iface = 0;
+  int in_storage = 0, hid = -1;
 
   d->cfg_value = p[5];
   while (i + 2 <= len && p[i] != 0) {
@@ -526,42 +563,111 @@ static int parse_config(xdev_t *d, const uint8_t *p, uint32_t len) {
       break;
     }
     if (type == 4 && dlen >= 9) {                         // interface
-      in_iface = (p[i + 5] == 8 && p[i + 6] == 6 && p[i + 7] == 0x50 && p[i + 3] == 0);
-      if (in_iface) {
+      uint8_t cls = p[i + 5], sub = p[i + 6], proto = p[i + 7];
+
+      in_storage = (cls == 8 && sub == 6 && proto == 0x50 && p[i + 3] == 0 && g_disk_count < USB_MAX_DISKS);
+      if (in_storage) {
         d->iface = p[i + 2];
       }
-    } else if (type == 5 && dlen >= 7 && in_iface && (p[i + 3] & 3u) == 2) {     // bulk endpoint
+      hid = -1;
+      if (cls == 3 && sub == 1 && (proto == 1 || proto == 2) && p[i + 3] == 0 && d->hid_count < 2) {
+        hid = d->hid_count++;
+        d->hid[hid].kind = proto;
+        d->hid[hid].iface = p[i + 2];
+        d->hid[hid].ep = 0;
+      }
+    } else if (type == 5 && dlen >= 7) {                  // endpoint
       uint16_t mps = (uint16_t)(p[i + 4] | (p[i + 5] << 8));
-      if (p[i + 2] & 0x80) {
-        d->in_ep = p[i + 2];
-        d->in_mps = mps;
-      } else {
-        d->out_ep = p[i + 2];
-        d->out_mps = mps;
+      uint8_t attr = p[i + 3] & 3u;
+
+      if (in_storage && attr == 2) {
+        if (p[i + 2] & 0x80) {
+          d->in_ep = p[i + 2];
+          d->in_mps = mps;
+        } else {
+          d->out_ep = p[i + 2];
+          d->out_mps = mps;
+        }
+      } else if (hid >= 0 && attr == 3 && (p[i + 2] & 0x80) && d->hid[hid].ep == 0) {
+        d->hid[hid].ep = p[i + 2];
+        d->hid[hid].mps = mps & 0x7FFu;
+        d->hid[hid].interval = p[i + 6];
       }
     }
     i += dlen;
   }
-  return d->in_ep != 0 && d->out_ep != 0;
+  d->has_storage = d->in_ep != 0 && d->out_ep != 0;
+  {
+    int k, n = 0;                                          // drop HID interfaces without an endpoint
+    for (k = 0; k < d->hid_count; k++) {
+      if (d->hid[k].ep != 0) {
+        d->hid[n++] = d->hid[k];
+      }
+    }
+    d->hid_count = n;
+  }
 }
 
-static int configure_storage(xhci_t *x, xdev_t *d) {
-  uint32_t in_dci = (uint32_t)(d->in_ep & 0xFu) * 2 + 1;
-  uint32_t out_dci = (uint32_t)(d->out_ep & 0xFu) * 2;
-  uint32_t max_dci = in_dci > out_dci ? in_dci : out_dci;
-  uint32_t *c, *s;
+static uint32_t hid_interval(int speed, uint8_t b) {
+  uint32_t v;
 
-  if (!ring_init(&d->bulk_in) || !ring_init(&d->bulk_out)) {
-    return 0;
+  if (speed >= 3) {                                        // high / super speed: 2^(v) * 125 us
+    v = b ? (uint32_t)b - 1u : 0u;
+  } else {                                                 // low / full speed: b ms
+    uint32_t ms = b ? b : 1u;
+    v = 3;
+    while ((1u << (v - 3)) < ms && v < 10) {
+      v++;
+    }
   }
+  return v > 15 ? 15 : v;
+}
+
+// One Configure Endpoint command for everything the device offers that we use.
+static int configure_endpoints(xhci_t *x, xdev_t *d) {
+  uint32_t add = 1, max_dci = 1, *c, *s;
+  int k;
+
   input_clear(x);
+  if (d->has_storage) {
+    uint32_t in_dci = (uint32_t)(d->in_ep & 0xFu) * 2 + 1;
+    uint32_t out_dci = (uint32_t)(d->out_ep & 0xFu) * 2;
+
+    if (!ring_init(&d->bulk_in) || !ring_init(&d->bulk_out)) {
+      return 0;
+    }
+    add |= (1u << in_dci) | (1u << out_dci);
+    max_dci = in_dci > out_dci ? in_dci : out_dci;
+    ep_context(x, in_dci, 6, d->in_mps, &d->bulk_in, d->in_mps);
+    ep_context(x, out_dci, 2, d->out_mps, &d->bulk_out, d->out_mps);
+  }
+  for (k = 0; k < d->hid_count; k++) {
+    hid_t *h = &d->hid[k];
+    uint32_t dci = (uint32_t)(h->ep & 0xFu) * 2 + 1;
+    uint64_t buf = alloc_mapped(1);
+
+    if (!ring_init(&h->ring) || !buf) {
+      return 0;
+    }
+    h->dci = dci;
+    h->buf_phys = buf;
+    h->buf = (uint8_t *)(uintptr_t)buf;
+    h->reqlen = h->mps < 8 ? h->mps : 8;
+    if (h->reqlen == 0) {
+      h->reqlen = 8;
+    }
+    add |= 1u << dci;
+    if (dci > max_dci) {
+      max_dci = dci;
+    }
+    ep_context(x, dci, 7, h->mps, &h->ring, h->mps);
+    ictx_ptr(x, dci + 1)[0] = hid_interval(d->speed, h->interval) << 16;
+  }
   c = ictx_ptr(x, 0);
-  c[1] = 1u | (1u << in_dci) | (1u << out_dci);
+  c[1] = add;
   s = ictx_ptr(x, 1);
   s[0] = ((uint32_t)d->speed << 20) | (max_dci << 27);
   s[1] = (uint32_t)d->port << 16;
-  ep_context(x, in_dci, 6, d->in_mps, &d->bulk_in, d->in_mps);
-  ep_context(x, out_dci, 2, d->out_mps, &d->bulk_out, d->out_mps);
   return command(x, x->input_phys, (TRB_CMD_CONFIGURE << 10) | ((uint32_t)d->slot << 24), 0) == CC_SUCCESS;
 }
 
@@ -698,13 +804,18 @@ static int storage_probe(xhci_t *x, xdev_t *d, usb_disk_t *out) {
   return 1;
 }
 
+static void hid_arm(xhci_t *x, xdev_t *d, hid_t *h) {
+  ring_push(&h->ring, h->buf_phys, h->reqlen, (TRB_NORMAL << 10) | (1u << 5) | (1u << 2));   // IOC | ISP
+  ring_doorbell(x, (uint32_t)d->slot, h->dci);
+}
+
 static void enumerate_port(xhci_t *x, int xi, uint32_t port) {
-  int speed = 0;
+  int speed = 0, k;
   xdev_t *d;
   uint32_t total;
   usb_disk_t *disk;
 
-  if (g_disk_count >= USB_MAX_DISKS || !reset_port(x, port, &speed)) {
+  if (!reset_port(x, port, &speed)) {
     return;
   }
   d = address_device(x, port, speed);
@@ -722,27 +833,285 @@ static void enumerate_port(xhci_t *x, int xi, uint32_t port) {
   if (total < 9 || !control(x, d, 0x80, 6, 0x0200, 0, (uint16_t)total, 1)) {
     return;
   }
-  if (!parse_config(d, x->dbuf, total)) {
-    console_printf("[usb] port %u: not a mass-storage device (speed %d)\r\n", port, speed);
+  parse_config(d, x->dbuf, total);
+  if (!d->has_storage && d->hid_count == 0) {
+    console_printf("[usb] port %u: unsupported device (speed %d)\r\n", port, speed);
     return;
   }
-  if (!control(x, d, 0x00, 9, d->cfg_value, 0, 0, 0) || !configure_storage(x, d)) {     // SET_CONFIGURATION
+  if (!control(x, d, 0x00, 9, d->cfg_value, 0, 0, 0) || !configure_endpoints(x, d)) {     // SET_CONFIGURATION
     console_printf("[usb] port %u: could not configure the device\r\n", port);
     return;
   }
-  disk = &g_disks[g_disk_count];
-  memset(disk, 0, sizeof(*disk));
-  if (!storage_probe(x, d, disk)) {
-    console_printf("[usb] port %u: storage device did not answer (or is not 512-byte blocks)\r\n", port);
-    return;
+  for (k = 0; k < d->hid_count; k++) {
+    hid_t *h = &d->hid[k];
+
+    control(x, d, 0x21, 0x0B, 0, h->iface, 0, 0);          // SET_PROTOCOL: boot protocol
+    control(x, d, 0x21, 0x0A, 0, h->iface, 0, 0);          // SET_IDLE: only report changes
+    h->active = 1;
+    g_hid_active++;
+    hid_arm(x, d, h);
+    console_printf("[usb] port %u: %s\r\n", port, h->kind == 1 ? "keyboard" : "mouse");
   }
-  disk->controller = xi;
-  disk->slot = d->slot;
-  d->is_storage = 1;
-  g_disk_count++;
+  if (d->has_storage) {
+    disk = &g_disks[g_disk_count];
+    memset(disk, 0, sizeof(*disk));
+    if (!storage_probe(x, d, disk)) {
+      console_printf("[usb] port %u: storage device did not answer (or is not 512-byte blocks)\r\n", port);
+      return;
+    }
+    disk->controller = xi;
+    disk->slot = d->slot;
+    d->is_storage = 1;
+    g_disk_count++;
+  }
 }
 
+
+// ---- Keyboards and mice (boot protocol) ----------------------------------------
+
+#define HID_QUEUE 64
+#define HID_REPEAT_DELAY_MS 500
+#define HID_REPEAT_RATE_MS  33
+
+static ps2_event_t g_hq[HID_QUEUE];
+static unsigned int g_hq_head = 0, g_hq_tail = 0;
+static uint8_t g_kbd_prev[6];
+static uint8_t g_kbd_mods = 0;
+static int g_caps = 0;
+static uint8_t g_rep_key = 0;
+static uint64_t g_rep_next = 0;
+static uint8_t g_mouse_buttons = 0;
+
+static void hq_push(const ps2_event_t *ev) {
+  unsigned int next = (g_hq_head + 1) % HID_QUEUE;
+
+  if (next != g_hq_tail) {                                 // full: drop
+    g_hq[g_hq_head] = *ev;
+    g_hq_head = next;
+  }
+}
+
+static unsigned int hid_mods(void) {
+  return ((g_kbd_mods & 0x22) ? PS2_MOD_SHIFT : 0u) | ((g_kbd_mods & 0x11) ? PS2_MOD_CTRL : 0u) |
+         ((g_kbd_mods & 0x44) ? PS2_MOD_ALT : 0u);
+}
+
+static const char kHidPlain[17] = {'\n', 27, '\b', '\t', ' ', '-', '=', '[', ']', '\\', 0, ';', '\'', '`', ',', '.', '/'};
+static const char kHidShift[17] = {'\n', 27, '\b', '\t', ' ', '_', '+', '{', '}', '|', 0, ':', '"', '~', '<', '>', '?'};
+static const char kHidDigitShift[10] = {'!', '@', '#', '$', '%', '^', '&', '*', '(', ')'};
+
+// ASCII (or a PS2_KEY_* code) for a HID usage, 0 if it has none.
+static char hid_char(uint8_t u, int shift, int ctrl) {
+  char ch = 0;
+
+  if (u >= 0x04 && u <= 0x1D) {
+    ch = (char)('a' + (u - 4));
+    if (ctrl) {
+      return (char)(ch - 'a' + 1);
+    }
+    if (shift ^ g_caps) {
+      ch = (char)(ch - 'a' + 'A');
+    }
+    return ch;
+  }
+  if (u >= 0x1E && u <= 0x27) {
+    return shift ? kHidDigitShift[u - 0x1E] : (char)(u == 0x27 ? '0' : '1' + (u - 0x1E));
+  }
+  if (u >= 0x28 && u <= 0x38) {
+    return shift ? kHidShift[u - 0x28] : kHidPlain[u - 0x28];
+  }
+  switch (u) {
+    case 0x4A: return PS2_KEY_HOME;
+    case 0x4B: return PS2_KEY_PGUP;
+    case 0x4C: return PS2_KEY_DELETE;
+    case 0x4D: return PS2_KEY_END;
+    case 0x4E: return PS2_KEY_PGDN;
+    case 0x4F: return PS2_KEY_RIGHT;
+    case 0x50: return PS2_KEY_LEFT;
+    case 0x51: return PS2_KEY_DOWN;
+    case 0x52: return PS2_KEY_UP;
+    default: return 0;
+  }
+}
+
+static void kbd_press(uint8_t key) {
+  ps2_event_t ev;
+  char ch;
+
+  if (key == 0x39) {                                       // caps lock toggles on press
+    g_caps = !g_caps;
+    return;
+  }
+  ch = hid_char(key, (g_kbd_mods & 0x22) != 0, (g_kbd_mods & 0x11) != 0);
+  if (ch == 0) {
+    return;
+  }
+  memset(&ev, 0, sizeof(ev));
+  ev.type = PS2_EVENT_KEY;
+  ev.ch = ch;
+  ev.pressed = 1;
+  ev.mods = hid_mods();
+  hq_push(&ev);
+  g_rep_key = key;
+  g_rep_next = timer_get_ms() + HID_REPEAT_DELAY_MS;
+}
+
+static void kbd_report(const uint8_t *r) {
+  int i, j;
+
+  g_kbd_mods = r[0];
+  if (r[2] == 1) {                                         // phantom state (too many keys)
+    return;
+  }
+  for (i = 0; i < 6; i++) {                                // keys that went up
+    int still = 0;
+    for (j = 0; j < 6; j++) {
+      if (r[2 + j] == g_kbd_prev[i]) {
+        still = 1;
+      }
+    }
+    if (g_kbd_prev[i] != 0 && !still && g_kbd_prev[i] == g_rep_key) {
+      g_rep_key = 0;
+    }
+  }
+  for (i = 0; i < 6; i++) {                                // keys that went down
+    int was = 0;
+    for (j = 0; j < 6; j++) {
+      if (r[2 + i] == g_kbd_prev[j]) {
+        was = 1;
+      }
+    }
+    if (r[2 + i] != 0 && !was) {
+      kbd_press(r[2 + i]);
+    }
+  }
+  for (i = 0; i < 6; i++) {
+    g_kbd_prev[i] = r[2 + i];
+  }
+}
+
+static void mouse_report(const uint8_t *r) {
+  ps2_event_t ev;
+  int dx = (signed char)r[1], dy = (signed char)r[2];
+  uint8_t buttons = r[0] & 7u;
+
+  if (dx == 0 && dy == 0 && buttons == g_mouse_buttons) {
+    return;
+  }
+  g_mouse_buttons = buttons;
+  memset(&ev, 0, sizeof(ev));
+  ev.type = PS2_EVENT_MOUSE;
+  ev.dx = dx;
+  ev.dy = dy;
+  ev.buttons = buttons;                                    // same bit order as PS2_MOUSE_*
+  ev.mods = hid_mods();
+  hq_push(&ev);
+}
+
+// A transfer event: if it belongs to a keyboard or mouse endpoint, decode the report and
+// queue the next one.
+static void hid_event(xhci_t *x, const uint32_t ev[4]) {
+  uint32_t slot = ev[3] >> 24, dci = (ev[3] >> 16) & 0x1Fu, cc = ev[2] >> 24;
+  uint32_t left = ev[2] & 0xFFFFFFu;
+  xdev_t *d;
+  int k;
+
+  if (slot == 0 || slot > XHCI_MAX_SLOTS) {
+    return;
+  }
+  d = &x->dev[slot];
+  for (k = 0; k < d->hid_count; k++) {
+    hid_t *h = &d->hid[k];
+
+    if (!h->active || h->dci != dci) {
+      continue;
+    }
+    if (cc == CC_SUCCESS || cc == CC_SHORT) {
+      uint32_t got = left <= h->reqlen ? h->reqlen - left : 0;
+
+      if (h->kind == 1 && got >= 8) {
+        kbd_report(h->buf);
+      } else if (h->kind == 2 && got >= 3) {
+        mouse_report(h->buf);
+      }
+      hid_arm(x, d, h);
+    } else {
+      h->active = 0;                                       // stalled or failed: stop polling it
+      g_hid_active--;
+    }
+    return;
+  }
+}
+
+int usbhid_poll(ps2_event_t *ev) {
+  int i;
+
+  if (g_hid_active == 0) {
+    return 0;
+  }
+  if (g_hq_head == g_hq_tail) {
+    uint64_t now;
+
+    scheduler_preempt_disable();                           // storage transfers share the event ring
+    for (i = 0; i < g_x_count; i++) {
+      uint32_t e[4];
+
+      if (!g_x[i].ready) {
+        continue;
+      }
+      while (event_next(&g_x[i], e)) {
+        if (((e[3] >> 10) & 0x3Fu) == TRB_EV_TRANSFER) {
+          hid_event(&g_x[i], e);
+        }
+      }
+    }
+    scheduler_preempt_enable();
+    now = timer_get_ms();
+    if (g_rep_key != 0 && now >= g_rep_next && g_hq_head == g_hq_tail) {     // typematic repeat
+      char ch = hid_char(g_rep_key, (g_kbd_mods & 0x22) != 0, (g_kbd_mods & 0x11) != 0);
+
+      if (ch != 0) {
+        ps2_event_t r;
+
+        memset(&r, 0, sizeof(r));
+        r.type = PS2_EVENT_KEY;
+        r.ch = ch;
+        r.pressed = 1;
+        r.mods = hid_mods();
+        hq_push(&r);
+      }
+      g_rep_next = now + HID_REPEAT_RATE_MS;
+    }
+  }
+  if (g_hq_head == g_hq_tail) {
+    return 0;
+  }
+  *ev = g_hq[g_hq_tail];
+  g_hq_tail = (g_hq_tail + 1) % HID_QUEUE;
+  return 1;
+}
+
+static int usb_scan(void);
+
+// Disks are brought up with interrupts off, but USB needs real time (port resets, command
+// time-outs) and the clock only ticks from the timer interrupt. So interrupts are on while
+// the bus is scanned, with task switching held off so nothing else runs meanwhile.
 int usbstor_init(void) {
+  uint64_t flags;
+  int n;
+
+  __asm__ volatile("pushfq; popq %0" : "=r"(flags) : : "memory");
+  scheduler_preempt_disable();
+  __asm__ volatile("sti" : : : "memory");
+  n = usb_scan();
+  if (!(flags & 0x200ULL)) {
+    __asm__ volatile("cli" : : : "memory");
+  }
+  scheduler_preempt_enable();
+  return n;
+}
+
+static int usb_scan(void) {
   pci_dev_t dev;
   int index;
 
@@ -776,7 +1145,7 @@ const usb_disk_t *usbstor_disk(int index) {
   return (index >= 0 && index < g_disk_count) ? &g_disks[index] : 0;
 }
 
-static int transfer(int index, uint64_t lba, uint32_t count, uint8_t *buf, int write) {
+static int transfer_locked(int index, uint64_t lba, uint32_t count, uint8_t *buf, int write) {
   const usb_disk_t *disk = usbstor_disk(index);
   xhci_t *x;
   xdev_t *d;
@@ -816,6 +1185,17 @@ static int transfer(int index, uint64_t lba, uint32_t count, uint8_t *buf, int w
     count -= chunk;
   }
   return 1;
+}
+
+// The event ring is shared with the keyboard and mouse polling, so a storage transfer
+// runs with preemption off (like the FAT driver does).
+static int transfer(int index, uint64_t lba, uint32_t count, uint8_t *buf, int write) {
+  int ok;
+
+  scheduler_preempt_disable();
+  ok = transfer_locked(index, lba, count, buf, write);
+  scheduler_preempt_enable();
+  return ok;
 }
 
 int usbstor_read(int index, uint64_t lba, uint32_t count, void *buf) {

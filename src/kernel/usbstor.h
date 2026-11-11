@@ -2,8 +2,9 @@
 #define KERNEL_USBSTOR_H
 
 #include "console.h"
+#include "ps2.h"
 
-// USB mass storage: an xHCI host controller driver (polled, root-hub ports only, no
+// USB mass storage and HID (keyboard, mouse): an xHCI host controller driver (polled, root-hub ports only, no
 // hubs) plus the Bulk-Only Transport with SCSI commands. Memory sticks and USB disks
 // with 512-byte blocks show up as disks next to SATA and NVMe ones.
 
@@ -19,6 +20,11 @@ typedef struct {
 // Find xHCI controllers (PCI class 0C:03:30), enumerate what is plugged into their
 // ports and register every mass-storage device. Returns the number of usable disks.
 int usbstor_init(void);
+
+// Keyboards and mice found by usbstor_init (boot protocol, polled): fetch one decoded
+// event, in the same form ps2_poll gives. Returns 1 if there was one. Cheap when no USB
+// keyboard or mouse is plugged in.
+int usbhid_poll(ps2_event_t *ev);
 
 int usbstor_disk_count(void);
 const usb_disk_t *usbstor_disk(int index);

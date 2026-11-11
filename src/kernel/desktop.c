@@ -12,6 +12,7 @@
 #include "timer.h"
 #include "wm.h"
 #include "syswin.h"
+#include "usbstor.h"
 
 // The shell: wallpaper, desktop icons, taskbar (Start button, one button per
 // window, clock), Start menu and the mouse cursor. Windows themselves belong to
@@ -733,7 +734,7 @@ static __attribute__((noreturn)) void desktop_run(void) {
     app_console_poll();
     syswin_poll();
     toast_drain_posts();
-    while (ps2_poll(&ev)) {
+    while (ps2_poll(&ev) || usbhid_poll(&ev)) {
       if (ev.type == PS2_EVENT_KEY) {
         if (ev.pressed && ev.ch == 27) {
           close_menu();
