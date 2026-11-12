@@ -2444,6 +2444,10 @@ static int cond_cmb_a_open(void) { return syswin_test_pixel(100, 60) == 0x00FFFF
 static int cond_cmb_a_closed(void) { return syswin_test_pixel(100, 60) == 0x00C8DCFF; }     // gone, the parent shows again
 static int cond_cmb_b_open(void) { return syswin_test_pixel(300, 60) == 0x00FFFFFF; }
 static int cond_cmb_b_closed(void) { return syswin_test_pixel(300, 60) == 0x00C8DCFF; }
+// WINSCROLL.EXE: a vertical bar at (10,10) 17x150 and a horizontal one at (40,10) 200x17.
+static int cond_scr_track(void) { return syswin_test_pixel(18, 50) == 0x00F0F0F0 && syswin_test_pixel(18, 137) != 0x00F0F0F0; }       // the thumb is at the bottom
+static int cond_scr_thumb_bottom(void) { return syswin_test_pixel(18, 137) == 0x00CDCDCD; }
+static int cond_scr_glyph(void) { return syswin_test_pixel(18, 12) == 0x00000000 || syswin_test_pixel(18, 11) == 0x00000000; }       // the up arrow's triangle
 // WINBMP.EXE: blits from memory DCs and a bitmap resource onto the window.
 static int cond_bmp_canvas(void) { return syswin_test_pixel(15, 15) == 0x00FF0000 && syswin_test_pixel(45, 15) == 0x000000FF; }       // a 40x30 canvas, red | blue
 static int cond_bmp_pic(void) {                       // the 4x2 resource at 20x: red green blue yellow / cyan . . black
@@ -2700,6 +2704,46 @@ static int pe_supervisor_task(void *arg) {
     console_printf("[PE] WINCOMBO failed checks mask: 0x%x\r\n", (unsigned)code);
   }
   failures += pe_expect(pe_wait_for(cond_pe_no_windows, 500), "the combo box window was released");
+
+  // Scroll bars: arrows, the track, dragging the thumb, a disabled arrow and the keyboard.
+  while (desktop_loop_count() < 3) {
+    wait_one_tick();
+  }
+  h = process_spawn("/APPS/WINSCROLL.EXE");
+  failures += pe_expect(h >= 0 && pe_wait_for(cond_pe_window, 500), "WINSCROLL.EXE: its window appeared");
+  failures += pe_expect(pe_wait_for(cond_scr_glyph, 500), "scroll bars: the control was drawn (arrow glyph)");
+  pe_click(18, 152);                                                     // the down arrow: line down
+  pe_pause(4);
+  pe_click(18, 110);                                                     // the track below the thumb: page down
+  pe_pause(4);
+  syswin_test_inject(SYSWIN_EV_MOUSE_DOWN, 18, 44, 0);                  // take hold of the thumb ...
+  pe_move(18, 100);
+  pe_move(18, 160);                                                      // ... and drag it to the bottom
+  syswin_test_inject(SYSWIN_EV_MOUSE_UP, 18, 160, 0);
+  failures += pe_expect(pe_wait_for(cond_scr_thumb_bottom, 500), "scroll bars: the thumb followed the drag to the bottom");
+  failures += pe_expect(pe_wait_for(cond_scr_track, 500), "scroll bars: the track shows where the thumb was");
+  pe_click(18, 18);                                                      // the up arrow: line up
+  pe_pause(4);
+  pe_click(235, 18);                                                     // the horizontal bar's right arrow
+  pe_pause(4);
+  pe_click(190, 18);                                                     // its track right of the thumb: page right
+  pe_pause(4);
+  pe_click(48, 18);                                                      // its left arrow is disabled: nothing happens
+  pe_pause(4);
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 0x80);                        // keyboard on the focused vertical bar: Home, PageDown, Down, End, Up
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 0x83);
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 0x1F);
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 0x81);
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 0x1E);
+  pe_pause(8);
+  syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
+  code = 0xFFFFFFFFULL;
+  failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
+                        "scroll bars: every check in the program passed (exit code = failed checks bit mask)");
+  if (code != 0) {
+    console_printf("[PE] WINSCROLL failed checks mask: 0x%x\r\n", (unsigned)code);
+  }
+  failures += pe_expect(pe_wait_for(cond_pe_no_windows, 500), "the scroll bar window was released");
 
   // Bitmaps: memory DCs, raster operations, DIBs and a bitmap resource.
   while (desktop_loop_count() < 3) {

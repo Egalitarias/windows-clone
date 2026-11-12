@@ -1,12 +1,12 @@
 // The standard controls of user32 for the Win32 runtime: BUTTON (push buttons, check boxes, radio
 // buttons, group boxes), STATIC (text and rectangles), EDIT (single-line and multi-line text with
-// selection, caret and clipboard) and LISTBOX (a scrolling list with a scroll bar). Each is a
+// selection, caret and clipboard) and LISTBOX (a scrolling list with a scroll bar), COMBOBOX and SCROLLBAR. Each is a
 // window class registered at startup with its own window procedure, which draws on the control's
 // child window and sends WM_COMMAND notifications to the parent the way Windows does.
 //
 // Drawing uses the built-in 8x8 font, so a character cell is 8 pixels wide and lines are 10
 // apart. WM_CTLCOLORxxx is sent to the parent before painting, so applications can choose colors.
-// Not here: COMBOBOX, SCROLLBAR as a control, owner draw, tooltips, accelerators, undo.
+// Not here: owner draw, tooltips, accelerators, undo.
 #include "internal.h"
 
 #define CH_W 8
@@ -1973,6 +1973,502 @@ static LRESULT CALLBACK combo_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
 
 // ---- registration -------------------------------------------------------------------------------------------
 
+// ---- SCROLLBAR -------------------------------------------------------------------------------------------
+//
+// The control (SBS_HORZ / SBS_VERT, and the size box) and the scroll bar API. The state is the
+// SCROLLINFO of Windows: range, page, position. Like the real one the control does not move itself:
+// it tells its parent (WM_HSCROLL / WM_VSCROLL with SB_LINEUP, SB_PAGEDOWN, SB_THUMBTRACK ...) and the
+// parent calls SetScrollPos or SetScrollInfo. The scroll bars of ordinary windows (SB_HORZ, SB_VERT
+// for WS_HSCROLL / WS_VSCROLL) keep their state in a table so the API works, but they are not drawn.
+
+typedef struct {
+  int min, max, page, pos;
+  int track;                                  // the position while the thumb is dragged
+  int off;                                    // disabled arrows: ESB_DISABLE_LTUP / ESB_DISABLE_RTDN bits
+  int drag;                                   // 1: dragging the thumb
+  int thumb_off;                              // where in the thumb the mouse took hold
+  int down;                                   // the part held down (SBP_*), 0 for none
+  int mx, my;                                 // the last mouse position
+  int sent;                                   // a keyboard action is waiting for its SB_ENDSCROLL
+} sb_t;
+
+enum { SBP_NONE, SBP_LINE1, SBP_PAGE1, SBP_THUMB, SBP_PAGE2, SBP_LINE2 };
+
+#define SB_TIMER 7
+#define SB_FIRST_DELAY 400
+#define SB_REPEAT 50
+#define SB_MIN_THUMB 8
+
+static void sb_init(sb_t *s) {
+  rt_memset(s, 0, sizeof(*s));
+  s->max = 100;
+}
+
+static int sb_maxpos(const sb_t *s) {
+  int m = s->max - (s->page > 0 ? s->page - 1 : 0);
+
+  return m < s->min ? s->min : m;
+}
+
+static int sb_scrollable(const sb_t *s) { return sb_maxpos(s) > s->min; }
+
+static int sb_clamp(const sb_t *s, int pos) {
+  int hi = sb_maxpos(s);
+
+  return pos < s->min ? s->min : pos > hi ? hi : pos;
+}
+
+static int sb_is_ctl(HWND h) {
+  char name[16];
+
+  return GetClassNameA(h, name, sizeof(name)) > 0 && rt_stricmp(name, "SCROLLBAR") == 0;
+}
+
+// The scroll bars of ordinary windows: two per window, in a small table.
+#define SB_WINDOWS 32
+static struct { HWND h; sb_t bar[2]; } g_sbw[SB_WINDOWS];
+
+static sb_t *sb_state(HWND h, int bar) {
+  int i, free_slot = -1;
+
+  if (bar == SB_CTL) {
+    return sb_is_ctl(h) ? (sb_t *)rt_wnd_ctl(h) : 0;
+  }
+  if (bar != SB_HORZ && bar != SB_VERT) {
+    return 0;
+  }
+  for (i = 0; i < SB_WINDOWS; ++i) {
+    if (g_sbw[i].h == h) {
+      return &g_sbw[i].bar[bar];
+    }
+    if (g_sbw[i].h != 0 && !IsWindow(g_sbw[i].h)) {
+      g_sbw[i].h = 0;                                        // its window is gone
+    }
+    if (g_sbw[i].h == 0 && free_slot < 0) {
+      free_slot = i;
+    }
+  }
+  if (free_slot < 0 || !IsWindow(h)) {
+    return 0;
+  }
+  g_sbw[free_slot].h = h;
+  sb_init(&g_sbw[free_slot].bar[0]);
+  sb_init(&g_sbw[free_slot].bar[1]);
+  return &g_sbw[free_slot].bar[bar];
+}
+
+static int sb_vert(HWND h) { return (style_of(h) & SBS_VERT) != 0; }
+
+// Geometry along the bar: the arrows, the track between them, the thumb in it.
+typedef struct { int len, cross, arrow, track, t0, t1; } sbg_t;
+
+static void sb_geom(HWND h, sb_t *s, sbg_t *g) {
+  RECT rc;
+  int range, cur;
+
+  GetClientRect(h, &rc);
+  g->len = sb_vert(h) ? rc.bottom : rc.right;
+  g->cross = sb_vert(h) ? rc.right : rc.bottom;
+  g->arrow = g->cross;
+  if (g->arrow * 2 > g->len) g->arrow = g->len / 2;
+  g->track = g->len - 2 * g->arrow;
+  g->t0 = g->t1 = g->arrow;
+  if (!sb_scrollable(s) || !IsWindowEnabled(h) || g->track < SB_MIN_THUMB) {
+    return;                                                  // nothing to drag
+  }
+  range = s->max - s->min + 1;
+  {
+    int th = s->page > 0 ? g->track * s->page / range : g->arrow;
+    int span = sb_maxpos(s) - s->min;
+
+    if (th < SB_MIN_THUMB) th = SB_MIN_THUMB;
+    if (th > g->track) th = g->track;
+    cur = s->drag ? s->track : s->pos;
+    g->t0 = g->arrow + (g->track - th) * (sb_clamp(s, cur) - s->min) / span;
+    g->t1 = g->t0 + th;
+  }
+}
+
+static int sb_hit(HWND h, sb_t *s, int x, int y) {
+  sbg_t g;
+  int a = sb_vert(h) ? y : x;
+
+  sb_geom(h, s, &g);
+  if (a < 0 || a >= g.len) return SBP_NONE;
+  if (a < g.arrow) return SBP_LINE1;
+  if (a >= g.len - g.arrow) return SBP_LINE2;
+  if (g.t1 <= g.t0) return a < g.len / 2 ? SBP_PAGE1 : SBP_PAGE2;
+  return a < g.t0 ? SBP_PAGE1 : a >= g.t1 ? SBP_PAGE2 : SBP_THUMB;
+}
+
+static void sb_send(HWND h, int code, int pos) {
+  HWND p = GetParent(h);
+
+  if (p != 0) {
+    SendMessageA(p, sb_vert(h) ? WM_VSCROLL : WM_HSCROLL, MAKEWPARAM(code, pos), (LPARAM)h);
+  }
+}
+
+// One rectangle in (along, across) coordinates, drawn the right way round.
+static void sb_rect(HDC dc, int vert, int a0, int c0, int a1, int c1, COLORREF col) {
+  if (vert) fill(dc, c0, a0, c1, a1, col); else fill(dc, a0, c0, a1, c1, col);
+}
+
+static void sb_arrow(HDC dc, int vert, int a0, int size, int cross, int forward, int pressed, int enabled) {
+  COLORREF glyph = enabled ? RGB(0, 0, 0) : RGB(160, 160, 160);
+  int mid = a0 + size / 2, cx = cross / 2, j;
+
+  sb_rect(dc, vert, a0, 0, a0 + size, cross, pressed ? RGB(176, 176, 176) : RGB(240, 240, 240));
+  {
+    COLORREF edge = RGB(160, 160, 160);
+
+    sb_rect(dc, vert, a0, 0, a0 + size, 1, edge);
+    sb_rect(dc, vert, a0, cross - 1, a0 + size, cross, edge);
+    sb_rect(dc, vert, a0, 0, a0 + 1, cross, edge);
+    sb_rect(dc, vert, a0 + size - 1, 0, a0 + size, cross, edge);
+  }
+  for (j = 0; j < 4; ++j) {                                  // a triangle 7 wide at its base
+    int at = forward ? mid + 1 - j : mid - 2 + j;
+
+    sb_rect(dc, vert, at, cx - j, at + 1, cx + j + 1, glyph);
+  }
+}
+
+static void sb_paint(HWND h, sb_t *s) {
+  PAINTSTRUCT ps;
+  HDC dc = BeginPaint(h, &ps);
+  sbg_t g;
+  int vert = sb_vert(h), en = IsWindowEnabled(h), live;
+
+  if (dc == 0) {
+    return;
+  }
+  if (style_of(h) & (SBS_SIZEBOX | SBS_SIZEGRIP)) {
+    RECT rc;
+
+    GetClientRect(h, &rc);
+    fill(dc, 0, 0, rc.right, rc.bottom, RGB(240, 240, 240));
+    EndPaint(h, &ps);
+    return;
+  }
+  sb_geom(h, s, &g);
+  live = en && sb_scrollable(s);
+  sb_rect(dc, vert, 0, 0, g.len, g.cross, RGB(240, 240, 240));          // the track
+  sb_arrow(dc, vert, 0, g.arrow, g.cross, 0, s->down == SBP_LINE1, live && !(s->off & ESB_DISABLE_LTUP));
+  sb_arrow(dc, vert, g.len - g.arrow, g.arrow, g.cross, 1, s->down == SBP_LINE2, live && !(s->off & ESB_DISABLE_RTDN));
+  if (g.t1 > g.t0) {
+    COLORREF body = (s->drag || s->down == SBP_THUMB) ? RGB(130, 130, 130) : RGB(205, 205, 205);
+
+    sb_rect(dc, vert, g.t0, 0, g.t1, g.cross, body);
+    sb_rect(dc, vert, g.t0, 0, g.t1, 1, RGB(150, 150, 150));
+    sb_rect(dc, vert, g.t0, g.cross - 1, g.t1, g.cross, RGB(150, 150, 150));
+    sb_rect(dc, vert, g.t0, 0, g.t0 + 1, g.cross, RGB(150, 150, 150));
+    sb_rect(dc, vert, g.t1 - 1, 0, g.t1, g.cross, RGB(150, 150, 150));
+  }
+  EndPaint(h, &ps);
+}
+
+// SetScrollInfo's core. Returns the new position.
+static int sb_apply(sb_t *s, const SCROLLINFO *si) {
+  if (si->fMask & SIF_RANGE) {
+    s->min = si->nMin;
+    s->max = si->nMax < si->nMin ? si->nMin : si->nMax;
+  }
+  if (si->fMask & SIF_PAGE) {
+    s->page = (int)si->nPage;
+  }
+  if (s->page < 0) s->page = 0;
+  if (s->page > s->max - s->min + 1) s->page = s->max - s->min + 1;
+  if (si->fMask & SIF_POS) {
+    s->pos = si->nPos;
+  }
+  s->pos = sb_clamp(s, s->pos);
+  if (si->fMask & SIF_DISABLENOSCROLL) {
+    s->off = sb_scrollable(s) ? 0 : (ESB_DISABLE_LTUP | ESB_DISABLE_RTDN);
+  }
+  return s->pos;
+}
+
+static void sb_get(sb_t *s, SCROLLINFO *si) {
+  if (si->fMask & SIF_RANGE) { si->nMin = s->min; si->nMax = s->max; }
+  if (si->fMask & SIF_PAGE) si->nPage = (UINT)s->page;
+  if (si->fMask & SIF_POS) si->nPos = s->pos;
+  if (si->fMask & SIF_TRACKPOS) si->nTrackPos = s->drag ? s->track : s->pos;
+}
+
+static void sb_stop(HWND h, sb_t *s) {
+  if (s->down) {
+    KillTimer(h, SB_TIMER);
+  }
+  s->down = 0;
+  s->drag = 0;
+}
+
+// What the held-down part asks for now (the arrows and the page areas repeat).
+static int sb_part_code(int part) {
+  switch (part) {
+    case SBP_LINE1: return SB_LINEUP;
+    case SBP_LINE2: return SB_LINEDOWN;
+    case SBP_PAGE1: return SB_PAGEUP;
+    default: return SB_PAGEDOWN;
+  }
+}
+
+static LRESULT CALLBACK scrollbar_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
+  sb_t *s = (sb_t *)rt_wnd_ctl(h);
+
+  switch (m) {
+    case WM_NCCREATE:
+      s = rt_alloc(sizeof(*s));
+      if (s == 0) {
+        return 0;
+      }
+      sb_init(s);
+      rt_wnd_set_ctl(h, s);
+      return 1;
+    case WM_NCDESTROY:
+      if (s != 0) {
+        KillTimer(h, SB_TIMER);
+        rt_free(s);
+      }
+      rt_wnd_set_ctl(h, 0);
+      return 0;
+    case WM_ERASEBKGND:
+      return 1;
+    case WM_PAINT:
+      if (s != 0) sb_paint(h, s);
+      return 0;
+    case WM_ENABLE: case WM_SIZE:
+      InvalidateRect(h, 0, FALSE);
+      return 0;
+    case WM_GETDLGCODE:
+      return DLGC_WANTARROWS;
+    case SBM_SETPOS: {
+      int old;
+
+      if (s == 0) return 0;
+      old = s->pos;
+      s->pos = sb_clamp(s, (int)wp);
+      if (lp) InvalidateRect(h, 0, FALSE);
+      return old;
+    }
+    case SBM_GETPOS:
+      return s != 0 ? s->pos : 0;
+    case SBM_SETRANGE: case SBM_SETRANGEREDRAW: {
+      SCROLLINFO si;
+
+      if (s == 0) return 0;
+      si.fMask = SIF_RANGE;
+      si.nMin = (int)wp;
+      si.nMax = (int)lp;
+      sb_apply(s, &si);
+      if (m == SBM_SETRANGEREDRAW) InvalidateRect(h, 0, FALSE);
+      return 0;
+    }
+    case SBM_GETRANGE:
+      if (s != 0) {
+        if (wp) *(int *)wp = s->min;
+        if (lp) *(int *)lp = s->max;
+      }
+      return 0;
+    case SBM_ENABLE_ARROWS:
+      if (s == 0) return FALSE;
+      s->off = (int)wp & (ESB_DISABLE_LTUP | ESB_DISABLE_RTDN);
+      InvalidateRect(h, 0, FALSE);
+      return TRUE;
+    case SBM_SETSCROLLINFO: {
+      int r;
+
+      if (s == 0 || lp == 0) return 0;
+      r = sb_apply(s, (const SCROLLINFO *)lp);
+      if (wp) InvalidateRect(h, 0, FALSE);
+      return r;
+    }
+    case SBM_GETSCROLLINFO:
+      if (s == 0 || lp == 0) return FALSE;
+      sb_get(s, (SCROLLINFO *)lp);
+      return TRUE;
+    case WM_LBUTTONDOWN: case WM_LBUTTONDBLCLK: {
+      int x = (short)(lp & 0xFFFF), y = (short)((lp >> 16) & 0xFFFF), part;
+      sbg_t g;
+
+      if (s == 0 || (style_of(h) & (SBS_SIZEBOX | SBS_SIZEGRIP)) || !sb_scrollable(s) || !IsWindowEnabled(h)) return 0;
+      part = sb_hit(h, s, x, y);
+      if ((part == SBP_LINE1 && (s->off & ESB_DISABLE_LTUP)) || (part == SBP_LINE2 && (s->off & ESB_DISABLE_RTDN)) || part == SBP_NONE) {
+        return 0;
+      }
+      s->mx = x;
+      s->my = y;
+      sb_geom(h, s, &g);
+      SetCapture(h);
+      if (part == SBP_THUMB) {
+        s->drag = 1;
+        s->track = s->pos;
+        s->thumb_off = (sb_vert(h) ? y : x) - g.t0;
+        InvalidateRect(h, 0, FALSE);
+        return 0;
+      }
+      s->down = part;
+      sb_send(h, sb_part_code(part), 0);
+      SetTimer(h, SB_TIMER, SB_FIRST_DELAY, 0);
+      InvalidateRect(h, 0, FALSE);
+      return 0;
+    }
+    case WM_MOUSEMOVE:
+      if (s == 0) return 0;
+      s->mx = (short)(lp & 0xFFFF);
+      s->my = (short)((lp >> 16) & 0xFFFF);
+      if (s->drag) {
+        sbg_t g;
+        int a = (sb_vert(h) ? s->my : s->mx) - s->thumb_off - 0, span = sb_maxpos(s) - s->min, room, np;
+
+        sb_geom(h, s, &g);
+        room = g.track - (g.t1 - g.t0);
+        np = room > 0 ? s->min + (a - g.arrow) * span / room : s->min;
+        np = sb_clamp(s, np);
+        if (np != s->track) {
+          s->track = np;
+          sb_send(h, SB_THUMBTRACK, np);
+          InvalidateRect(h, 0, FALSE);
+        }
+      }
+      return 0;
+    case WM_TIMER:
+      if (s != 0 && wp == SB_TIMER) {
+        if (s->down != 0 && sb_hit(h, s, s->mx, s->my) == s->down) {
+          sb_send(h, sb_part_code(s->down), 0);
+        }
+        SetTimer(h, SB_TIMER, SB_REPEAT, 0);
+      }
+      return 0;
+    case WM_LBUTTONUP:
+      if (s != 0 && (s->drag || s->down)) {
+        if (s->drag) {
+          sb_send(h, SB_THUMBPOSITION, s->track);
+        }
+        sb_stop(h, s);
+        ReleaseCapture();
+        sb_send(h, SB_ENDSCROLL, 0);
+        InvalidateRect(h, 0, FALSE);
+      }
+      return 0;
+    case WM_KEYDOWN: {
+      int code = -1, vert = sb_vert(h);
+
+      if (s == 0 || !sb_scrollable(s)) return 0;
+      switch (wp) {
+        case VK_UP: if (vert) code = SB_LINEUP; break;
+        case VK_DOWN: if (vert) code = SB_LINEDOWN; break;
+        case VK_LEFT: if (!vert) code = SB_LINELEFT; break;
+        case VK_RIGHT: if (!vert) code = SB_LINERIGHT; break;
+        case VK_PRIOR: code = SB_PAGEUP; break;
+        case VK_NEXT: code = SB_PAGEDOWN; break;
+        case VK_HOME: code = SB_TOP; break;
+        case VK_END: code = SB_BOTTOM; break;
+        default: break;
+      }
+      if (code >= 0) {
+        s->sent = 1;
+        sb_send(h, code, 0);
+      }
+      return 0;
+    }
+    case WM_KEYUP:
+      if (s != 0 && s->sent) {
+        s->sent = 0;
+        sb_send(h, SB_ENDSCROLL, 0);
+      }
+      return 0;
+    default:
+      return DefWindowProcA(h, m, wp, lp);
+  }
+}
+
+EXPORT int WINAPI SetScrollInfo(HWND h, int bar, LPCSCROLLINFO si, BOOL redraw) {
+  sb_t *s = sb_state(h, bar);
+  int r;
+
+  if (s == 0 || si == 0) {
+    return 0;
+  }
+  r = sb_apply(s, si);
+  if (redraw && bar == SB_CTL) InvalidateRect(h, 0, FALSE);
+  return r;
+}
+
+EXPORT BOOL WINAPI GetScrollInfo(HWND h, int bar, LPSCROLLINFO si) {
+  sb_t *s = sb_state(h, bar);
+
+  if (s == 0 || si == 0) {
+    return FALSE;
+  }
+  sb_get(s, si);
+  return TRUE;
+}
+
+EXPORT int WINAPI SetScrollPos(HWND h, int bar, int pos, BOOL redraw) {
+  sb_t *s = sb_state(h, bar);
+  int old;
+
+  if (s == 0) {
+    return 0;
+  }
+  old = s->pos;
+  s->pos = sb_clamp(s, pos);
+  if (redraw && bar == SB_CTL) InvalidateRect(h, 0, FALSE);
+  return old;
+}
+
+EXPORT int WINAPI GetScrollPos(HWND h, int bar) {
+  sb_t *s = sb_state(h, bar);
+
+  return s != 0 ? s->pos : 0;
+}
+
+EXPORT BOOL WINAPI SetScrollRange(HWND h, int bar, int lo, int hi, BOOL redraw) {
+  sb_t *s = sb_state(h, bar);
+  SCROLLINFO si;
+
+  if (s == 0) {
+    return FALSE;
+  }
+  si.fMask = SIF_RANGE;
+  si.nMin = lo;
+  si.nMax = hi;
+  sb_apply(s, &si);
+  if (redraw && bar == SB_CTL) InvalidateRect(h, 0, FALSE);
+  return TRUE;
+}
+
+EXPORT BOOL WINAPI GetScrollRange(HWND h, int bar, LPINT lo, LPINT hi) {
+  sb_t *s = sb_state(h, bar);
+
+  if (s == 0 || lo == 0 || hi == 0) {
+    return FALSE;
+  }
+  *lo = s->min;
+  *hi = s->max;
+  return TRUE;
+}
+
+EXPORT BOOL WINAPI EnableScrollBar(HWND h, UINT bar, UINT flags) {
+  sb_t *s = sb_state(h, (int)bar);
+
+  if (s == 0) {
+    return FALSE;
+  }
+  s->off = (int)flags & (ESB_DISABLE_LTUP | ESB_DISABLE_RTDN);
+  if (bar == SB_CTL) InvalidateRect(h, 0, FALSE);
+  return TRUE;
+}
+
+EXPORT BOOL WINAPI ShowScrollBar(HWND h, int bar, BOOL show) {
+  if (bar == SB_CTL) {
+    return ShowWindow(h, show ? SW_SHOW : SW_HIDE), TRUE;
+  }
+  return sb_state(h, bar) != 0;                                // (the bars of ordinary windows are not drawn)
+}
+
 void rt_controls_register(void) {
   static const struct { const char *name; WNDPROC proc; int bg; UINT style; } kClasses[] = {
     {"BUTTON", button_proc, COLOR_BTNFACE, 0},
@@ -1980,6 +2476,7 @@ void rt_controls_register(void) {
     {"EDIT", edit_proc, COLOR_WINDOW, CS_DBLCLKS},
     {"LISTBOX", listbox_proc, COLOR_WINDOW, CS_DBLCLKS},
     {"COMBOBOX", combo_proc, COLOR_WINDOW, 0},
+    {"SCROLLBAR", scrollbar_proc, COLOR_SCROLLBAR, 0},
     {"#32770", rt_dlg_proc, COLOR_BTNFACE, 0},
   };
   int i;

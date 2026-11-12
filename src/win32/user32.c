@@ -1964,3 +1964,13 @@ EXPORT BOOL WINAPI UnionRect(LPRECT d, const RECT *a, const RECT *b) {
   *d = r;
   return TRUE;
 }
+
+EXPORT int WINAPI GetClassNameA(HWND h, LPSTR buf, int max) {
+  wnd_t *w = w_get(h);
+
+  if (w == 0 || w->cls == 0 || buf == 0 || max <= 0) {
+    return 0;
+  }
+  rt_copy(buf, w->cls->name, (size_t)max);
+  return (int)rt_strlen(buf);
+}

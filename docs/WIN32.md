@@ -87,7 +87,7 @@ and `WM_MOUSEMOVE` (moves only while the button is held), the wheel `WM_MOUSEWHE
 the close button `WM_CLOSE`. `WM_PAINT` is generated for invalidated windows; `BeginPaint` sends
 `WM_ERASEBKGND` and the default procedure fills with the class brush.
 
-Missing on purpose (for now): the `SCROLLBAR` control, clipboard (beyond the edit control's), fonts other
+Missing on purpose (for now): the scroll bars of ordinary windows (`WS_VSCROLL` frames), clipboard (beyond the edit control's), fonts other
 than the built-in one, right and middle mouse buttons, wide-character (`W`) window functions
 (only `DefWindowProcW`, `GetMessageW`, ...), real wall-clock time (time counts from 2026-01-01 at
 boot), environment variables, and anything about sockets.
@@ -129,6 +129,14 @@ The classes are registered when the first window is created (`src/win32/controls
 | `LISTBOX` | single, multiple and extended selection, `LBS_SORT`, `LBS_NOTIFY` (`LBN_SELCHANGE`, `LBN_DBLCLK`); a scroll bar (arrows, track, draggable thumb), wheel, Up/Down/PageUp/PageDown/Home/End, type-ahead; `LB_ADDSTRING/INSERTSTRING/DELETESTRING/RESETCONTENT/GETCOUNT/GETCURSEL/SETCURSEL/GETSEL/SETSEL/GETSELCOUNT/GETSELITEMS/GETTEXT/GETTEXTLEN/FINDSTRING/FINDSTRINGEXACT/SELECTSTRING/GETITEMDATA/SETITEMDATA/GETTOPINDEX/SETTOPINDEX/GETITEMRECT/ITEMFROMPOINT` |
 
 | `COMBOBOX` | `CBS_SIMPLE`, `CBS_DROPDOWN` (an `EDIT` child, `CBN_EDITCHANGE`) and `CBS_DROPDOWNLIST`; `CBS_SORT`; Up/Down/PageUp/PageDown change the selection, F4 drops the list, Enter accepts and Escape cancels, type-ahead in the list box variety; `CB_ADDSTRING/INSERTSTRING/DELETESTRING/RESETCONTENT/GETCOUNT/GETCURSEL/SETCURSEL/GETLBTEXT/GETLBTEXTLEN/FINDSTRING/FINDSTRINGEXACT/SELECTSTRING/GETITEMDATA/SETITEMDATA/GETTOPINDEX/SETTOPINDEX/SHOWDROPDOWN/GETDROPPEDSTATE/LIMITTEXT/GETEDITSEL/SETEDITSEL/GETDROPPEDCONTROLRECT`; `CBN_SELCHANGE/DROPDOWN/CLOSEUP/SELENDOK/SELENDCANCEL/SETFOCUS/KILLFOCUS/DBLCLK` |
+| `SCROLLBAR` | `SBS_HORZ`, `SBS_VERT`, the size box; arrow buttons, track and thumb (the thumb is proportional to `nPage`); sends `WM_HSCROLL`/`WM_VSCROLL` to the parent with `SB_LINEUP`, `SB_PAGEDOWN`, `SB_THUMBTRACK`, `SB_THUMBPOSITION`, `SB_ENDSCROLL` ...; the arrows and the track repeat while held; Up/Down/Left/Right, PageUp/PageDown, Home/End when focused; `SBM_*` messages |
+
+A scroll bar control does not move itself: as on Windows it reports what the user did and the parent calls
+`SetScrollPos` or `SetScrollInfo` (`SIF_RANGE`, `SIF_PAGE`, `SIF_POS`, `SIF_TRACKPOS`, `SIF_DISABLENOSCROLL`;
+the largest position is `nMax - nPage + 1`). Also there: `GetScrollInfo`, `Set/GetScrollPos`, `Set/GetScrollRange`,
+`EnableScrollBar` (the arrows can be disabled one at a time), `ShowScrollBar`. For an ordinary window the
+`SB_HORZ` and `SB_VERT` bars keep their state so the calls succeed, but nothing is drawn: a window with
+`WS_VSCROLL` has no scroll bar frame yet (use a `SCROLLBAR` control next to the content, as the list box does inside).
 
 A combo box follows Windows' layout rule: the height given to `CreateWindow` is the height of the drop-down
 list plus the field, but the window is only the field's height (20 pixels) while closed, so it
@@ -192,7 +200,7 @@ runs until `EndDialog`; the close button sends `IDCANCEL`.
 
 Dialog units are converted with 7 x 12 pixels per 4 x 8 units (`GetDialogBaseUnits`), larger than
 Windows' 8-point font, because characters here are 8 pixels wide. Not there: controls this runtime lacks
-(`SCROLLBAR`, common controls) in a template are skipped, `DS_` styles other than `DS_SETFONT` (the font is
+(common controls) in a template are skipped, `DS_` styles other than `DS_SETFONT` (the font is
 ignored), dialog placement from the template (the window manager places it), `DM_SETDEFID`, system
 modal and `MessageBox` owner disabling.
 
@@ -451,6 +459,10 @@ virtual FAT drive is not a good place for that). It runs, on the real desktop:
 - `WINCOMBO.EXE` (`tests/wincombo.c`): a list-box combo and an editable one. The kernel opens them
   with the mouse, chooses items, types, uses Down/Enter/Escape and type-ahead; pixels show the list
   over the parent and the parent painted again; 16 checks of notifications, text and selection;
+- `WINSCROLL.EXE` (`tests/winscroll.c`): a vertical and a horizontal scroll bar. The kernel clicks the
+  arrows and the track, drags the thumb, clicks a disabled arrow and uses Home/End/PageDown/Down/Up; pixels
+  show the thumb at the bottom after the drag; the program counts the notifications and checks the
+  scroll API (17 checks), exit code = bit mask of failures;
 - `WINBMP.EXE` (`tests/winbmp.c`, `winbmp.rc`, `pic.bmp`): memory DCs and bitmaps: raster operations,
   stretching and mirroring, DIB sections, `SetDIBits`/`GetDIBits`/`StretchDIBits`, a bitmap resource,
   text into a bitmap, a monochrome bitmap. 30 checks read pixels back from memory DCs; the kernel
