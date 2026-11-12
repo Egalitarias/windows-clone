@@ -87,7 +87,7 @@ and `WM_MOUSEMOVE` (moves only while the button is held), the wheel `WM_MOUSEWHE
 the close button `WM_CLOSE`. `WM_PAINT` is generated for invalidated windows; `BeginPaint` sends
 `WM_ERASEBKGND` and the default procedure fills with the class brush.
 
-Missing on purpose (for now): `COMBOBOX` and `SCROLLBAR` controls, menus, dialog templates
+Missing on purpose (for now): `COMBOBOX` and `SCROLLBAR` controls, dialog templates
 (`DialogBox`, resources), memory DCs and bitmaps (`CreateCompatibleDC`, `BitBlt`), clipboard, resources, fonts other
 than the built-in one, right and middle mouse buttons, wide-character (`W`) window functions
 (only `DefWindowProcW`, `GetMessageW`, ...), real wall-clock time (time counts from 2026-01-01 at
@@ -134,6 +134,34 @@ Windows; `WM_SETFONT` is remembered but changes nothing. A multi-line edit keeps
 hands out `\r\n`, and its selection positions count a line end as one character. Not there:
 owner-drawn controls, tooltips, accelerators, undo, `WS_BORDER`/`WS_EX_CLIENTEDGE` for windows
 that do not draw their own frame (controls always draw theirs), `SetParent`, an MDI client.
+
+## Menus
+
+`CreateMenu`/`CreatePopupMenu`, `AppendMenu`, `InsertMenu`, `ModifyMenu`, `DeleteMenu`, `RemoveMenu`,
+`InsertMenuItem`/`GetMenuItemInfo`/`SetMenuItemInfo`, `GetMenuItemCount/ID`, `GetSubMenu`,
+`GetMenuString`, `GetMenuState`, `CheckMenuItem`, `CheckMenuRadioItem`, `EnableMenuItem`, `IsMenu`,
+`DestroyMenu`, `SetMenu`/`GetMenu`/`DrawMenuBar`, `TrackPopupMenu[Ex]` and accelerator tables
+(`CreateAcceleratorTable`, `TranslateAccelerator`) work (`src/win32/menu.c`). A menu is passed to
+`CreateWindowEx` (or `SetMenu`) as on Windows; a window's menu is destroyed with it.
+
+- **The bar** takes the top 18 pixels of the window's surface; the client area starts below it
+  (`GetClientRect`, drawing, mouse coordinates and `ClientToScreen` all account for it). The window
+  size you ask for includes the bar, as on Windows.
+- **Popups are not windows.** They are drawn over the client area while a modal loop reads the
+  window's input; when one closes the window is painted again over the place it covered (your
+  `WM_PAINT` runs). A popup is clamped to the surface, so in a small window a long menu is cut short.
+- **Input:** hover and click, press-drag-release, Up/Down/Left/Right, Enter, Escape, a letter chooses
+  the item with that `&` mnemonic (underlined), Alt+letter opens a bar item. Submenus nest 4 deep.
+  Separators, check marks and radio bullets (`CheckMenuRadioItem`), disabled items (gray, not
+  selectable), `\t` accelerator text right-aligned, an arrow for submenus.
+- **Messages:** `WM_INITMENU` (bar) and `WM_INITMENUPOPUP` before a popup opens, so an application
+  can enable and check items; choosing an item posts `WM_COMMAND` (`HIWORD` 0, or 1 from an
+  accelerator; a disabled item's accelerator does nothing). `TrackPopupMenu` with `TPM_RETURNCMD`
+  returns the command instead; `TPM_RIGHTALIGN`/`TPM_BOTTOMALIGN` are honored.
+
+Not there: `LoadMenu` and menu resources, `WM_MENUSELECT`, owner-drawn and bitmap items, the system
+menu, F10 and Alt alone for the bar (Alt+letter works), menu bar wrapping, scrolling of long popups,
+`SetMenuDefaultItem`, `AppendMenuW` and the other `W` forms.
 
 ## The C runtime
 
@@ -344,6 +372,11 @@ virtual FAT drive is not a good place for that). It runs, on the real desktop:
   program checks 32 things (dialog item API, notifications, radio groups, focus, `IsDialogMessage`,
   disabled windows, `ES_NUMBER`, multi-line edit, child coordinates) and exits with a bit mask of the
   ones that failed (0 = all passed);
+- `WINMENU.EXE` (`tests/winmenu.c`): menus. The kernel clicks the bar, hovers, chooses items, uses
+  the keyboard in a submenu, Alt+F, Escape, Ctrl+N and a popup from `TrackPopupMenu`; pixels show
+  the bar, a popup over the client area and the client painted again; the program checks 19 things
+  (menu API, no command from a disabled item or Escape, client size under the bar) and exits with a
+  bit mask of the failures;
 - `WINGUI.EXE`: window class, `WM_PAINT` with GDI (pixels are checked), mouse clicks, typed
   characters, a timer and `PostQuitMessage` (the exit code encodes what it saw);
 - six more runs and a leak check (image, DLL and heap are freed).
@@ -358,4 +391,4 @@ screenshot (`python scripts/qemu-screenshot.py out/run/shot.png 28`).
 - Programs larger than about 900 KB (together with the runtime) do not fit the load window.
 - Not a Windows compatibility layer in the sense of running arbitrary software: it runs programs
   that stay inside the subset above. Programs from real toolchains that link the CRT, use
-  the C++ standard library, or draw with bitmaps, menus and dialogs will not get far yet.
+  the C++ standard library, or draw with bitmaps and dialogs will not get far yet.

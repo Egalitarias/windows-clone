@@ -47,6 +47,8 @@ struct wnd {
   wnd_t *parent, *first, *last, *next, *prev;   // the tree of child windows; z-order is the list order
   wnd_t *focus;                 // top-level: the child with the keyboard focus (0: the window itself)
   void *ctl;                    // state of a standard control
+  void *menu;                   // top-level: its menu bar (menu.c), drawn in the top RT_MENU_H pixels of the surface
+  int menubar;                  // RT_MENU_H if it has a menu, else 0: the client area starts that far down
 };
 
 typedef struct {
@@ -98,7 +100,7 @@ static void origin(const wnd_t *w, int *ox, int *oy) {
     y += w->y;
   }
   *ox = x;
-  *oy = y;
+  *oy = y + w->menubar;
 }
 
 // The part of the surface the window may draw on: its client area cut by those of its ancestors.
@@ -340,7 +342,7 @@ EXPORT HWND WINAPI CreateWindowExA(DWORD exstyle, LPCSTR cls, LPCSTR title, DWOR
                                    HWND parent, HMENU menu, HINSTANCE inst, LPVOID param) {
   cls_t *c = find_class(cls);
   wnd_t *w = 0;
-  int i, cwid, chei;
+  int i, cwid, chei, hm;
   sl_t id;
   CREATESTRUCTA cs;
   char t[64];
@@ -364,6 +366,7 @@ EXPORT HWND WINAPI CreateWindowExA(DWORD exstyle, LPCSTR cls, LPCSTR title, DWOR
     return 0;
   }
   rt_memset(w, 0, sizeof(*w));
+  hm = !(style & WS_CHILD) && rt_menu_valid(menu);
   if (style & WS_CHILD) {
     wnd_t *p = w_get(parent);
 
@@ -382,10 +385,11 @@ EXPORT HWND WINAPI CreateWindowExA(DWORD exstyle, LPCSTR cls, LPCSTR title, DWOR
     if (cw == CW_USEDEFAULT) cw = 640;
     if (ch == CW_USEDEFAULT) ch = 480;
     cwid = cw - FRAME_W;
-    chei = ch - FRAME_H;
+    chei = ch - FRAME_H - (hm ? RT_MENU_H : 0);
     clamp_client(&cwid, &chei);
+    if (hm && chei > 600 - RT_MENU_H) chei = 600 - RT_MENU_H;
     rt_copy(t, title != 0 ? title : "", sizeof(t));
-    id = sc3(KS_WIN_CREATE, (sl_t)t, cwid, chei);
+    id = sc3(KS_WIN_CREATE, (sl_t)t, cwid, chei + (hm ? RT_MENU_H : 0));
     if (id < 0) {
       SetLastError(ERROR_NOT_ENOUGH_MEMORY);          // the kernel allows two windows per program
       return 0;
@@ -401,7 +405,11 @@ EXPORT HWND WINAPI CreateWindowExA(DWORD exstyle, LPCSTR cls, LPCSTR title, DWOR
   w->exstyle = exstyle;
   w->inst = inst;
   w->enabled = (style & WS_DISABLED) == 0;
-  w->id = (LONG_PTR)menu;
+  w->id = hm ? 0 : (LONG_PTR)menu;
+  if (hm) {
+    w->menu = menu;
+    w->menubar = RT_MENU_H;
+  }
   set_text(w, title != 0 && ((uintptr_t)title >> 16) != 0 ? title : "");
   if (!(style & WS_CHILD)) {
     if (style & WS_THICKFRAME) {
@@ -473,6 +481,9 @@ static void painted(wnd_t *w) {
   wnd_t *c;
 
   w->invalid = 0;
+  if (w->menu != 0) {
+    rt_menu_draw_bar(w_hwnd(w));
+  }
   for (c = w->first; c != 0; c = c->next) {
     invalidate(c, 0, 1);
   }
@@ -551,6 +562,9 @@ EXPORT BOOL WINAPI DestroyWindow(HWND h) {
     unlink_child(w);
     rt_free(w->text);
     w->text = 0;
+    if (w->menu != 0) {
+      rt_menu_destroy((HMENU)w->menu);
+    }
     w->used = 0;
   }
   return TRUE;
@@ -711,7 +725,7 @@ EXPORT BOOL WINAPI GetWindowRect(HWND h, LPRECT r) {
 
 EXPORT BOOL WINAPI AdjustWindowRect(LPRECT r, DWORD style, BOOL menu) {
   (void)style;
-  (void)menu;
+  if (menu) r->top -= RT_MENU_H;
   r->left -= FRAME_W / 2;
   r->right += FRAME_W / 2;
   r->top -= FRAME_H - FRAME_W / 2;
@@ -765,7 +779,10 @@ static void do_resize(wnd_t *w, int cw, int ch) {
   if (cw == w->w && ch == w->h) {
     return;
   }
-  sc3(KS_WIN_RESIZE, w->sysid, cw, ch);
+  if (ch + w->menubar > 600) {
+    ch = 600 - w->menubar;
+  }
+  sc3(KS_WIN_RESIZE, w->sysid, cw, ch + w->menubar);
   w->w = cw;
   w->h = ch;
   q_push(w_hwnd(w), WM_SIZE, SIZE_RESTORED, mklp(cw, ch));
@@ -804,7 +821,7 @@ EXPORT BOOL WINAPI MoveWindow(HWND h, int x, int y, int cw, int ch, BOOL repaint
     return TRUE;
   }
   sc3(KS_WIN_MOVE, w->sysid, x, y);
-  do_resize(w, cw - FRAME_W, ch - FRAME_H);
+  do_resize(w, cw - FRAME_W, ch - FRAME_H - w->menubar);
   return TRUE;
 }
 
@@ -826,7 +843,7 @@ EXPORT BOOL WINAPI SetWindowPos(HWND h, HWND after, int x, int y, int cx, int cy
     sc3(KS_WIN_MOVE, w->sysid, x, y);
   }
   if (!(flags & SWP_NOSIZE)) {
-    do_resize(w, cx - FRAME_W, cy - FRAME_H);
+    do_resize(w, cx - FRAME_W, cy - FRAME_H - w->menubar);
   }
   return TRUE;
 }
@@ -964,6 +981,58 @@ EXPORT LRESULT WINAPI DefWindowProcA(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 EXPORT LRESULT WINAPI DefWindowProcW(HWND h, UINT msg, WPARAM wp, LPARAM lp) { return DefWindowProcA(h, msg, wp, lp); }
+
+// ---- Menu bar ------------------------------------------------------------------------------------------------
+
+HMENU rt_wnd_menu(HWND h) { wnd_t *w = w_get(h); return w != 0 ? (HMENU)w->menu : 0; }
+
+int rt_wnd_surface(HWND h, int *sysid, int *cw, int *ch, int *mb) {
+  wnd_t *w = w_get(h);
+
+  if (w == 0) {
+    return 0;
+  }
+  *sysid = w->sysid;
+  *cw = w->w;
+  *ch = w->h;
+  *mb = w->menubar;
+  return 1;
+}
+
+EXPORT HMENU WINAPI GetMenu(HWND h) { wnd_t *w = w_get(h); return w != 0 && w->parent == 0 ? (HMENU)w->menu : 0; }
+
+EXPORT BOOL WINAPI SetMenu(HWND h, HMENU m) {
+  wnd_t *w = w_get(h);
+  int mb;
+
+  if (w == 0 || w->parent != 0) {
+    return FALSE;
+  }
+  mb = rt_menu_valid(m) ? RT_MENU_H : 0;
+  w->menu = mb ? m : 0;
+  if (mb != w->menubar) {                               // the client area keeps its size: the surface grows or shrinks
+    int ch = w->h > 600 - mb ? 600 - mb : w->h;
+
+    sc3(KS_WIN_RESIZE, w->sysid, w->w, ch + mb);
+    w->menubar = mb;
+    w->h = ch;
+    q_push(h, WM_SIZE, SIZE_RESTORED, mklp(w->w, w->h));
+  }
+  invalidate(w, 0, 1);
+  return TRUE;
+}
+
+EXPORT BOOL WINAPI DrawMenuBar(HWND h) {
+  wnd_t *w = w_get(h);
+
+  if (w == 0) {
+    return FALSE;
+  }
+  if (w->menu != 0) {
+    rt_menu_draw_bar(h);
+  }
+  return TRUE;
+}
 
 // ---- Child windows and dialog items ---------------------------------------------------------------------
 
@@ -1201,7 +1270,7 @@ static int resolve_input(MSG *m, int raw) {
   } else {
     int x = (short)(m->lParam & 0xFFFF), y = (short)((m->lParam >> 16) & 0xFFFF), ox, oy;
 
-    t = g_capture != 0 && top_of(g_capture) == top ? g_capture : hit_test(top, x, y);
+    t = g_capture != 0 && top_of(g_capture) == top ? g_capture : hit_test(top, x, y - top->menubar);
     if (!IsWindowEnabled(w_hwnd(t))) {
       return 0;
     }
@@ -1218,6 +1287,19 @@ static int resolve_input(MSG *m, int raw) {
 // Turn one kernel event into messages. Returns 0 when the window is gone.
 static void handle_event(wnd_t *w, const sc_winev_t *ev) {
   HWND h = w_hwnd(w);
+
+  if (w->menubar != 0) {                                  // the menu bar takes the mouse over it, and Alt+letter
+    if (ev->type == SCEV_MOUSE_DOWN && ev->y < w->menubar) {
+      rt_menu_track_bar(h, ev->x);
+      return;
+    }
+    if ((ev->type == SCEV_MOUSE_MOVE || ev->type == SCEV_MOUSE_UP || ev->type == SCEV_MOUSE_DOUBLE) && ev->y < w->menubar) {
+      return;
+    }
+    if (ev->type == SCEV_KEY && (ev->x & 4) && rt_menu_alt_key(h, ev->ch)) {
+      return;
+    }
+  }
 
   switch (ev->type) {
     case SCEV_KEY:
@@ -1245,7 +1327,7 @@ static void handle_event(wnd_t *w, const sc_winev_t *ev) {
       break;
     case SCEV_RESIZE:
       w->w = ev->x;
-      w->h = ev->y;
+      w->h = ev->y - w->menubar;
       q_push(h, WM_SIZE, SIZE_RESTORED, mklp(ev->x, ev->y));
       invalidate(w, 0, 1);
       break;

@@ -202,6 +202,17 @@ unsigned long rt_colorref_to_rgb(COLORREF c);
 void gdi_fill(dc_t *d, int x, int y, int w, int h, uint32_t rgb);
 void gdi_text(dc_t *d, int x, int y, const char *s, int n, uint32_t rgb);
 
+// ---- menu.c: menus, the menu bar, popup tracking, accelerators ----
+#define RT_MENU_H 18                  // height of the menu bar, at the top of a window's surface
+int rt_menu_valid(HMENU m);
+void rt_menu_destroy(HMENU m);
+void rt_menu_draw_bar(HWND h);
+void rt_menu_track_bar(HWND h, int x);          // the mouse went down on the bar at surface x
+int rt_menu_alt_key(HWND h, unsigned ch);       // Alt+letter: opens the bar item with that mnemonic
+// user32.c: for menu.c
+HMENU rt_wnd_menu(HWND h);
+int rt_wnd_surface(HWND h, int *sysid, int *cw, int *ch, int *mb);
+
 // ---- controls.c: the standard controls (BUTTON, STATIC, EDIT, LISTBOX), registered as window classes ----
 void rt_controls_register(void);
 // user32.c: what a control keeps with its window.

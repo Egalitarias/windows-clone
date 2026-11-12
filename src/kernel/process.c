@@ -2395,6 +2395,14 @@ static void pe_click(int x, int y) {
   syswin_test_inject(SYSWIN_EV_MOUSE_UP, x, y, 0);
 }
 
+static void pe_pause(int ticks) {
+  while (ticks-- > 0) {
+    wait_one_tick();
+  }
+}
+
+static void pe_move(int x, int y) { syswin_test_inject(SYSWIN_EV_MOUSE_MOVE, x, y, 0); }
+
 static int pe_wait_for(int (*cond)(void), int ticks) {
   while (ticks-- > 0 && !cond()) {
     wait_one_tick();
@@ -2420,6 +2428,13 @@ static int cond_ctl_button(void) { return syswin_test_pixel(20, 45) == 0x00F0F0F
 static int cond_ctl_panel(void) { return syswin_test_pixel(350, 215) == 0x00C82828; }      // a custom child window, translated
 static int cond_ctl_list(void) { return syswin_test_pixel(320, 60) == 0x00FFFFFF; }        // LISTBOX
 static int cond_ctl_scroll(void) { return syswin_test_pixel(342, 90) == 0x00CDCDCD; }      // its scroll bar thumb
+// WINMENU.EXE: a menu bar, popups drawn over the client area and gone again.
+static int cond_mnu_bar(void) { return syswin_test_pixel(300, 5) == 0x00F0F0F0; }          // the menu bar
+static int cond_mnu_client(void) { return syswin_test_pixel(300, 40) == 0x00C8DCFF; }       // the client area starts below it
+static int cond_mnu_red(void) { return syswin_test_pixel(20, 38) == 0x00C82828; }           // client (10,10)
+static int cond_mnu_popup(void) { return syswin_test_pixel(130, 25) == 0x00F0F0F0; }        // the File popup over the client area
+static int cond_mnu_popup2(void) { return syswin_test_pixel(130, 45) == 0x00F0F0F0 && syswin_test_pixel(100, 25) == 0x000078D7; }   // first item highlighted (keyboard)
+static int cond_mnu_gone(void) { return syswin_test_pixel(130, 25) == 0x00C8DCFF; }         // and the client repainted after it closed
 static int cond_pe_msgbox(void) { return syswin_test_count(0x003A78D6u) > 1000; }   // the default button
 
 static int pe_supervisor_task(void *arg) {
@@ -2556,6 +2571,52 @@ static int pe_supervisor_task(void *arg) {
     console_printf("[PE] WINCTL failed checks mask: 0x%x\r\n", (unsigned)code);
   }
   failures += pe_expect(pe_wait_for(cond_pe_no_windows, 500), "the controls window was released");
+
+  // Menus: bar, popups, submenu, Alt+letter, accelerator, TrackPopupMenu.
+  while (desktop_loop_count() < 3) {
+    wait_one_tick();
+  }
+  h = process_spawn("/APPS/WINMENU.EXE");
+  failures += pe_expect(h >= 0 && pe_wait_for(cond_pe_window, 500), "WINMENU.EXE: its window appeared");
+  failures += pe_expect(pe_wait_for(cond_mnu_bar, 500), "menus: the menu bar was drawn");
+  failures += pe_expect(pe_wait_for(cond_mnu_client, 500), "menus: the client area starts below the bar");
+  failures += pe_expect(pe_wait_for(cond_mnu_red, 500), "menus: client drawing is moved down by the bar");
+  pe_click(10, 8);                                                       // File
+  failures += pe_expect(pe_wait_for(cond_mnu_popup, 500), "menus: the File popup opened over the client area");
+  pe_move(30, 65);                                                       // the disabled Save: clicking it does nothing
+  pe_click(30, 65);
+  pe_pause(4);
+  pe_move(30, 47);                                                       // Open
+  pe_click(30, 47);
+  failures += pe_expect(pe_wait_for(cond_mnu_gone, 500), "menus: choosing an item closed the popup and the client was painted again");
+  pe_click(70, 8);                                                       // Edit
+  pe_pause(4);
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 0x1F);                        // Down x3: Cut, Copy, More
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 0x1F);
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 0x1F);
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 0x1D);                        // Right: the submenu
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 10);                          // Enter: Deep
+  pe_pause(8);
+  syswin_test_inject(SYSWIN_EV_KEY, 4, 0, 'f');                         // Alt+F opens File
+  pe_pause(4);
+  failures += pe_expect(pe_wait_for(cond_mnu_popup2, 500), "menus: Alt+F opened the File popup");
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 27);                          // Esc closes it, no command
+  failures += pe_expect(pe_wait_for(cond_mnu_gone, 500), "menus: Escape closed it");
+  syswin_test_inject(SYSWIN_EV_KEY, 2, 0, 14);                          // Ctrl+N: the accelerator
+  pe_pause(8);
+  pe_click(200, 168);                                                    // client (200,150): TrackPopupMenu there
+  pe_pause(8);
+  pe_move(210, 197);                                                     // Beta
+  pe_click(210, 197);
+  pe_pause(8);
+  syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
+  code = 0xFFFFFFFFULL;
+  failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
+                        "menus: every check in the program passed (exit code = failed checks bit mask)");
+  if (code != 0) {
+    console_printf("[PE] WINMENU failed checks mask: 0x%x\r\n", (unsigned)code);
+  }
+  failures += pe_expect(pe_wait_for(cond_pe_no_windows, 500), "the menus window was released");
 
   // A windowed program: WinMain, window class, WM_PAINT with GDI, input and a timer. The desktop
   // task must be running (it is, as the idle callback).
