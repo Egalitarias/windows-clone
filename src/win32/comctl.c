@@ -5,8 +5,7 @@
 // parent the way Windows does: WM_HSCROLL / WM_VSCROLL for the trackbar and the up-down, WM_NOTIFY for the
 // tab control and the up-down (UDN_DELTAPOS). Drawing uses the built-in 8x8 font.
 //
-// Not here: list view, tree view, tool bar, header, rebar, tool tips, animation, date pickers, image
-// lists, owner draw, custom draw, marquee progress bars, tab scrolling and multiple tab rows, up-down
+// Not here: tree view, header, rebar, animation, date pickers, owner draw, custom draw, marquee progress bars, tab scrolling and multiple tab rows, up-down
 // auto-buddy / arrow keys / thousands separators.
 #define WINCOMMCTRLAPI __declspec(dllexport)
 #include "internal.h"
@@ -971,9 +970,18 @@ typedef struct {
   int n, sel;
   char txt[TAB_MAX][64];
   LPARAM lp[TAB_MAX];
+  int img[TAB_MAX];           // image index in `il`, -1 = none
+  HIMAGELIST il;
 } tab_t;
 
-static int tab_width(const tab_t *t, int i) { return slen(t->txt[i]) * 8 + 16; }
+static int tab_iw(const tab_t *t, int i) {
+  int w = 0, h = 0;
+
+  if (t->il != 0 && t->img[i] >= 0) ImageList_GetIconSize(t->il, &w, &h);
+  return w > 0 ? w + 4 : 0;                                   // an image and the gap after it
+}
+
+static int tab_width(const tab_t *t, int i) { return slen(t->txt[i]) * 8 + 16 + tab_iw(t, i); }
 
 // Tab i: unselected tabs are two pixels shorter, so their top is lower.
 static void tab_rect(const tab_t *t, int i, RECT *r) {
@@ -1020,7 +1028,13 @@ static void tab_paint(HWND h, tab_t *t) {
     if (i == t->sel) {
       fill(dc, r.left + 1, TAB_H - 1, r.right - 1, TAB_H, face());       // joined to the page
     }
-    text(dc, r.left + 8, top + (TAB_H - top - 8) / 2, t->txt[i], n, RGB(0, 0, 0));
+    if (tab_iw(t, i) > 0) {
+      int iw = 0, ih = 0;
+
+      ImageList_GetIconSize(t->il, &iw, &ih);
+      ImageList_Draw(t->il, t->img[i], dc, r.left + 6, top + (TAB_H - top - ih) / 2, ILD_TRANSPARENT);
+    }
+    text(dc, r.left + 8 + tab_iw(t, i), top + (TAB_H - top - 8) / 2, t->txt[i], n, RGB(0, 0, 0));
   }
   EndPaint(h, &ps);
 }
@@ -1090,9 +1104,12 @@ static LRESULT CALLBACK tab_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
       for (i = t->n; i > at; --i) {
         scopy(t->txt[i], t->txt[i - 1], sizeof(t->txt[i]));
         t->lp[i] = t->lp[i - 1];
+        t->img[i] = t->img[i - 1];
       }
       t->txt[at][0] = 0;
       t->lp[at] = 0;
+      t->img[at] = -1;
+      if (it->mask & TCIF_IMAGE) t->img[at] = it->iImage;
       if ((it->mask & TCIF_TEXT) && it->pszText != 0) scopy(t->txt[at], it->pszText, sizeof(t->txt[at]));
       if (it->mask & TCIF_PARAM) t->lp[at] = it->lParam;
       ++t->n;
@@ -1108,10 +1125,12 @@ static LRESULT CALLBACK tab_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
       if (m == TCM_SETITEMA) {
         if ((it->mask & TCIF_TEXT) && it->pszText != 0) scopy(t->txt[wp], it->pszText, sizeof(t->txt[wp]));
         if (it->mask & TCIF_PARAM) t->lp[wp] = it->lParam;
+        if (it->mask & TCIF_IMAGE) t->img[wp] = it->iImage;
         InvalidateRect(h, 0, FALSE);
       } else {
         if ((it->mask & TCIF_TEXT) && it->pszText != 0 && it->cchTextMax > 0) scopy(it->pszText, t->txt[wp], it->cchTextMax);
         if (it->mask & TCIF_PARAM) it->lParam = t->lp[wp];
+        if (it->mask & TCIF_IMAGE) it->iImage = t->img[wp];
       }
       return TRUE;
     }
@@ -1120,12 +1139,24 @@ static LRESULT CALLBACK tab_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
       for (i = (int)wp; i + 1 < t->n; ++i) {
         scopy(t->txt[i], t->txt[i + 1], sizeof(t->txt[i]));
         t->lp[i] = t->lp[i + 1];
+        t->img[i] = t->img[i + 1];
       }
       --t->n;
       if (t->n == 0) t->sel = -1;
       else if (t->sel > (int)wp || t->sel >= t->n) --t->sel;
       InvalidateRect(h, 0, FALSE);
       return TRUE;
+    case TCM_SETIMAGELIST: {
+      HIMAGELIST old;
+
+      if (t == 0) return 0;
+      old = t->il;
+      t->il = (HIMAGELIST)lp;
+      InvalidateRect(h, 0, TRUE);
+      return (LRESULT)old;
+    }
+    case TCM_GETIMAGELIST:
+      return t != 0 ? (LRESULT)t->il : 0;
     case TCM_DELETEALLITEMS:
       if (t != 0) {
         t->n = 0;
@@ -1188,6 +1219,8 @@ void rt_comctl_register(void) {
     {UPDOWN_CLASSA, updown_proc, CS_DBLCLKS},
     {WC_TABCONTROLA, tab_proc, CS_DBLCLKS},
     {WC_LISTVIEWA, rt_listview_proc, CS_DBLCLKS},
+    {TOOLTIPS_CLASSA, rt_tooltip_proc, 0},
+    {TOOLBARCLASSNAMEA, rt_toolbar_proc, CS_DBLCLKS},
   };
   int i;
 

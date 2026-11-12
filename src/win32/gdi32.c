@@ -38,6 +38,9 @@ COLORREF gdi_sys_color(int i) {
     case COLOR_HIGHLIGHT: return RGB(0, 120, 215);
     case COLOR_HIGHLIGHTTEXT: return RGB(255, 255, 255);
     case COLOR_BTNHIGHLIGHT: return RGB(255, 255, 255);
+    case COLOR_GRAYTEXT: return RGB(109, 109, 109);
+    case COLOR_INFOTEXT: return RGB(0, 0, 0);
+    case COLOR_INFOBK: return RGB(255, 255, 225);
     default: return RGB(240, 240, 240);
   }
 }

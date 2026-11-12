@@ -2509,6 +2509,25 @@ static int cond_lv_sel4(void) { return syswin_test_pixel(105, 91) == 0x000078D7 
 static int cond_lv_scrolled(void) { return syswin_test_pixel(105, 30) == 0x000078D7; }          // the page click scrolled 66 pixels: item 4 sits under the header's edge
 static int cond_lv_sorted(void) { return syswin_test_pixel(105, 67) == 0x000078D7 && syswin_test_pixel(105, 30) != 0x000078D7; }   // sorted descending: the selected item moved to index 7
 static int cond_lv_list(void) { return syswin_test_pixel(86, 152) == 0x000078D7; }                // the list view's item 4, in its second column
+// WINTB.EXE: a flat tool bar at the top (buttons 24 wide, y 2..26: New 0, Open 24, a separator 48..56, Bold 56 (check), radio A 80, radio B 104,
+// a disabled one 128, a drop-down 152..190), a static control at (200,120) with a tip of its own, and a swatch at (200,60) that shows the last command.
+static int cond_tb_first(void) {
+  return syswin_test_pixel(12, 14) == 0x00FF0000 && syswin_test_pixel(36, 14) == 0x0000FF00 && syswin_test_pixel(68, 14) == 0x00FFFF00 &&     // images: red, green, yellow
+         syswin_test_pixel(92, 14) == 0x00FF0000 && syswin_test_pixel(116, 14) == 0x00FF0000 && syswin_test_pixel(164, 14) == 0x00FFFF00 &&
+         syswin_test_pixel(140, 14) == 0x00808080 &&                                                                                          // the disabled button: a gray silhouette
+         syswin_test_pixel(4, 6) == 0x00F0F0F0 && syswin_test_pixel(10, 0) == 0x00A0A0A0 && syswin_test_pixel(10, 1) == 0x00FFFFFF;           // the key colour is transparent, the divider
+}
+static int cond_tb_images(void) {              // a tab control (tabs at y 40) and a report list view (rows 17 high from y 128) draw images of the same list
+  return syswin_test_pixel(26, 51) == 0x0000FF00 && syswin_test_pixel(70, 52) == 0x000000FF &&
+         syswin_test_pixel(20, 136) == 0x00FF0000 && syswin_test_pixel(20, 153) == 0x0000FF00 && syswin_test_pixel(20, 170) == 0x000000FF;
+}
+static int cond_tb_tip1(void) { return syswin_test_pixel(13, 35) == 0x00FFFFE1 && syswin_test_pixel(12, 34) == 0x00000000; }     // the tip under the pointer: its background and its border
+static int cond_tb_tip1_gone(void) { return syswin_test_pixel(13, 35) == 0x00F0F0F0; }
+static int cond_tb_open(void) { return syswin_test_pixel(230, 80) == 0x00666432; }                // WM_COMMAND 102 reached the window
+static int cond_tb_bold(void) { return syswin_test_pixel(58, 12) == 0x00F8F8F8 && syswin_test_pixel(56, 10) == 0x00696969; }   // a checked button is sunken
+static int cond_tb_radio(void) { return syswin_test_pixel(106, 12) == 0x00F8F8F8 && syswin_test_pixel(82, 12) == 0x00F0F0F0; }  // B checked, A not
+static int cond_tb_tip2(void) { return syswin_test_pixel(211, 151) == 0x00FFFFE1; }
+static int cond_tb_tip2_gone(void) { return syswin_test_pixel(211, 151) == 0x00F0F0F0; }
 static int cond_pe_msgbox(void) { return syswin_test_count(0x003A78D6u) > 1000; }   // the default button
 
 static int pe_supervisor_task(void *arg) {
@@ -2960,6 +2979,50 @@ static int pe_supervisor_task(void *arg) {
     console_printf("[PE] WINLV failed checks mask: 0x%x\r\n", (unsigned)code);
   }
   failures += pe_expect(pe_wait_for(cond_pe_no_windows, 500), "the list view window was released");
+
+  // Image lists, the tool bar and tool tips.
+  while (desktop_loop_count() < 3) {
+    wait_one_tick();
+  }
+  h = process_spawn("/APPS/WINTB.EXE");
+  failures += pe_expect(h >= 0 && pe_wait_for(cond_pe_window, 500), "WINTB.EXE: its window appeared");
+  failures += pe_expect(pe_wait_for(cond_tb_first, 500), "tool bar: images from an image list (transparent key colour), a disabled silhouette, the divider");
+  failures += pe_expect(pe_wait_for(cond_tb_images, 500), "image lists: tab images and the list view's small images (rows grew to 17 pixels)");
+  pe_move(12, 14);                                                       // rest on the first button: its tip appears under the pointer
+  failures += pe_expect(pe_wait_for(cond_tb_tip1, 500), "tool tip: the tool bar's tip appeared after the delay (the parent supplied the text)");
+  pe_move(300, 150);                                                     // leave the tool bar: the tip goes
+  failures += pe_expect(pe_wait_for(cond_tb_tip1_gone, 500), "tool tip: leaving the tool (WM_MOUSELEAVE) hid it and the window was painted again");
+  pe_pause(4);
+  pe_click(36, 14);                                                      // Open
+  failures += pe_expect(pe_wait_for(cond_tb_open, 500), "tool bar: a click on a button sent WM_COMMAND to the parent");
+  pe_pause(4);
+  pe_click(68, 14);                                                      // Bold (a check button)
+  failures += pe_expect(pe_wait_for(cond_tb_bold, 500), "tool bar: a check button stays sunken");
+  pe_pause(4);
+  pe_click(92, 14);                                                      // radio A, then radio B
+  pe_pause(4);
+  pe_click(116, 14);
+  failures += pe_expect(pe_wait_for(cond_tb_radio, 500), "tool bar: checking one button of a group unchecked the other");
+  pe_pause(4);
+  pe_click(140, 14);                                                     // the disabled button: nothing
+  pe_pause(4);
+  pe_click(182, 14);                                                     // the drop-down's arrow: TBN_DROPDOWN
+  pe_pause(4);
+  pe_click(160, 14);                                                     // its button part: a command
+  pe_pause(4);
+  pe_move(210, 130);                                                     // the static control: its own tip (a TTF_SUBCLASS tool)
+  failures += pe_expect(pe_wait_for(cond_tb_tip2, 500), "tool tip: a tool of a window (TTF_IDISHWND | TTF_SUBCLASS) showed its tip");
+  pe_move(300, 200);
+  failures += pe_expect(pe_wait_for(cond_tb_tip2_gone, 500), "tool tip: the tip went away when the pointer left the window");
+  pe_pause(4);
+  syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
+  code = 0xFFFFFFFFULL;
+  failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
+                        "tool bar: every check in the program passed (exit code = failed checks bit mask)");
+  if (code != 0) {
+    console_printf("[PE] WINTB failed checks mask: 0x%x\r\n", (unsigned)code);
+  }
+  failures += pe_expect(pe_wait_for(cond_pe_no_windows, 500), "the tool bar window was released");
 
   // A windowed program: WinMain, window class, WM_PAINT with GDI, input and a timer. The desktop
   // task must be running (it is, as the idle callback).

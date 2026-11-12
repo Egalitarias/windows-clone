@@ -177,7 +177,7 @@ that do not draw their own frame (controls always draw theirs), `SetParent`, an 
 
 ## Common controls
 
-`comctl.c` registers five comctl32 classes at startup, so `InitCommonControls` and `InitCommonControlsEx`
+`comctl.c` registers the comctl32 classes (`comctl.c`, `listview.c`, `toolbar.c`, `tooltip.c`; image lists are in `imagelist.c`) at startup, so `InitCommonControls` and `InitCommonControlsEx`
 only have to exist (the loader also maps comctl32.lib's import of `InitCommonControls` by ordinal 17).
 Link with `comctl32.lib`. They draw with the 8x8 font and the same 3D look as the standard controls.
 
@@ -198,7 +198,7 @@ Link with `comctl32.lib`. They draw with the 8x8 font and the same 3D look as th
   `UDS_SETBUDDYINT` (the buddy's text is the position, in both directions), `UDS_WRAP`, `UDS_HORZ`. A click
   (and the 400 ms / 100 ms auto-repeat) sends `WM_NOTIFY` `UDN_DELTAPOS` (the parent can cancel it or change
   `iDelta`), then `WM_VSCROLL` / `WM_HSCROLL` with `SB_THUMBPOSITION`, and `SB_ENDSCROLL` on release.
-- **Tab control** (`SysTabControl32`): up to 32 tabs in one row (no scrolling, no `TCS_MULTILINE`, no images):
+- **Tab control** (`SysTabControl32`): up to 32 tabs in one row (no scrolling, no `TCS_MULTILINE`); images from an image list (`TCM_SETIMAGELIST`, `TCIF_IMAGE`):
   `TCM_INSERTITEM`, `DELETEITEM`, `DELETEALLITEMS`, `GETITEM`, `SETITEM`, `GETITEMCOUNT`, `GETCURSEL`, `SETCURSEL`
   (no notification, as on Windows), `GETITEMRECT`, `HITTEST`, `ADJUSTRECT`. A click sends `TCN_SELCHANGING`
   (the parent can veto it) and `TCN_SELCHANGE` as `WM_NOTIFY`. The control does not hide or show pages: the
@@ -206,7 +206,7 @@ Link with `comctl32.lib`. They draw with the 8x8 font and the same 3D look as th
 
 - **List view** (`SysListView32`, `listview.c`): report view (columns with a header you can click, which sends
   `LVN_COLUMNCLICK`, and drag the dividers of), list view (items flow down in columns), small-icon and icon
-  views (items flow across in cells; there are no image lists, so an item is its label). Up to 16 columns,
+  views (items flow across in cells). Item images come from image lists (`LVM_SETIMAGELIST`: `LVSIL_SMALL` in front of the label in report, list and small-icon views, which makes the rows as high as the image plus one; `LVSIL_NORMAL` above the label in the icon view; the image of a selected item is blended with the highlight colour, overlay images work). Up to 16 columns,
   sub-item text, `LVCFMT_` alignment, `LVM_SETCOLUMNWIDTH` with `LVSCW_AUTOSIZE` / `_USEHEADER`. Selection with
   the mouse (Ctrl toggles, Shift selects a range), the arrow keys, Home, End, Page Up/Down and Space,
   `LVS_SINGLESEL`, `LVS_SHOWSELALWAYS`, a focus item with the dotted rectangle, `LVS_EX_FULLROWSELECT`,
@@ -218,12 +218,53 @@ Link with `comctl32.lib`. They draw with the 8x8 font and the same 3D look as th
   `GETTOPINDEX`, `GETCOUNTPERPAGE`, colours. Notifications (`WM_NOTIFY`): `LVN_ITEMCHANGED` (selection and focus
   changes, with old and new state), `LVN_DELETEITEM`, `LVN_DELETEALLITEMS`, `LVN_COLUMNCLICK`, `LVN_KEYDOWN`,
   `NM_CLICK`, `NM_DBLCLK`, `NM_RETURN`. The list scrolls with the *frame scroll bars* of the control's window
-  (see "Scroll bars in the frame"): they appear when the content does not fit, in pixels. Not there: images and
-  icons, label editing, groups, tiles, `LVS_OWNERDATA`, column reordering, `LVN_ITEMCHANGING`,
+  (see "Scroll bars in the frame"): they appear when the content does not fit, in pixels. Not there: icons (there are
+  none in the runtime), the state image list (check boxes are drawn by the control), label editing, groups, tiles, `LVS_OWNERDATA`, column reordering, `LVN_ITEMCHANGING`,
   `LVS_SORTASCENDING` at insertion, `LVM_GETHEADER` (the header is drawn by the control; the message returns 0).
 
-Not there: tree view, tool bar, header control, rebar, tool tips, animation, date and month pickers, image
-lists, custom draw, marquee progress, `UDS_AUTOBUDDY`, `UDS_ARROWKEYS`, thousands separators in up-down buddies,
+- **Image lists** (`imagelist.c`): `ImageList_Create`, `Destroy`, `GetImageCount`, `SetImageCount`, `Add` (a bitmap
+  strip and an optional mask bitmap, white = transparent), `AddMasked` (a key colour), `Replace`, `Remove`, `Duplicate`,
+  `Copy` (also `ILCF_SWAP`), `SetBkColor` / `GetBkColor`, `GetIconSize` / `SetIconSize`, `SetOverlayImage`, `Draw`, `DrawEx`,
+  `DrawIndirect`, `LoadImageA`. Images are kept as 32-bit pixels, so the `ILC_COLOR` depths make no difference. Drawing
+  (`ILD_NORMAL` over the list's background colour, `ILD_TRANSPARENT`, `ILD_MASK`, `ILD_IMAGE`, `ILD_FOCUS` / `ILD_SELECTED`
+  blended with the highlight colour, `INDEXTOOVERLAYMASK`) goes through a scratch DIB and `AlphaBlend`, so it works on
+  window DCs and memory DCs. There are no icons in the runtime: `ImageList_ReplaceIcon` and `GetIcon` fail;
+  `ImageList_Merge`, drag images and `ILD_ROP` are missing.
+- **Tool bar** (`ToolbarWindow32`, `toolbar.c`): up to 256 buttons: push, check (`BTNS_CHECK`), group / radio
+  (`BTNS_CHECKGROUP`: one checked per run between separators), drop-down (`BTNS_DROPDOWN`, with its arrow part, and
+  `BTNS_WHOLEDROPDOWN`), separators (their width is `iBitmap`, drawn as a line when flat). Images from an image list
+  (`TB_SETIMAGELIST`; hot and disabled lists `TB_SETHOTIMAGELIST`, `TB_SETDISABLEDIMAGELIST`, else a gray silhouette) or
+  from a bitmap strip (`TB_ADDBITMAP`, light gray = transparent; not the standard bitmaps of comctl32); text below the
+  image or beside it (`TBSTYLE_LIST`), from `TB_ADDSTRING` or a string pointer in `iString`; `TBSTYLE_FLAT` (hot
+  tracking) or raised buttons; `TBSTYLE_WRAPABLE` rows; `CCS_TOP` / `CCS_BOTTOM` (the control places and sizes itself
+  on `TB_AUTOSIZE` and `WM_SIZE`, so the parent sends `TB_AUTOSIZE` on its own `WM_SIZE`), `CCS_NODIVIDER`,
+  `CCS_NORESIZE`, `CCS_NOPARENTALIGN`. The default button size is the image plus (8, 7). Messages: `TB_ADDBUTTONS`,
+  `INSERTBUTTON`, `DELETEBUTTON`, `BUTTONCOUNT`, `GETBUTTON`, `COMMANDTOINDEX`, `ENABLEBUTTON`, `CHECKBUTTON`,
+  `PRESSBUTTON`, `HIDEBUTTON`, `INDETERMINATE`, `ISBUTTON...`, `GETSTATE`, `SETSTATE`, `GETITEMRECT`, `HITTEST` (over a
+  separator: -(index + 1)), `SETBUTTONINFO` / `GETBUTTONINFO`, `SETBUTTONSIZE`, `SETBITMAPSIZE`, `SETPADDING`, `SETINDENT`,
+  `MOVEBUTTON`, `SETEXTENDEDSTYLE` (`TBSTYLE_EX_MIXEDBUTTONS`), `GETTOOLTIPS`, `SETTOOLTIPS`. A click sends `WM_COMMAND`
+  to the parent (after `NM_CLICK`), the drop-down's arrow sends `TBN_DROPDOWN`, a right click `NM_RCLICK`. With
+  `TBSTYLE_TOOLTIPS` the tool bar makes a tip with one tool per button; the parent supplies the text in
+  `TTN_GETDISPINFO` (`idFrom` is the button's command id). Not there: customizing, button drag and drop, vertical tool
+  bars, accelerators, several text rows, custom draw.
+- **Tool tips** (`tooltips_class32`, `tooltip.c`): tools by rectangle or by window (`TTF_IDISHWND`), fed by
+  `TTM_RELAYEVENT` or, with `TTF_SUBCLASS`, by subclassing the tool's window. After `TTDT_INITIAL` (500 ms) at rest
+  over a tool the tip appears 20 pixels under the pointer (`TTF_CENTERTIP`: under the tool), kept inside the owner's
+  client area, with the tool's text, or for `LPSTR_TEXTCALLBACK` what the owner answers to `TTN_GETDISPINFO` (a string
+  or a string resource id). It goes away after `TTDT_AUTOPOP` (5 s), when the pointer leaves (`WM_MOUSELEAVE`) or a
+  button or key goes down; `TTN_POP` tells the owner. `TTM_ADDTOOL`, `DELTOOL`, `NEWTOOLRECT`, `GETTOOLINFO`,
+  `SETTOOLINFO`, `UPDATETIPTEXT`, `GETTEXT`, `GETTOOLCOUNT`, `ENUMTOOLS`, `GETCURRENTTOOL`, `HITTEST`, `ACTIVATE`,
+  `SETDELAYTIME` / `GETDELAYTIME`, `SETMAXTIPWIDTH` (wraps at spaces), `SETMARGIN`, `SETTIPBKCOLOR`, `SETTIPTEXTCOLOR`,
+  `POP`, `POPUP`, `TRACKACTIVATE` / `TRACKPOSITION` (`TTF_TRACK`). There are no popup windows with a surface of their own,
+  so a `WS_POPUP` tip becomes a child of its owner (user32 does this for the tooltip class), drawn over its siblings, and
+  the mouse passes through it (hit testing skips `WS_EX_TRANSPARENT` children). No balloons, titles, animation or links.
+
+`TrackMouseEvent` (`TME_LEAVE`, `TME_HOVER`, `TME_CANCEL`, `TME_QUERY`) is in user32: one window at a time is sent
+`WM_MOUSELEAVE` when the mouse moves over another window of the program, and `WM_MOUSEHOVER` after the hover time at
+rest. It cannot tell when the mouse leaves the program's window altogether (the kernel sends no event). `SetWindowPos`
+now moves a child to the top of its siblings for `HWND_TOP`.
+
+Not there: tree view, header control, rebar, animation, date and month pickers, custom draw, marquee progress, `UDS_AUTOBUDDY`, `UDS_ARROWKEYS`, thousands separators in up-down buddies,
 visual styles (always the classic look).
 
 ## Menus
@@ -569,6 +610,15 @@ virtual FAT drive is not a good place for that). It runs, on the real desktop:
   sorting, columns, check boxes); the kernel clicks an item, moves the selection with the arrow keys, clicks the
   scroll bar's track and a column header (the program sorts), and clicks the list view; pixels show the header, the
   highlight and the scrolling, and the program counts its notifications (24 checks), exit code = bit mask of failures;
+- `WINTB.EXE` (`tests/wintb.c`): image lists, tool bar and tool tips. The program checks the message API of an image list
+  drawn into a memory DC (key colour, background colour, mask, blending, remove, overlay), a hidden tool bar (rectangles,
+  hit test, check groups, button info, hiding, deleting) and a hidden tip control, then shows a flat tool bar with eight
+  buttons, a static control with a tip of its own, a tab control and a list view with images. The kernel checks the
+  pixels of the images (a transparent key colour, a disabled silhouette, the divider, tab and list view images), hovers
+  over a button and over the static control (the tips appear with the parent's text and go away when the pointer
+  leaves), and clicks buttons (a command reaches the parent, a check button stays sunken, a group unchecks the other
+  button, a disabled button does nothing, the drop-down's arrow sends `TBN_DROPDOWN`); 52 checks in the program (the
+  bit numbers wrap), exit code = bit mask of failures;
 - `WINBMP.EXE` (`tests/winbmp.c`, `winbmp.rc`, `pic.bmp`): memory DCs and bitmaps: raster operations,
   stretching and mirroring, DIB sections, `SetDIBits`/`GetDIBits`/`StretchDIBits`, a bitmap resource,
   text into a bitmap, a monochrome bitmap. 30 checks read pixels back from memory DCs; the kernel
@@ -595,4 +645,4 @@ screenshot (`python scripts/qemu-screenshot.py out/run/shot.png 28`).
 - Programs larger than about 900 KB (together with the runtime) do not fit the load window.
 - Not a Windows compatibility layer in the sense of running arbitrary software: it runs programs
   that stay inside the subset above. Programs from real toolchains that link the CRT, use
-  the C++ standard library, or use the common controls this runtime lacks (tree view, tool bar) will not get far yet.
+  the C++ standard library, or use the common controls this runtime lacks (tree view, header, rebar) will not get far yet.

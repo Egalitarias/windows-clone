@@ -1,11 +1,11 @@
 // The list view control (SysListView32) for the Win32 runtime. Report view (columns with a header you can
 // click and resize), list view (items flow down in columns) and small-icon / icon views (items flow across
-// in cells; there are no image lists, so an item is just its label). Items with sub-item text, single and
+// in cells), with item images from image lists (LVSIL_SMALL in front of the label, LVSIL_NORMAL above it). Items with sub-item text, single and
 // multiple selection with the mouse and keyboard, a focus item, optional check boxes, grid lines, full row
 // selection, sorting with a callback, hit testing, scrolling by the frame scroll bars of the window (they
 // appear when the content does not fit) and the usual notifications as WM_NOTIFY.
 //
-// Not here: image lists and icons, label editing, groups, tiles, callback items (LVS_OWNERDATA), column
+// Not here: label editing, groups, tiles, callback items (LVS_OWNERDATA), column
 // reordering, tool tips, custom draw, LVS_SORTASCENDING at insertion (use LVM_SORTITEMS).
 #include "internal.h"
 #include <commctrl.h>
@@ -38,6 +38,7 @@ typedef struct {
   int sx, sy;                 // scroll offsets in pixels
   UINT ex;                    // extended styles
   COLORREF bk, tx, txbk;
+  HIMAGELIST il[3];           // LVSIL_NORMAL (icon view), LVSIL_SMALL (the others), LVSIL_STATE (kept, not drawn)
   int track, trackcol, trackx, trackw;     // resizing a column
   int pressed;                // the header button held down, or -1
   int inbars;                 // guards the recursion between the scroll bars and the layout
@@ -110,6 +111,12 @@ static void item_notify(HWND h, lv_t *l, UINT code, int i, int sub, UINT newst, 
 static int view_of(HWND h) { return (int)(style_of(h) & LVS_TYPEMASK); }
 static int hdr_h(HWND h) { return view_of(h) == LVS_REPORT && !(style_of(h) & LVS_NOCOLUMNHEADER) ? HDR_H : 0; }
 
+// Image sizes and the room the small image takes in front of a label.
+static int img_w(const lv_t *l, int which) { int w = 0, hh = 0; if (l->il[which] != 0) ImageList_GetIconSize(l->il[which], &w, &hh); return w; }
+static int img_h(const lv_t *l, int which) { int w = 0, hh = 0; if (l->il[which] != 0) ImageList_GetIconSize(l->il[which], &w, &hh); return hh; }
+static int img_gap(const lv_t *l) { return l->il[1] != 0 ? img_w(l, 1) + 3 : 0; }
+static int row_h(const lv_t *l) { int ih = img_h(l, 1); return ih + 1 > ROW_H ? ih + 1 : ROW_H; }
+
 static int col_w(const lv_t *l, int c) { return c >= 0 && c < l->ncol ? l->col[c].width : 0; }
 
 static int total_w(const lv_t *l) {
@@ -127,7 +134,7 @@ static int list_cell_w(const lv_t *l) {
     return l->col[0].width;
   }
   for (i = 0; i < l->n; ++i) {
-    int k = slen(l->it[i].text[0]) * 8 + 24;
+    int k = slen(l->it[i].text[0]) * 8 + 24 + img_gap(l);
 
     if (k > w) w = k;
   }
@@ -137,9 +144,12 @@ static int list_cell_w(const lv_t *l) {
 // Cell size for the list and icon views.
 static void cell_of(HWND h, const lv_t *l, int *cw, int *ch) {
   switch (view_of(h)) {
-    case LVS_LIST: *cw = list_cell_w(l); *ch = ROW_H; break;
-    case LVS_SMALLICON: *cw = 120; *ch = 16; break;
-    default: *cw = 80; *ch = 34; break;
+    case LVS_LIST: *cw = list_cell_w(l); *ch = row_h(l); break;
+    case LVS_SMALLICON: *cw = 120 + img_gap(l); *ch = row_h(l) > 16 ? row_h(l) : 16; break;
+    default:
+      *cw = img_w(l, 0) + 16 > 80 ? img_w(l, 0) + 16 : 80;
+      *ch = img_h(l, 0) > 0 ? img_h(l, 0) + 20 : 34;
+      break;
   }
 }
 
@@ -158,7 +168,7 @@ static void item_rect(HWND h, const lv_t *l, int i, RECT *r) {
   client_of(h, &w, &hh);
   switch (view_of(h)) {
     case LVS_REPORT:
-      SetRect(r, -l->sx, hdr_h(h) + i * ROW_H - l->sy, -l->sx + total_w(l), hdr_h(h) + (i + 1) * ROW_H - l->sy);
+      SetRect(r, -l->sx, hdr_h(h) + i * row_h(l) - l->sy, -l->sx + total_w(l), hdr_h(h) + (i + 1) * row_h(l) - l->sy);
       return;
     case LVS_LIST:
       cell_of(h, l, &cw, &ch);
@@ -191,7 +201,7 @@ static void content(HWND h, const lv_t *l, int *cw_, int *ch_) {
   switch (view_of(h)) {
     case LVS_REPORT:
       *cw_ = total_w(l);
-      *ch_ = l->n * ROW_H;
+      *ch_ = l->n * row_h(l);
       return;
     case LVS_LIST:
       cell_of(h, l, &cw, &ch);
@@ -497,6 +507,15 @@ static void draw_checkbox(HDC dc, int x, int y, int checked) {
   }
 }
 
+// The item's image from the list `which` (0 normal, 1 small); a selected item's is blended with the highlight.
+static void draw_image(HDC dc, const lv_t *l, int i, int which, int x, int y, int blend) {
+  UINT st = ILD_TRANSPARENT | (blend ? ILD_SELECTED : 0) | (((l->it[i].state & LVIS_OVERLAYMASK) >> 8) << 8);
+
+  if (l->il[which] != 0 && l->it[i].image >= 0) {
+    ImageList_Draw(l->il[which], l->it[i].image, dc, x, y, st);
+  }
+}
+
 static void draw_item(HDC dc, HWND h, lv_t *l, int i, int w, int focused, COLORREF bk, COLORREF tx) {
   RECT r, lab;
   int c, x, sel = (l->it[i].state & LVIS_SELECTED) != 0, gap = checkbox_gap(l), ty;
@@ -516,13 +535,14 @@ static void draw_item(HDC dc, HWND h, lv_t *l, int i, int w, int focused, COLORR
   if (view_of(h) == LVS_REPORT) {
     x = r.left;
     for (c = 0; c < l->ncol; ++c) {
-      int cw = l->col[c].width, off = 4 + (c == 0 ? gap : 0);
+      int cw = l->col[c].width, off = 4 + (c == 0 ? gap + img_gap(l) : 0);
 
       if (c == 0 && gap > 0) {
         int st = (l->it[i].state & LVIS_STATEIMAGEMASK) >> 12;
 
         draw_checkbox(dc, x + 3, r.top + (r.bottom - r.top - 12) / 2, st == 2);
       }
+      if (c == 0) draw_image(dc, l, i, 1, x + 2 + gap, r.top + (r.bottom - r.top - img_h(l, 1)) / 2, sel && focused);
       if (l->it[i].text[c] != 0 && x + cw > 0 && x < w) {
         int al = l->col[c].fmt & LVCFMT_JUSTIFYMASK, tw = slen(l->it[i].text[c]) * 8, tx2 = x + off;
 
@@ -543,10 +563,12 @@ static void draw_item(HDC dc, HWND h, lv_t *l, int i, int w, int focused, COLORR
     if (view_of(h) == LVS_ICON) {
       int room = r.right - r.left - 4;
 
+      draw_image(dc, l, i, 0, r.left + (r.right - r.left - img_w(l, 0)) / 2, r.top + 2, sel && focused);
       tw = tw > room ? room / 8 * 8 : tw;
       put(dc, r.left + (r.right - r.left - tw) / 2, r.top + (r.bottom - r.top - 8) - 3, s, room, fg);
     } else {
-      put(dc, r.left + 4 + gap, ty, s, r.right - r.left - 6 - gap, fg);
+      draw_image(dc, l, i, 1, r.left + 2 + gap, r.top + (r.bottom - r.top - img_h(l, 1)) / 2, sel && focused);
+      put(dc, r.left + 4 + gap + img_gap(l), ty, s, r.right - r.left - 6 - gap - img_gap(l), fg);
     }
   }
   if ((l->it[i].state & LVIS_FOCUSED) && focused) {                // a dotted focus rectangle
@@ -587,7 +609,7 @@ static int autosize(const lv_t *l, int c, int with_header) {
   int i, w = with_header ? slen(l->col[c].title) * 8 + 16 : 0;
 
   for (i = 0; i < l->n; ++i) {
-    int k = slen(l->it[i].text[c]) * 8 + 12 + (c == 0 ? checkbox_gap(l) : 0);
+    int k = slen(l->it[i].text[c]) * 8 + 12 + (c == 0 ? checkbox_gap(l) + img_gap(l) : 0);
 
     if (k > w) w = k;
   }
@@ -709,7 +731,7 @@ static void key(HWND h, lv_t *l, UINT vk) {
   }
   client_of(h, &w, &hh);
   cell_of(h, l, &cw, &ch);
-  page = v == LVS_REPORT ? (hh - hdr_h(h)) / ROW_H : (v == LVS_LIST ? hh / ch : (w / cw > 0 ? w / cw : 1) * (hh / ch > 0 ? hh / ch : 1));
+  page = v == LVS_REPORT ? (hh - hdr_h(h)) / row_h(l) : (v == LVS_LIST ? hh / ch : (w / cw > 0 ? w / cw : 1) * (hh / ch > 0 ? hh / ch : 1));
   if (page < 1) page = 1;
   switch (vk) {
     case VK_UP: to = v == LVS_ICON || v == LVS_SMALLICON ? cur - (w / cw > 0 ? w / cw : 1) : cur - 1; break;
@@ -838,7 +860,7 @@ static LRESULT CALLBACK lv_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
       return DLGC_WANTARROWS | DLGC_WANTCHARS;
     case WM_VSCROLL: case WM_HSCROLL: {                           // the window's own frame bars
       SCROLLINFO si;
-      int bar = m == WM_VSCROLL ? SB_VERT : SB_HORZ, pos, line = bar == SB_VERT ? ROW_H : 8;
+      int bar = m == WM_VSCROLL ? SB_VERT : SB_HORZ, pos, line = bar == SB_VERT ? row_h(l) : 8;
 
       if (l == 0) return 0;
       si.cbSize = sizeof(si);
@@ -1071,14 +1093,14 @@ static LRESULT CALLBACK lv_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
       return TRUE;
     case LVM_GETTOPINDEX:
       if (l == 0) return 0;
-      if (view_of(h) == LVS_REPORT) return l->sy / ROW_H;
+      if (view_of(h) == LVS_REPORT) return l->sy / row_h(l);
       return 0;
     case LVM_GETCOUNTPERPAGE: {
       int w, hh;
 
       if (l == 0) return 0;
       client_of(h, &w, &hh);
-      return view_of(h) == LVS_REPORT ? (hh - hdr_h(h)) / ROW_H : hh / ROW_H;
+      return view_of(h) == LVS_REPORT ? (hh - hdr_h(h)) / row_h(l) : hh / row_h(l);
     }
     case LVM_SCROLL:
       if (l != 0) scroll_to(h, l, l->sx + (int)wp, l->sy + (int)lp);
@@ -1168,7 +1190,19 @@ static LRESULT CALLBACK lv_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
       return l != 0 ? (LRESULT)(l->tx == CLR_DEFAULT ? GetSysColor(COLOR_WINDOWTEXT) : l->tx) : 0;
     case LVM_GETTEXTBKCOLOR:
       return l != 0 ? (LRESULT)l->txbk : 0;
-    case LVM_GETHEADER: case LVM_SETIMAGELIST: case LVM_GETIMAGELIST: case LVM_EDITLABELA: case LVM_GETEDITCONTROL: case LVM_SETITEMCOUNT:
+    case LVM_SETIMAGELIST: {
+      HIMAGELIST old;
+
+      if (l == 0 || (int)wp < 0 || (int)wp > 2) return 0;
+      old = l->il[wp];
+      l->il[wp] = (HIMAGELIST)lp;
+      update_bars(h, l);
+      InvalidateRect(h, 0, TRUE);
+      return (LRESULT)old;
+    }
+    case LVM_GETIMAGELIST:
+      return l != 0 && (int)wp >= 0 && (int)wp <= 2 ? (LRESULT)l->il[wp] : 0;
+    case LVM_GETHEADER: case LVM_EDITLABELA: case LVM_GETEDITCONTROL: case LVM_SETITEMCOUNT:
       return 0;
     default:
       return DefWindowProcA(h, m, wp, lp);

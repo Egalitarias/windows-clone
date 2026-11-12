@@ -69,6 +69,11 @@ static MSG g_q[QUEUE];
 static unsigned char g_qraw[QUEUE];   // 1: a key, 2: a mouse message, still addressed to the top-level window (see resolve_input)
 static int g_qh, g_qt;
 static wnd_t *g_capture;
+// TrackMouseEvent: one window at a time is told when the mouse leaves it (WM_MOUSELEAVE) or rests on it (WM_MOUSEHOVER).
+static wnd_t *g_over;                     // the window the mouse was last over
+static HWND g_tme_wnd;
+static DWORD g_tme_flags, g_tme_ms, g_tme_due;
+static int g_tme_x, g_tme_y;
 static wnd_t *g_nc;                       // the window whose frame scroll bar is tracking the mouse
 static int g_nc_bar;
 static int g_quit, g_quit_code;
@@ -375,6 +380,10 @@ EXPORT HWND WINAPI CreateWindowExA(DWORD exstyle, LPCSTR cls, LPCSTR title, DWOR
     SetLastError(ERROR_CANNOT_FIND_WND_CLASS);
     return 0;
   }
+  if (c->name[0] == 't' && rt_strcmp(c->name, "tooltips_class32") == 0 && (style & WS_POPUP) && w_get(parent) != 0) {
+    style = (style & ~(DWORD)WS_POPUP) | WS_CHILD;      // a tip is drawn over its owner's surface, not in a window of its own, and the mouse passes through it
+    exstyle |= WS_EX_TRANSPARENT;
+  }
   if ((style & WS_CHILD) && w_get(parent) == 0) {
     SetLastError(ERROR_INVALID_PARAMETER);            // a child needs a parent
     return 0;
@@ -575,6 +584,14 @@ static void destroy_tree(wnd_t *w, int notify) {
   }
   if (g_capture == w) {
     g_capture = 0;
+  }
+  if (g_over == w) {
+    g_over = 0;
+  }
+  if (g_tme_wnd == w_hwnd(w)) {
+    g_tme_wnd = 0;
+    g_tme_flags = 0;
+    g_tme_due = 0;
   }
   if (top->focus == w) {
     top->focus = 0;
@@ -879,11 +896,20 @@ EXPORT BOOL WINAPI MoveWindow(HWND h, int x, int y, int cw, int ch, BOOL repaint
 EXPORT BOOL WINAPI SetWindowPos(HWND h, HWND after, int x, int y, int cx, int cy, UINT flags) {
   wnd_t *w = w_get(h);
 
-  (void)after;
   if (w == 0) {
     return FALSE;
   }
   if (w->parent != 0) {
+    if (!(flags & SWP_NOZORDER) && (after == HWND_TOP || after == HWND_TOPMOST) && w->parent->last != w) {
+      wnd_t *p = w->parent;
+
+      unlink_child(w);                                // on top of its siblings
+      w->prev = p->last;
+      w->next = 0;
+      if (p->last != 0) p->last->next = w; else p->first = w;
+      p->last = w;
+      invalidate(w, 0, 1);
+    }
     move_child(w, (flags & SWP_NOMOVE) ? w->x : x, (flags & SWP_NOMOVE) ? w->y : y, (flags & SWP_NOSIZE) ? w->w + w->sbv : cx,
                (flags & SWP_NOSIZE) ? w->h + w->sbh : cy);
     if (flags & SWP_SHOWWINDOW) ShowWindow(h, SW_SHOW);
@@ -1297,7 +1323,7 @@ static wnd_t *hit_test(wnd_t *w, int x, int y) {
   wnd_t *c;
 
   for (c = w->last; c != 0; c = c->prev) {
-    if (c->visible && x >= c->x && y >= c->y && x < c->x + c->w + c->sbv && y < c->y + c->h + c->sbh) {
+    if (c->visible && !(c->exstyle & WS_EX_TRANSPARENT) && x >= c->x && y >= c->y && x < c->x + c->w + c->sbv && y < c->y + c->h + c->sbh) {
       if (x - c->x >= c->w || y - c->y >= c->h) {
         return c;                                      // on its scroll bars
       }
@@ -1420,6 +1446,62 @@ void rt_wnd_set_bars(HWND h, int vert, int horz) {
   }
 }
 
+// The mouse is over t, at (cx, cy) in its client coordinates: the window that asked to be told when the mouse leaves
+// it gets WM_MOUSELEAVE once the mouse is over another window, and a resting mouse starts the hover timer again.
+static void mouse_track(wnd_t *t, int cx, int cy) {
+  if (g_over != t) {
+    if (g_tme_wnd != 0 && g_over == w_get(g_tme_wnd) && (g_tme_flags & TME_LEAVE)) {
+      q_push(g_tme_wnd, WM_MOUSELEAVE, 0, 0);
+      g_tme_flags = 0;
+      g_tme_due = 0;
+    }
+    g_over = t;
+  }
+  if (g_tme_wnd != 0 && (g_tme_flags & TME_HOVER) && w_get(g_tme_wnd) == t) {
+    g_tme_due = GetTickCount() + g_tme_ms;
+    g_tme_x = cx;
+    g_tme_y = cy;
+  }
+}
+
+EXPORT BOOL WINAPI TrackMouseEvent(LPTRACKMOUSEEVENT e) {
+  wnd_t *w;
+
+  if (e == 0 || e->cbSize != sizeof(*e)) {
+    return FALSE;
+  }
+  if (e->dwFlags & TME_QUERY) {
+    e->dwFlags = g_tme_wnd == e->hwndTrack ? g_tme_flags : 0;
+    e->hwndTrack = g_tme_wnd == 0 ? 0 : e->hwndTrack;
+    e->dwHoverTime = g_tme_ms;
+    return TRUE;
+  }
+  w = w_get(e->hwndTrack);
+  if (w == 0) {
+    return FALSE;
+  }
+  if (e->dwFlags & TME_CANCEL) {
+    if (g_tme_wnd == e->hwndTrack) {
+      g_tme_flags &= ~(e->dwFlags & (TME_HOVER | TME_LEAVE));
+      if (!(g_tme_flags & TME_HOVER)) g_tme_due = 0;
+      if (g_tme_flags == 0) g_tme_wnd = 0;
+    }
+    return TRUE;
+  }
+  if (g_tme_wnd != e->hwndTrack) {
+    g_tme_flags = 0;
+    g_tme_due = 0;
+  }
+  g_tme_wnd = e->hwndTrack;
+  g_tme_flags |= e->dwFlags & (TME_HOVER | TME_LEAVE);
+  if (e->dwFlags & TME_HOVER) {
+    g_tme_ms = e->dwHoverTime == HOVER_DEFAULT ? 400 : e->dwHoverTime;
+    g_tme_due = GetTickCount() + g_tme_ms;
+  }
+  return TRUE;
+}
+
+static void mouse_track(wnd_t *t, int cx, int cy);
 static int resolve_input(MSG *m, int raw) {
   wnd_t *top = w_get(m->hwnd), *t;
 
@@ -1463,6 +1545,7 @@ static int resolve_input(MSG *m, int raw) {
     }
     origin(t, &ox, &oy);
     m->lParam = mklp(x - ox, y - oy);
+    mouse_track(t, x - ox, y - oy);
   }
   m->hwnd = w_hwnd(t);
   return 1;
@@ -1592,6 +1675,13 @@ static int pump_timers(void) {
   DWORD now = GetTickCount();
   int i, n = 0;
 
+  if (g_tme_due != 0 && (int)(now - g_tme_due) >= 0) {
+    g_tme_due = 0;
+    g_tme_flags &= ~(DWORD)TME_HOVER;
+    q_push(g_tme_wnd, WM_MOUSEHOVER, 0, mklp(g_tme_x, g_tme_y));
+    ++n;
+  }
+
   for (i = 0; i < MAX_TIMERS; ++i) {
     timer_t_ *t = &g_timer[i];
 
@@ -1607,6 +1697,14 @@ static int pump_timers(void) {
 static DWORD next_timer_wait(void) {
   DWORD now = GetTickCount(), best = 1000;
   int i;
+
+  if (g_tme_due != 0) {
+    DWORD d = (int)(g_tme_due - now) > 0 ? g_tme_due - now : 0;
+
+    if (d < best) {
+      best = d;
+    }
+  }
 
   for (i = 0; i < MAX_TIMERS; ++i) {
     if (g_timer[i].used) {
