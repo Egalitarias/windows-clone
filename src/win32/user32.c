@@ -1806,6 +1806,18 @@ EXPORT HDC WINAPI BeginPaint(HWND h, LPPAINTSTRUCT ps) {
   ps->rcPaint = w->inv.right > w->inv.left ? w->inv : (RECT){0, 0, w->w, w->h};
   if (ps->rcPaint.right > w->w) ps->rcPaint.right = w->w;
   if (ps->rcPaint.bottom > w->h) ps->rcPaint.bottom = w->h;
+  {                                                      // as on Windows, drawing is limited to the invalid rectangle (a scroll leaves most of the window valid)
+    dc_t *d = (dc_t *)dc;
+    int ox, oy;
+
+    origin(w, &ox, &oy);
+    if (d != 0) {
+      if (d->cl < ox + ps->rcPaint.left) d->cl = ox + ps->rcPaint.left;
+      if (d->ct < oy + ps->rcPaint.top) d->ct = oy + ps->rcPaint.top;
+      if (d->cr > ox + ps->rcPaint.right) d->cr = ox + ps->rcPaint.right;
+      if (d->cb > oy + ps->rcPaint.bottom) d->cb = oy + ps->rcPaint.bottom;
+    }
+  }
   if (w->erase) {                                        // erase what is about to be painted
     w->erase = 0;
     ps->fErase = TRUE;
@@ -2152,4 +2164,114 @@ EXPORT int WINAPI GetClassNameA(HWND h, LPSTR buf, int max) {
   }
   rt_copy(buf, w->cls->name, (size_t)max);
   return (int)rt_strlen(buf);
+}
+
+// ---- Scrolling ------------------------------------------------------------------------------------------------
+//
+// The pixels move on the surface (the kernel copies inside it: the runtime cannot read a surface back); what the
+// move uncovers is invalidated for the program to draw.
+
+static int rect_empty(const RECT *r) { return r->right <= r->left || r->bottom <= r->top; }
+
+static void rect_and(RECT *r, const RECT *o) {
+  if (o->left > r->left) r->left = o->left;
+  if (o->top > r->top) r->top = o->top;
+  if (o->right < r->right) r->right = o->right;
+  if (o->bottom < r->bottom) r->bottom = o->bottom;
+}
+
+static int scroll_window(wnd_t *w, int dx, int dy, const RECT *rect, const RECT *clip, RECT *update, int children, int inval, int erase) {
+  RECT a = {0, 0, w->w, w->h}, vis, ex[2], src, t;
+  int ox, oy, has_src, i;
+  wnd_t *c;
+
+  if (rect != 0) rect_and(&a, rect);
+  if (clip != 0) rect_and(&a, clip);
+  if (update != 0) {
+    update->left = update->top = update->right = update->bottom = 0;
+  }
+  if (rect_empty(&a) || (dx == 0 && dy == 0)) {
+    return rect_empty(&a) ? 0 : 1;
+  }
+  origin(w, &ox, &oy);
+  clip_of(w, &vis);                                       // what ancestors leave visible, in surface coordinates
+  t = vis;
+  t.left -= ox; t.right -= ox; t.top -= oy; t.bottom -= oy;
+  rect_and(&a, &t);
+  if (rect_empty(&a)) {
+    return 1;
+  }
+  has_src = rt_scroll_plan(&a, dx, dy, &src, &ex[0], &ex[1]);
+  if (has_src && shown(w)) {
+    sc_winop_t op;
+
+    op.x = src.left + ox;
+    op.y = src.top + oy;
+    op.w = src.right - src.left;
+    op.h = src.bottom - src.top;
+    op.color = (uint32_t)dx;
+    op.scale = (uint32_t)dy;
+    op.ptr = 0;
+    sc3(KS_WIN_COPY, w->sysid, (sl_t)&op, 0);
+  }
+  if (children) {                                         // child windows that touch the area move with it
+    for (c = w->first; c != 0; c = c->next) {
+      RECT cr;
+
+      outer_rect(c, &cr);
+      rect_and(&cr, &a);
+      if (!rect_empty(&cr)) {
+        c->x += dx;
+        c->y += dy;
+      }
+    }
+  }
+  if (w->invalid) {                                       // what was waiting to be painted moves too
+    t = w->inv;
+    rect_and(&t, &a);
+    if (!rect_empty(&t)) {
+      t.left += dx; t.right += dx; t.top += dy; t.bottom += dy;
+      rect_and(&t, &a);
+      invalidate(w, &t, 0);
+    }
+  }
+  for (i = 0; i < 2; ++i) {
+    if (rect_empty(&ex[i])) continue;
+    if (update != 0) {
+      if (rect_empty(update)) {
+        *update = ex[i];
+      } else {
+        if (ex[i].left < update->left) update->left = ex[i].left;
+        if (ex[i].top < update->top) update->top = ex[i].top;
+        if (ex[i].right > update->right) update->right = ex[i].right;
+        if (ex[i].bottom > update->bottom) update->bottom = ex[i].bottom;
+      }
+    }
+    if (inval) {
+      invalidate(w, &ex[i], erase);
+    }
+  }
+  return 1;
+}
+
+EXPORT BOOL WINAPI ScrollWindow(HWND h, int dx, int dy, const RECT *rect, const RECT *clip) {
+  wnd_t *w = w_get(h);
+
+  return w != 0 && scroll_window(w, dx, dy, rect, clip, 0, rect == 0, 1, 1);
+}
+
+EXPORT int WINAPI ScrollWindowEx(HWND h, int dx, int dy, const RECT *rect, const RECT *clip, HRGN rgn, LPRECT update, UINT flags) {
+  wnd_t *w = w_get(h);
+  RECT u;
+  int ok;
+
+  (void)rgn;                                              // (there are no regions)
+  if (w == 0) {
+    return ERROR;
+  }
+  ok = scroll_window(w, dx, dy, rect, clip, &u, (flags & SW_SCROLLCHILDREN) != 0, (flags & SW_INVALIDATE) != 0, (flags & SW_ERASE) != 0);
+  if (update != 0) {
+    *update = u;
+  }
+  return !ok ? ERROR : rect_empty(&u) ? NULLREGION : SIMPLEREGION;
 }

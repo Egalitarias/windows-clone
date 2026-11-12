@@ -483,7 +483,7 @@ WIN32_CRT_LIBPATH := "-libpath:$(MSVC_ROOT)/lib/x64" "-libpath:$(WINSDK_ROOT)/Li
 # UCRT functions itself: the UCRT headers would mark them dllimport.
 WIN32_SSE_CFLAGS := $(filter-out -mno-sse,$(WIN32_CFLAGS)) -fno-math-errno -D_CRT_SECURE_NO_WARNINGS
 WIN32_RT_OBJS := $(WIN32_DIR)/kernel32.obj $(WIN32_DIR)/user32.obj $(WIN32_DIR)/gdi32.obj $(WIN32_DIR)/bitmap.obj $(WIN32_DIR)/controls.obj $(WIN32_DIR)/menu.obj $(WIN32_DIR)/dialog.obj $(WIN32_DIR)/crt.obj $(WIN32_DIR)/crtfmt.obj $(WIN32_DIR)/crtmath.obj $(WIN32_DIR)/threads.obj $(WIN32_DIR)/seh.obj $(WIN32_DIR)/cxxeh.obj
-WIN32_TESTS := hello badimp wingui winctl winmenu windlg wincombo winscroll winsbar winbmp winmsg fptest crttest thrtest cxxtest
+WIN32_TESTS := hello badimp wingui winctl winmenu windlg wincombo winscroll winsbar winscrl winbmp winmsg fptest crttest thrtest cxxtest
 WIN32_EXES := $(patsubst %,$(WIN32_DIR)/%.exe,$(WIN32_TESTS))
 
 $(WIN32_DIR)/%.obj: src/win32/%.c src/win32/internal.h
@@ -566,6 +566,9 @@ $(WIN32_DIR)/winscroll.exe: $(WIN32_DIR)/t_winscroll.obj $(WIN32_DIR)/t_crt.obj 
 $(WIN32_DIR)/winsbar.exe: $(WIN32_DIR)/t_winsbar.obj $(WIN32_DIR)/t_crt.obj $(WIN32_DIR)/t_entry_gui.obj
 	$(UEFI_LLD_LINK) -subsystem:windows -entry:WinMainCRTStartup -nodefaultlib -out:$@ $^ $(WIN32_LIBPATH) kernel32.lib user32.lib gdi32.lib
 
+$(WIN32_DIR)/winscrl.exe: $(WIN32_DIR)/t_winscrl.obj $(WIN32_DIR)/t_crt.obj $(WIN32_DIR)/t_entry_gui.obj
+	$(UEFI_LLD_LINK) -subsystem:windows -entry:WinMainCRTStartup -nodefaultlib -out:$@ $^ $(WIN32_LIBPATH) kernel32.lib user32.lib gdi32.lib
+
 $(WIN32_DIR)/winbmp.res: src/win32/tests/winbmp.rc src/win32/tests/pic.bmp
 	@mkdir -p $(WIN32_DIR)
 	llvm-rc -FO $@ $<
@@ -592,6 +595,7 @@ win32-apps: $(WIN32_DIR)/win32.dll $(WIN32_EXES)
 	cp $(WIN32_DIR)/wincombo.exe $(UEFI_DIR)/APPS/WINCOMBO.EXE
 	cp $(WIN32_DIR)/winscroll.exe $(UEFI_DIR)/APPS/WINSCROLL.EXE
 	cp $(WIN32_DIR)/winsbar.exe $(UEFI_DIR)/APPS/WINSBAR.EXE
+	cp $(WIN32_DIR)/winscrl.exe $(UEFI_DIR)/APPS/WINSCRL.EXE
 	cp $(WIN32_DIR)/winbmp.exe $(UEFI_DIR)/APPS/WINBMP.EXE
 	cp $(WIN32_DIR)/winmsg.exe $(UEFI_DIR)/APPS/WINMSG.EXE
 	cp $(WIN32_DIR)/fptest.exe $(UEFI_DIR)/APPS/WINFP.EXE

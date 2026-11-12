@@ -2456,6 +2456,11 @@ static int cond_sbar_drawn(void) {
 static int cond_sbar_thumb_bottom(void) { return syswin_test_pixel(395, 245) == 0x00CDCDCD && syswin_test_pixel(395, 100) == 0x00F0F0F0; }
 static int cond_sbar_marker(void) { return syswin_test_pixel(24, 200) == 0x00FF0000; }        // the program moved its marker (vertical 90, horizontal 1)
 static int cond_sbar_hidden(void) { return syswin_test_pixel(395, 245) == 0x00C8DCFF; }       // the bar went away, the client area took its place
+// WINSCRL.EXE: colour bands, 20 pixels per line, and a black square drawn only by the first complete paint.
+static int cond_scr_first(void) { return syswin_test_pixel(50, 10) == 0x001EFA3C && syswin_test_pixel(210, 55) == 0x00000000; }
+static int cond_scr_d(void) { return syswin_test_pixel(210, 35) == 0x00000000 && syswin_test_pixel(210, 55) == 0x003CDC54 && syswin_test_pixel(50, 10) == 0x0028F044; }
+static int cond_scr_r(void) { return syswin_test_pixel(180, 35) == 0x00000000 && syswin_test_pixel(210, 35) == 0x0032E64C; }
+static int cond_scr_e(void) { return syswin_test_pixel(180, 15) == 0x00000000 && syswin_test_pixel(50, 285) == 0x00BE5ABC; }
 // WINBMP.EXE: blits from memory DCs and a bitmap resource onto the window.
 static int cond_bmp_canvas(void) { return syswin_test_pixel(15, 15) == 0x00FF0000 && syswin_test_pixel(45, 15) == 0x000000FF; }       // a 40x30 canvas, red | blue
 static int cond_bmp_pic(void) {                       // the 4x2 resource at 20x: red green blue yellow / cyan . . black
@@ -2788,6 +2793,30 @@ static int pe_supervisor_task(void *arg) {
     console_printf("[PE] WINSBAR failed checks mask: 0x%x\r\n", (unsigned)code);
   }
   failures += pe_expect(pe_wait_for(cond_pe_no_windows, 500), "the frame scroll bar window was released");
+
+  // ScrollWindow: the pixels move, only the uncovered strip is painted by the program.
+  while (desktop_loop_count() < 3) {
+    wait_one_tick();
+  }
+  h = process_spawn("/APPS/WINSCRL.EXE");
+  failures += pe_expect(h >= 0 && pe_wait_for(cond_pe_window, 500), "WINSCRL.EXE: its window appeared");
+  failures += pe_expect(pe_wait_for(cond_scr_first, 500), "ScrollWindow: the first paint drew the bands and the square");
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 'd');                         // up one line
+  failures += pe_expect(pe_wait_for(cond_scr_d, 500), "ScrollWindow: scrolling up moved the pixels (the square moved, the strip below was painted)");
+  pe_pause(10);                                                          // (let the uncovered strip be painted: pending strips merge into one rectangle)
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 'r');                         // left 30 pixels
+  failures += pe_expect(pe_wait_for(cond_scr_r, 500), "ScrollWindow: scrolling left moved the square");
+  pe_pause(10);
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 'e');                         // ScrollWindowEx, up one line
+  failures += pe_expect(pe_wait_for(cond_scr_e, 500), "ScrollWindowEx: moved the pixels and invalidated the uncovered strip");
+  syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
+  code = 0xFFFFFFFFULL;
+  failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
+                        "ScrollWindow: every check in the program passed (exit code = failed checks bit mask)");
+  if (code != 0) {
+    console_printf("[PE] WINSCRL failed checks mask: 0x%x\r\n", (unsigned)code);
+  }
+  failures += pe_expect(pe_wait_for(cond_pe_no_windows, 500), "the ScrollWindow window was released");
 
   // Bitmaps: memory DCs, raster operations, DIBs and a bitmap resource.
   while (desktop_loop_count() < 3) {

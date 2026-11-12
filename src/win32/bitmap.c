@@ -7,6 +7,8 @@
 #include "internal.h"
 #include "../kernel/font8x8.h"
 
+void *memmove(void *d, const void *s, size_t n);
+
 #define MAX_BMPS 64
 #define MAX_DIM 8192
 
@@ -650,4 +652,93 @@ EXPORT HANDLE WINAPI LoadImageA(HINSTANCE hi, LPCSTR name, UINT type, int cx, in
     return 0;                                         // no icons or cursors
   }
   return (HANDLE)((flags & LR_LOADFROMFILE) ? load_bmp_file(name) : LoadBitmapA(hi, name));
+}
+
+// ---- Scrolling ----------------------------------------------------------------------------------------------
+
+// Scrolling the rectangle `a` by (dx, dy): the part that moves (src, before the move) and the two strips it
+// leaves uncovered (either can be empty). Returns 0 when nothing moves: then ex1 is all of `a`.
+int rt_scroll_plan(const RECT *a, int dx, int dy, RECT *src, RECT *ex1, RECT *ex2) {
+  src->left = a->left > a->left - dx ? a->left : a->left - dx;
+  src->top = a->top > a->top - dy ? a->top : a->top - dy;
+  src->right = a->right < a->right - dx ? a->right : a->right - dx;
+  src->bottom = a->bottom < a->bottom - dy ? a->bottom : a->bottom - dy;
+  ex1->left = ex1->top = ex1->right = ex1->bottom = 0;
+  ex2->left = ex2->top = ex2->right = ex2->bottom = 0;
+  if (src->right <= src->left || src->bottom <= src->top) {
+    *ex1 = *a;
+    return 0;
+  }
+  if (dy > 0) { *ex1 = *a; ex1->bottom = a->top + dy; }
+  else if (dy < 0) { *ex1 = *a; ex1->top = a->bottom + dy; }
+  if (dx > 0) { *ex2 = *a; ex2->right = a->left + dx; }
+  else if (dx < 0) { *ex2 = *a; ex2->left = a->right + dx; }
+  return 1;
+}
+
+// ScrollDC: the same on a device context (the part of the DC inside its clip by default). Nothing is invalidated;
+// lprcUpdate gets the bounding box of what was uncovered.
+EXPORT BOOL WINAPI ScrollDC(HDC hdc, int dx, int dy, const RECT *scroll, const RECT *clip, HRGN rgn, LPRECT update) {
+  dc_t *d = gdi_dc(hdc);
+  RECT a, src, ex[2];
+  int i, has;
+
+  (void)rgn;
+  if (d == 0) {
+    return FALSE;
+  }
+  a.left = d->cl - d->ox; a.top = d->ct - d->oy; a.right = d->cr - d->ox; a.bottom = d->cb - d->oy;       // (in the DC's coordinates)
+  if (scroll != 0) {
+    if (scroll->left > a.left) a.left = scroll->left;
+    if (scroll->top > a.top) a.top = scroll->top;
+    if (scroll->right < a.right) a.right = scroll->right;
+    if (scroll->bottom < a.bottom) a.bottom = scroll->bottom;
+  }
+  if (clip != 0) {
+    if (clip->left > a.left) a.left = clip->left;
+    if (clip->top > a.top) a.top = clip->top;
+    if (clip->right < a.right) a.right = clip->right;
+    if (clip->bottom < a.bottom) a.bottom = clip->bottom;
+  }
+  if (update != 0) {
+    update->left = update->top = update->right = update->bottom = 0;
+  }
+  if (a.right <= a.left || a.bottom <= a.top) {
+    return TRUE;
+  }
+  if (dx == 0 && dy == 0) {
+    return TRUE;
+  }
+  has = rt_scroll_plan(&a, dx, dy, &src, &ex[0], &ex[1]);
+  if (has) {
+    if (d->sysid >= 0) {
+      sc_winop_t op;
+
+      op.x = src.left + d->ox; op.y = src.top + d->oy; op.w = src.right - src.left; op.h = src.bottom - src.top;
+      op.color = (uint32_t)dx; op.scale = (uint32_t)dy; op.ptr = 0;
+      sc3(KS_WIN_COPY, d->sysid, (sl_t)&op, 0);
+    } else if (d->bmp != 0) {
+      int y, y0 = src.top, y1 = src.bottom, step = dy > 0 ? -1 : 1;
+
+      for (y = dy > 0 ? y1 - 1 : y0; y >= y0 && y < y1; y += step) {
+        uint32_t *from = px_at(d->bmp, src.left, y), *to;
+
+        if (y + dy < 0 || y + dy >= d->bmp->h) continue;
+        to = px_at(d->bmp, src.left + dx, y + dy);
+        memmove(to, from, (size_t)(src.right - src.left) * 4);
+      }
+    }
+  }
+  for (i = 0; i < 2; ++i) {
+    if (ex[i].right <= ex[i].left || ex[i].bottom <= ex[i].top || update == 0) continue;
+    if (update->right <= update->left) {
+      *update = ex[i];
+    } else {
+      if (ex[i].left < update->left) update->left = ex[i].left;
+      if (ex[i].top < update->top) update->top = ex[i].top;
+      if (ex[i].right > update->right) update->right = ex[i].right;
+      if (ex[i].bottom > update->bottom) update->bottom = ex[i].bottom;
+    }
+  }
+  return TRUE;
 }

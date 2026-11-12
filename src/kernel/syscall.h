@@ -43,6 +43,7 @@
 #define SYS_THREAD_EXIT   34   // thread_exit(code): ends the calling thread (the whole program when it is the main thread)
 #define SYS_FUTEX_WAIT    35   // futex_wait(addr, expected, timeout_ms) -> 0 woken, -EAGAIN if *addr != expected, -ETIMEDOUT; timeout ~0 waits forever
 #define SYS_FUTEX_WAKE    36   // futex_wake(addr, count) -> 0; wakes futex waiters (all of them: callers re-check)
+#define SYS_WIN_COPY      37   // win_copy(id, syswin_op_t *)   move the pixels of rectangle x, y, w, h by (color, scale) = (dx, dy) as signed 32-bit values; overlap is fine
 #define SYS_READDIR 8   // readdir(fd, sysfile_dirent_t *out) -> 1 entry stored, 0 at the end
                         // read(fd, ...) and write(fd, ...) also take file descriptors (see sysfile.h)
 

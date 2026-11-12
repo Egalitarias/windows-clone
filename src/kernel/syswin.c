@@ -557,6 +557,40 @@ int64_t syswin_blit(uint64_t id, uint64_t op_uaddr) {
   return 0;
 }
 
+// Move a rectangle of the surface by (dx, dy), which ScrollWindow needs: the runtime cannot read the
+// surface back. The source is cut so that both it and its destination lie on the surface.
+int64_t syswin_copy(uint64_t id, uint64_t op_uaddr) {
+  uwin_t *u = get_win(id, 1);
+  syswin_op_t op;
+  int x0, y0, x1, y1, y, dx, dy;
+  int64_t r;
+
+  if (u == 0) {
+    return SYSCALL_EBADF;
+  }
+  r = fetch_op(op_uaddr, &op);
+  if (r < 0) {
+    return r;
+  }
+  dx = (int)(uint32_t)op.color;
+  dy = (int)(uint32_t)op.scale;
+  if (dx < -4096 || dx > 4096 || dy < -4096 || dy > 4096 || !clip_op(u, &op, &x0, &y0, &x1, &y1)) {
+    return 0;
+  }
+  if (x0 < -dx) x0 = -dx;
+  if (y0 < -dy) y0 = -dy;
+  if (x1 > u->w - dx) x1 = u->w - dx;
+  if (y1 > u->h - dy) y1 = u->h - dy;
+  if (x1 <= x0 || y1 <= y0 || (dx == 0 && dy == 0)) {
+    return 0;
+  }
+  for (y = dy > 0 ? y1 - 1 : y0; dy > 0 ? y >= y0 : y < y1; y += dy > 0 ? -1 : 1) {      // away from the overlap
+    memmove(u->surf + (int64_t)(y + dy) * u->w + x0 + dx, u->surf + (int64_t)y * u->w + x0, (size_t)(x1 - x0) * 4U);
+  }
+  u->dirty = 1;
+  return 0;
+}
+
 int64_t syswin_fill(uint64_t id, uint64_t op_uaddr) {
   uwin_t *u = get_win(id, 1);
   syswin_op_t op;

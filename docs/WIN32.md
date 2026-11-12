@@ -149,8 +149,19 @@ without the styles; `ShowScrollBar` shows and hides them (the window keeps its s
 or takes the room and gets a `WM_SIZE`). The mouse on a bar never reaches the program as a client click; the
 repeat timer is internal (the program sees no `WM_TIMER`). Not there: the non-client messages
 (`WM_NCHITTEST`, `WM_NCLBUTTONDOWN`, `WM_NCPAINT`, `WM_NCCALCSIZE` are not sent; `DefWindowProc` does the work
-inside the runtime), `SB_BOTH` for `SetScrollInfo`, `GetScrollBarInfo`, scrolling the pixels (`ScrollWindow` is
-the program's job), the mouse wheel and the keyboard (a window with bars does not react to them by itself).
+inside the runtime), `SB_BOTH` for `SetScrollInfo`, `GetScrollBarInfo`, the mouse wheel and the keyboard (a window with bars does not react to them by itself).
+
+**Scrolling the pixels.** `ScrollWindow`, `ScrollWindowEx` and `ScrollDC` move what is already drawn. For a
+window the kernel copies the rectangle inside its surface (a new syscall, `win_copy`: the runtime cannot read a
+surface back); what the move uncovers is invalidated (`ScrollWindow` always, `ScrollWindowEx` with
+`SW_INVALIDATE` / `SW_ERASE`) and the program draws only that, since `BeginPaint` gives it the invalid rectangle
+as `rcPaint` (and, as on Windows, drawing in `WM_PAINT`, including the background erase, is clipped to it). With no
+rectangle, or `SW_SCROLLCHILDREN`, the child windows that touch the area move with it. `lprcScroll` and
+`lprcClip` work as documented (the clip limits where pixels move); `lprcUpdate` returns the bounding box of what
+was uncovered; a waiting invalid rectangle moves with the pixels. `ScrollDC` does the same on any DC, a memory
+DC included, and invalidates nothing. Not there: regions (`hrgnUpdate` is ignored). A window keeps one invalid
+rectangle, so two uncovered strips, or a strip while an earlier one is still unpainted, are merged into their
+bounding box (correct, but more is repainted than on Windows).
 
 A combo box follows Windows' layout rule: the height given to `CreateWindow` is the height of the drop-down
 list plus the field, but the window is only the field's height (20 pixels) while closed, so it
@@ -481,6 +492,10 @@ virtual FAT drive is not a good place for that). It runs, on the real desktop:
   clicks the arrows and the track, drags the thumb, clicks the corner, the client area and the child's bar,
   hides the vertical bar with a key and shows it again; pixels show the bars, the thumb, the content
   moved by the program and the client area taking the room back; 15 checks, exit code = bit mask of failures;
+- `WINSCRL.EXE` (`tests/winscrl.c`): colour bands and a black square that only a complete paint draws. The
+  kernel scrolls the window with keys (`ScrollWindow` up and left, `ScrollWindowEx`); the program paints only the
+  uncovered strip, so the pixels show whether they were really moved; `ScrollDC` on a bitmap and the reported
+  update rectangles are checked in the program (10 checks);
 - `WINBMP.EXE` (`tests/winbmp.c`, `winbmp.rc`, `pic.bmp`): memory DCs and bitmaps: raster operations,
   stretching and mirroring, DIB sections, `SetDIBits`/`GetDIBits`/`StretchDIBits`, a bitmap resource,
   text into a bitmap, a monochrome bitmap. 30 checks read pixels back from memory DCs; the kernel
