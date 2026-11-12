@@ -482,8 +482,8 @@ WIN32_CRT_LIBPATH := "-libpath:$(MSVC_ROOT)/lib/x64" "-libpath:$(WINSDK_ROOT)/Li
 # The C runtime part of the runtime uses SSE (doubles travel in XMM registers) and declares the
 # UCRT functions itself: the UCRT headers would mark them dllimport.
 WIN32_SSE_CFLAGS := $(filter-out -mno-sse,$(WIN32_CFLAGS)) -fno-math-errno -D_CRT_SECURE_NO_WARNINGS
-WIN32_RT_OBJS := $(WIN32_DIR)/kernel32.obj $(WIN32_DIR)/user32.obj $(WIN32_DIR)/gdi32.obj $(WIN32_DIR)/controls.obj $(WIN32_DIR)/menu.obj $(WIN32_DIR)/crt.obj $(WIN32_DIR)/crtfmt.obj $(WIN32_DIR)/crtmath.obj $(WIN32_DIR)/threads.obj $(WIN32_DIR)/seh.obj $(WIN32_DIR)/cxxeh.obj
-WIN32_TESTS := hello badimp wingui winctl winmenu winmsg fptest crttest thrtest cxxtest
+WIN32_RT_OBJS := $(WIN32_DIR)/kernel32.obj $(WIN32_DIR)/user32.obj $(WIN32_DIR)/gdi32.obj $(WIN32_DIR)/controls.obj $(WIN32_DIR)/menu.obj $(WIN32_DIR)/dialog.obj $(WIN32_DIR)/crt.obj $(WIN32_DIR)/crtfmt.obj $(WIN32_DIR)/crtmath.obj $(WIN32_DIR)/threads.obj $(WIN32_DIR)/seh.obj $(WIN32_DIR)/cxxeh.obj
+WIN32_TESTS := hello badimp wingui winctl winmenu windlg winmsg fptest crttest thrtest cxxtest
 WIN32_EXES := $(patsubst %,$(WIN32_DIR)/%.exe,$(WIN32_TESTS))
 
 $(WIN32_DIR)/%.obj: src/win32/%.c src/win32/internal.h
@@ -552,6 +552,14 @@ $(WIN32_DIR)/winctl.exe: $(WIN32_DIR)/t_winctl.obj $(WIN32_DIR)/t_crt.obj $(WIN3
 $(WIN32_DIR)/winmenu.exe: $(WIN32_DIR)/t_winmenu.obj $(WIN32_DIR)/t_crt.obj $(WIN32_DIR)/t_entry_gui.obj
 	$(UEFI_LLD_LINK) -subsystem:windows -entry:WinMainCRTStartup -nodefaultlib -out:$@ $^ $(WIN32_LIBPATH) kernel32.lib user32.lib gdi32.lib
 
+# Resources are compiled by llvm-rc and linked as a .res file.
+$(WIN32_DIR)/windlg.res: src/win32/tests/windlg.rc
+	@mkdir -p $(WIN32_DIR)
+	llvm-rc -FO $@ $<
+
+$(WIN32_DIR)/windlg.exe: $(WIN32_DIR)/t_windlg.obj $(WIN32_DIR)/windlg.res $(WIN32_DIR)/t_crt.obj $(WIN32_DIR)/t_entry_gui.obj
+	$(UEFI_LLD_LINK) -subsystem:windows -entry:WinMainCRTStartup -nodefaultlib -out:$@ $^ $(WIN32_LIBPATH) kernel32.lib user32.lib gdi32.lib
+
 $(WIN32_DIR)/winmsg.exe: $(WIN32_DIR)/t_winmsg.obj $(WIN32_DIR)/t_crt.obj $(WIN32_DIR)/t_entry_gui.obj
 	$(UEFI_LLD_LINK) -subsystem:windows -entry:WinMainCRTStartup -nodefaultlib -out:$@ $^ $(WIN32_LIBPATH) kernel32.lib user32.lib
 
@@ -564,6 +572,7 @@ win32-apps: $(WIN32_DIR)/win32.dll $(WIN32_EXES)
 	cp $(WIN32_DIR)/wingui.exe $(UEFI_DIR)/APPS/WINGUI.EXE
 	cp $(WIN32_DIR)/winctl.exe $(UEFI_DIR)/APPS/WINCTL.EXE
 	cp $(WIN32_DIR)/winmenu.exe $(UEFI_DIR)/APPS/WINMENU.EXE
+	cp $(WIN32_DIR)/windlg.exe $(UEFI_DIR)/APPS/WINDLG.EXE
 	cp $(WIN32_DIR)/winmsg.exe $(UEFI_DIR)/APPS/WINMSG.EXE
 	cp $(WIN32_DIR)/fptest.exe $(UEFI_DIR)/APPS/WINFP.EXE
 	cp $(WIN32_DIR)/crttest.exe $(UEFI_DIR)/APPS/WINCRT.EXE

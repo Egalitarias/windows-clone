@@ -87,8 +87,7 @@ and `WM_MOUSEMOVE` (moves only while the button is held), the wheel `WM_MOUSEWHE
 the close button `WM_CLOSE`. `WM_PAINT` is generated for invalidated windows; `BeginPaint` sends
 `WM_ERASEBKGND` and the default procedure fills with the class brush.
 
-Missing on purpose (for now): `COMBOBOX` and `SCROLLBAR` controls, dialog templates
-(`DialogBox`, resources), memory DCs and bitmaps (`CreateCompatibleDC`, `BitBlt`), clipboard, resources, fonts other
+Missing on purpose (for now): `COMBOBOX` and `SCROLLBAR` controls, memory DCs and bitmaps (`CreateCompatibleDC`, `BitBlt`), clipboard, resources, fonts other
 than the built-in one, right and middle mouse buttons, wide-character (`W`) window functions
 (only `DefWindowProcW`, `GetMessageW`, ...), real wall-clock time (time counts from 2026-01-01 at
 boot), environment variables, and anything about sockets.
@@ -162,6 +161,32 @@ that do not draw their own frame (controls always draw theirs), `SetParent`, an 
 Not there: `LoadMenu` and menu resources, `WM_MENUSELECT`, owner-drawn and bitmap items, the system
 menu, F10 and Alt alone for the bar (Alt+letter works), menu bar wrapping, scrolling of long popups,
 `SetMenuDefaultItem`, `AppendMenuW` and the other `W` forms.
+
+## Resources and dialogs
+
+**Resources.** The program's `.rsrc` section is read in place (the whole image is mapped):
+`FindResource[Ex]A`, `LoadResource`, `LockResource`, `SizeofResource`, `LoadStringA` (string
+tables), `LoadMenuA`/`LoadMenuIndirectA` (`MENU` resources, and `lpszMenuName` of a window class
+gives a window its menu), `LoadAcceleratorsA`. Build a `.rc` with `rc.exe` or `llvm-rc` and link the
+`.res` (the test does: `windlg.rc`). Not there: `MENUEX`, bitmaps, icons and cursors (`LoadIcon`
+and `LoadCursor` still return dummies), version info, the `W` forms.
+
+**Dialogs.** `DialogBoxParam`, `DialogBoxIndirectParam`, `CreateDialogParam`,
+`CreateDialogIndirectParam`, `EndDialog`, `DefDlgProc`, `GetDialogBaseUnits`, `MapDialogRect`, and
+the item helpers from the controls section. A template is a `DLGTEMPLATE` or a `DLGTEMPLATEEX`
+(what `DIALOG` and `DIALOGEX` compile to), from a resource or from memory. The dialog is a
+top-level window of the class `#32770`; the controls are children created from the template
+(classes by atom or by name, so custom classes work), the first `WS_TABSTOP` control gets the focus
+and `WM_INITDIALOG` follows with the application's parameter, as on Windows. The dialog procedure's
+return values follow the `DWLP_MSGRESULT` rules. `DialogBox` is modal: the owner is disabled and
+a message loop with `IsDialogMessage` (Tab, Enter for the default button, Escape for `IDCANCEL`)
+runs until `EndDialog`; the close button sends `IDCANCEL`.
+
+Dialog units are converted with 7 x 12 pixels per 4 x 8 units (`GetDialogBaseUnits`), larger than
+Windows' 8-point font, because characters here are 8 pixels wide. Not there: `COMBOBOX` and other
+unsupported controls in a template are skipped, `DS_` styles other than `DS_SETFONT` (the font is
+ignored), dialog placement from the template (the window manager places it), `DM_SETDEFID`, system
+modal and `MessageBox` owner disabling.
 
 ## The C runtime
 
@@ -377,6 +402,9 @@ virtual FAT drive is not a good place for that). It runs, on the real desktop:
   the bar, a popup over the client area and the client painted again; the program checks 19 things
   (menu API, no command from a disabled item or Escape, client size under the bar) and exits with a
   bit mask of the failures;
+- `WINDLG.EXE` (`tests/windlg.c`, `windlg.rc`): a `DIALOGEX`, a menu, accelerators and a string table
+  compiled into the program; a modal `DialogBoxParam` driven by the kernel (typing, a click, Tab,
+  Space), a dialog built from an in-memory `DLGTEMPLATE`; 15 checks, exit code = bit mask of failures;
 - `WINGUI.EXE`: window class, `WM_PAINT` with GDI (pixels are checked), mouse clicks, typed
   characters, a timer and `PostQuitMessage` (the exit code encodes what it saw);
 - six more runs and a leak check (image, DLL and heap are freed).
@@ -391,4 +419,4 @@ screenshot (`python scripts/qemu-screenshot.py out/run/shot.png 28`).
 - Programs larger than about 900 KB (together with the runtime) do not fit the load window.
 - Not a Windows compatibility layer in the sense of running arbitrary software: it runs programs
   that stay inside the subset above. Programs from real toolchains that link the CRT, use
-  the C++ standard library, or draw with bitmaps and dialogs will not get far yet.
+  the C++ standard library, or draw with bitmaps and combo boxes will not get far yet.

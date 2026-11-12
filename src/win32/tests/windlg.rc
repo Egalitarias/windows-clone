@@ -1,0 +1,38 @@
+// Resources for WINDLG.EXE (numbers instead of symbols so no header is needed).
+100 DIALOGEX 0, 0, 160, 80
+STYLE 0x90C80000
+CAPTION "Test dialog"
+FONT 8, "MS Shell Dlg"
+BEGIN
+  EDITTEXT        101, 10, 10, 100, 14, 0x80
+  AUTOCHECKBOX    "Check", 102, 10, 32, 80, 10
+  LTEXT           "Name", 103, 115, 12, 40, 10
+  DEFPUSHBUTTON   "OK", 1, 20, 56, 50, 16
+  PUSHBUTTON      "Cancel", 2, 80, 56, 50, 16
+END
+
+200 MENU
+BEGIN
+  POPUP "&File"
+  BEGIN
+    MENUITEM "&Open", 201
+    MENUITEM SEPARATOR
+    MENUITEM "E&xit", 202
+  END
+  POPUP "&Help"
+  BEGIN
+    MENUITEM "About", 203
+  END
+END
+
+300 ACCELERATORS
+BEGIN
+  "N", 201, VIRTKEY, CONTROL
+  "X", 202, VIRTKEY, ALT
+END
+
+STRINGTABLE
+BEGIN
+  1 "Hello string"
+  17 "Second"
+END

@@ -1588,10 +1588,11 @@ void rt_controls_register(void) {
     {"STATIC", static_proc, COLOR_BTNFACE, 0},
     {"EDIT", edit_proc, COLOR_WINDOW, CS_DBLCLKS},
     {"LISTBOX", listbox_proc, COLOR_WINDOW, CS_DBLCLKS},
+    {"#32770", rt_dlg_proc, COLOR_BTNFACE, 0},
   };
   int i;
 
-  for (i = 0; i < 4; ++i) {
+  for (i = 0; i < (int)(sizeof(kClasses) / sizeof(kClasses[0])); ++i) {
     WNDCLASSEXA wc;
 
     rt_memset(&wc, 0, sizeof(wc));

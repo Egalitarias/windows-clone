@@ -215,6 +215,7 @@ int rt_wnd_surface(HWND h, int *sysid, int *cw, int *ch, int *mb);
 
 // ---- controls.c: the standard controls (BUTTON, STATIC, EDIT, LISTBOX), registered as window classes ----
 void rt_controls_register(void);
+LRESULT CALLBACK rt_dlg_proc(HWND h, UINT m, WPARAM wp, LPARAM lp);        // dialog.c: the "#32770" window class
 // user32.c: what a control keeps with its window.
 void *rt_wnd_ctl(HWND h);
 void rt_wnd_set_ctl(HWND h, void *p);

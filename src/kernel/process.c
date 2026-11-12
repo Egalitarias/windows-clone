@@ -2435,6 +2435,9 @@ static int cond_mnu_red(void) { return syswin_test_pixel(20, 38) == 0x00C82828; 
 static int cond_mnu_popup(void) { return syswin_test_pixel(130, 25) == 0x00F0F0F0; }        // the File popup over the client area
 static int cond_mnu_popup2(void) { return syswin_test_pixel(130, 45) == 0x00F0F0F0 && syswin_test_pixel(100, 25) == 0x000078D7; }   // first item highlighted (keyboard)
 static int cond_mnu_gone(void) { return syswin_test_pixel(130, 25) == 0x00C8DCFF; }         // and the client repainted after it closed
+// WINDLG.EXE: a dialog from a compiled resource.
+static int cond_dlg_bg(void) { return syswin_test_pixel(270, 110) == 0x00F0F0F0; }          // the dialog class background
+static int cond_dlg_edit(void) { return syswin_test_pixel(150, 22) == 0x00FFFFFF; }         // its edit control
 static int cond_pe_msgbox(void) { return syswin_test_count(0x003A78D6u) > 1000; }   // the default button
 
 static int pe_supervisor_task(void *arg) {
@@ -2617,6 +2620,29 @@ static int pe_supervisor_task(void *arg) {
     console_printf("[PE] WINMENU failed checks mask: 0x%x\r\n", (unsigned)code);
   }
   failures += pe_expect(pe_wait_for(cond_pe_no_windows, 500), "the menus window was released");
+
+  // Dialogs and resources: a DIALOGEX from the program's .rsrc, then one built from memory.
+  while (desktop_loop_count() < 3) {
+    wait_one_tick();
+  }
+  h = process_spawn("/APPS/WINDLG.EXE");
+  failures += pe_expect(h >= 0 && pe_wait_for(cond_pe_window, 500), "WINDLG.EXE: the dialog window appeared");
+  failures += pe_expect(pe_wait_for(cond_dlg_bg, 500), "dialogs: the dialog was painted (class background)");
+  failures += pe_expect(pe_wait_for(cond_dlg_edit, 500), "dialogs: the edit control from the resource was created and painted");
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 'x');                         // the first control has the focus
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 'y');
+  pe_click(30, 55);                                                      // the check box
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 9);                           // Tab: to OK
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, ' ');                         // Space presses it: the dialog ends
+  pe_pause(40);
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 10);                          // Enter in the dialog built from memory
+  code = 0xFFFFFFFFULL;
+  failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
+                        "dialogs and resources: every check in the program passed (exit code = failed checks bit mask)");
+  if (code != 0) {
+    console_printf("[PE] WINDLG failed checks mask: 0x%x\r\n", (unsigned)code);
+  }
+  failures += pe_expect(pe_wait_for(cond_pe_no_windows, 500), "the dialog windows were released");
 
   // A windowed program: WinMain, window class, WM_PAINT with GDI, input and a timer. The desktop
   // task must be running (it is, as the idle callback).

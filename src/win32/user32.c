@@ -24,6 +24,7 @@ typedef struct {
   HBRUSH bg;
   UINT style;
   HINSTANCE inst;
+  LPCSTR menu;                  // lpszMenuName: the menu a window of the class gets (a resource name or id)
 } cls_t;
 
 typedef struct wnd wnd_t;
@@ -224,6 +225,7 @@ EXPORT ATOM WINAPI RegisterClassExA(const WNDCLASSEXA *wc) {
       c->bg = wc->hbrBackground;
       c->style = wc->style;
       c->inst = wc->hInstance;
+      c->menu = wc->lpszMenuName;
       return (ATOM)(i + 1);
     }
   }
@@ -366,6 +368,9 @@ EXPORT HWND WINAPI CreateWindowExA(DWORD exstyle, LPCSTR cls, LPCSTR title, DWOR
     return 0;
   }
   rt_memset(w, 0, sizeof(*w));
+  if (!(style & WS_CHILD) && menu == 0 && c->menu != 0) {
+    menu = LoadMenuA(inst != 0 ? inst : c->inst, c->menu);
+  }
   hm = !(style & WS_CHILD) && rt_menu_valid(menu);
   if (style & WS_CHILD) {
     wnd_t *p = w_get(parent);
