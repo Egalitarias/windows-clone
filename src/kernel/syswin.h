@@ -74,6 +74,7 @@ int64_t syswin_close(uint64_t id);
 int64_t syswin_title(uint64_t id, uint64_t title_uaddr);
 int64_t syswin_blit(uint64_t id, uint64_t op_uaddr);
 int64_t syswin_copy(uint64_t id, uint64_t op_uaddr);
+int64_t syswin_read(uint64_t id, uint64_t op_uaddr);
 int64_t syswin_fill(uint64_t id, uint64_t op_uaddr);
 int64_t syswin_text(uint64_t id, uint64_t op_uaddr);
 // -> 1 event stored, 0 none (non-blocking). With block != 0 waits for one.

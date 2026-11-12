@@ -676,5 +676,5 @@ EXPORT COLORREF WINAPI GetPixel(HDC h, int x, int y) {
   dc_t *d = gdi_dc(h);
   COLORREF c;
 
-  return d != 0 && d->sysid < 0 && rt_mem_getpixel(d, x, y, &c) ? c : CLR_INVALID;     // (a window's surface cannot be read back)
+  return d != 0 && rt_mem_getpixel(d, x, y, &c) ? c : CLR_INVALID;
 }

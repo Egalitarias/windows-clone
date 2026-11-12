@@ -557,6 +557,38 @@ int64_t syswin_blit(uint64_t id, uint64_t op_uaddr) {
   return 0;
 }
 
+// Copy a rectangle of the surface into a user buffer (the reverse of syswin_blit): the runtime needs the
+// old pixels for blending and for raster operations that read the destination.
+int64_t syswin_read(uint64_t id, uint64_t op_uaddr) {
+  uwin_t *u = get_win(id, 1);
+  syswin_op_t op;
+  int x0, y0, x1, y1, y;
+  int64_t r;
+
+  if (u == 0) {
+    return SYSCALL_EBADF;
+  }
+  r = fetch_op(op_uaddr, &op);
+  if (r < 0) {
+    return r;
+  }
+  if (op.w > 4096 || op.h > 4096) {
+    return SYSCALL_EINVAL;
+  }
+  if (op.w > 0 && op.h > 0 && !paging_user_range_ok(op.ptr, (uint64_t)op.w * (uint64_t)op.h * 4ULL)) {
+    return SYSCALL_EFAULT;
+  }
+  if (!clip_op(u, &op, &x0, &y0, &x1, &y1)) {
+    return 0;
+  }
+  for (y = y0; y < y1; ++y) {
+    uint32_t *dst = (uint32_t *)(uintptr_t)op.ptr + (int64_t)(y - op.y) * op.w + (x0 - op.x);
+
+    memcpy(dst, u->surf + (int64_t)y * u->w + x0, (size_t)(x1 - x0) * 4U);
+  }
+  return 0;
+}
+
 // Move a rectangle of the surface by (dx, dy), which ScrollWindow needs: the runtime cannot read the
 // surface back. The source is cut so that both it and its destination lie on the surface.
 int64_t syswin_copy(uint64_t id, uint64_t op_uaddr) {

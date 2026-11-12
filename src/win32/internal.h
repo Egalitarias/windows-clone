@@ -59,6 +59,7 @@ typedef long long sl_t;               // "long" is 32 bits in the Windows ABI: s
 #define KS_NOTIFY      31
 #define KS_PEINFO      32
 #define KS_WIN_COPY    37
+#define KS_WIN_READ    38
 #define KS_THREAD_CREATE 33
 #define KS_THREAD_EXIT 34
 #define KS_FUTEX_WAIT  35
@@ -224,6 +225,7 @@ int rt_bmp_getobject(HGDIOBJ h, int n, void *p);                    // GetObject
 void rt_mem_fill(dc_t *d, int x, int y, int x1, int y1, uint32_t rgb);       // surface coordinates, already clipped
 void rt_mem_text(dc_t *d, int x, int y, const char *s, int n, uint32_t rgb);
 int rt_mem_getpixel(dc_t *d, int x, int y, COLORREF *c);
+void rt_win_read(int sysid, int x, int y, int w, int h, uint32_t *buf);     // read a rectangle of a window's surface
 int rt_scroll_plan(const RECT *a, int dx, int dy, RECT *src, RECT *ex1, RECT *ex2);   // scrolling a: what moves, and the two strips left uncovered
 HBITMAP rt_dib_to_bitmap(const BITMAPINFO *bi, const void *bits);   // bits == 0: they follow the header and colour table
 

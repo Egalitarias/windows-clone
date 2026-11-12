@@ -288,6 +288,8 @@ static int64_t syscall_dispatch_inner(uint64_t nr, uint64_t a1, uint64_t a2, uin
       return syswin_blit(a1, a2);
     case SYS_WIN_COPY:
       return syswin_copy(a1, a2);
+    case SYS_WIN_READ:
+      return syswin_read(a1, a2);
     case SYS_WIN_FILL:
       return syswin_fill(a1, a2);
     case SYS_WIN_TEXT:

@@ -193,9 +193,17 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
       StretchBlt(dc, 180, 60, -80, 40, src, 0, 0, 4, 2, SRCCOPY);                // and mirrored
       BitBlt(dc, 10, 100, 40, 30, g_mem, 0, 0, SRCCOPY);
       BitBlt(dc, 10, 100, 40, 30, g_mem, 0, 0, NOTSRCCOPY);                      // the inverse of the same bitmap over it
-      ok = BitBlt(dc, 10, 150, 20, 20, g_mem, 0, 0, SRCINVERT);                  // needs the old pixels of the window: not possible
-      if (ok) FAIL(30);
-      if (BitBlt(g_mem, 0, 0, 4, 4, dc, 0, 0, SRCCOPY)) FAIL(31);                // and a window cannot be read as a source
+      ok = BitBlt(dc, 10, 150, 20, 20, g_mem, 0, 0, SRCINVERT);                  // reads the window's old pixels back: the background XOR red
+      if (!ok || GetPixel(dc, 15, 155) != RGB(55, 220, 255)) FAIL(30);
+      {
+        HDC td = CreateCompatibleDC(dc);
+        HBITMAP tb = CreateCompatibleBitmap(dc, 4, 4), told = (HBITMAP)SelectObject(td, tb);
+
+        if (!BitBlt(td, 0, 0, 4, 4, dc, 0, 0, SRCCOPY) || GetPixel(td, 1, 1) != RGB(200, 220, 255)) FAIL(31);       // and a window is a source too
+        SelectObject(td, told);
+        DeleteObject(tb);
+        DeleteDC(td);
+      }
       PatBlt(dc, 100, 100, 20, 20, BLACKNESS);
       SelectObject(src, old);
       DeleteDC(src);

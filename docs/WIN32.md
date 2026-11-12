@@ -153,7 +153,7 @@ inside the runtime), `SB_BOTH` for `SetScrollInfo`, `GetScrollBarInfo`, the mous
 
 **Scrolling the pixels.** `ScrollWindow`, `ScrollWindowEx` and `ScrollDC` move what is already drawn. For a
 window the kernel copies the rectangle inside its surface (a new syscall, `win_copy`: the runtime cannot read a
-surface back); what the move uncovers is invalidated (`ScrollWindow` always, `ScrollWindowEx` with
+surface back when it was written; `win_read` came later); what the move uncovers is invalidated (`ScrollWindow` always, `ScrollWindowEx` with
 `SW_INVALIDATE` / `SW_ERASE`) and the program draws only that, since `BeginPaint` gives it the invalid rectangle
 as `rcPaint` (and, as on Windows, drawing in `WM_PAINT`, including the background erase, is clipped to it). With no
 rectangle, or `SW_SCROLLCHILDREN`, the child windows that touch the area move with it. `lprcScroll` and
@@ -252,15 +252,23 @@ DC (`DeleteObject` fails, as on Windows).
   or top-down); `SetDIBits`, `GetDIBits` (24 or 32-bit output), `StretchDIBits` and
   `SetDIBitsToDevice` read 1, 4, 8, 16 (5-5-5), 24 and 32-bit uncompressed DIBs with their colour tables.
 
-A window's surface can be written (a blit goes to the kernel as a pixel copy) but not read back,
-so a window DC works as the destination of operations that do not use the old pixels (`SRCCOPY`,
-`NOTSRCCOPY`, `PATCOPY`, `BLACKNESS`, `WHITENESS`), not as a source, and `SRCINVERT`, `DSTINVERT`
-and the like onto a window return `FALSE`; draw into a memory DC and blit that. `GetPixel` on a window DC
-returns `CLR_INVALID`. A program that wants flicker-free drawing does the usual thing: paint into a
-memory bitmap, then one `BitBlt` to the window in `WM_PAINT`.
+A window's surface is written by a blit (the kernel copies the pixels in) and read back by `win_read`
+(a syscall that copies a rectangle of the surface out), so a window DC is a full citizen: the
+destination of any raster operation, including `SRCINVERT`, `DSTINVERT` and the others that use the old
+pixels, a blit source (`BitBlt(memdc, ..., windc, ...)` copies what is on the window; the part used is read
+once, up to 4096 x 4096), and `GetPixel` works on it (`CLR_INVALID` outside the DC's clip rectangle). A
+program that wants flicker-free drawing still does the usual thing: paint into a memory bitmap, then one
+`BitBlt` to the window in `WM_PAINT`.
 
-Not there: `CreateDIBSection` for anything but 32 bits, `MaskBlt`, `PlgBlt`, `TransparentBlt` and
-`AlphaBlend` (msimg32), `SetStretchBltMode` smoothing (always nearest), palettes, brush patterns
+**msimg32.** `TransparentBlt` copies a source (stretched if the sizes differ) except for the pixels of one
+colour, which leave the destination alone. `AlphaBlend` blends a source over the destination with the
+constant alpha of the `BLENDFUNCTION` (0 to 255) and, with `AC_SRC_ALPHA`, the source's own premultiplied
+alpha (the top byte of a 32-bit bitmap, as in a `CreateDIBSection` bitmap); only `AC_SRC_OVER` exists, any
+other blend operation or flag returns `FALSE`. Both work onto windows and memory DCs. `msimg32.dll` is
+one more name the loader binds to `WIN32.DLL`; link with `msimg32.lib`. `GradientFill` is not there.
+
+Not there: `CreateDIBSection` for anything but 32 bits, `MaskBlt`, `PlgBlt`, `GradientFill`,
+`SetStretchBltMode` smoothing (always nearest), palettes, brush patterns
 (`CreatePatternBrush`, `CreateDIBPatternBrush`), icons and cursors as images, device-dependent bitmap
 bit access (`GetBitmapBits`).
 
@@ -500,7 +508,11 @@ virtual FAT drive is not a good place for that). It runs, on the real desktop:
   stretching and mirroring, DIB sections, `SetDIBits`/`GetDIBits`/`StretchDIBits`, a bitmap resource,
   text into a bitmap, a monochrome bitmap. 30 checks read pixels back from memory DCs; the kernel
   checks pixels of the blits onto the window (a resource scaled 20 times, mirrored, `NOTSRCCOPY`,
-  `BLACKNESS`) and that a blit that would read the window draws nothing; exit code = bit mask of failures;
+  `BLACKNESS`) and `SRCINVERT` onto the window (which reads its old pixels back); exit code = bit mask of failures;
+- `WINBLEND.EXE` (`tests/winblend.c`): `TransparentBlt` and `AlphaBlend` onto a window (plain, stretched,
+  constant alpha, per-pixel alpha from a DIB section) and between memory DCs, a window as a `BitBlt` source,
+  `GetPixel` on a window; the kernel checks the pixels of the surface; 19 checks in the program, exit code =
+  bit mask of failures;
 - `WINDLG.EXE` (`tests/windlg.c`, `windlg.rc`): a `DIALOGEX`, a menu, accelerators and a string table
   compiled into the program; a modal `DialogBoxParam` driven by the kernel (typing, a click, Tab,
   Space), a dialog built from an in-memory `DLGTEMPLATE`; 15 checks, exit code = bit mask of failures;

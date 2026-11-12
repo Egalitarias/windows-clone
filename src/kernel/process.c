@@ -565,7 +565,7 @@ static int pe_ieq_prefix(const char *s, const char *prefix) {
 static int pe_is_runtime_name(const char *n) {
   static const char names[][20] = {"kernel32.dll", "user32.dll", "gdi32.dll", "advapi32.dll", "shell32.dll",
                                     "comctl32.dll", "win32.dll", "ucrtbase.dll", "vcruntime140.dll",
-                                    "vcruntime140_1.dll", "msvcrt.dll"};
+                                    "vcruntime140_1.dll", "msvcrt.dll", "msimg32.dll"};
   size_t i;
 
   // The universal C runtime's API sets: api-ms-win-crt-stdio-l1-1-0.dll and so on.
@@ -2472,7 +2472,16 @@ static int cond_bmp_mirror(void) {                    // the same, with a negati
 }
 static int cond_bmp_notsrc(void) { return syswin_test_pixel(15, 115) == 0x0000FFFF && syswin_test_pixel(45, 115) == 0x00FFFF00; }     // NOTSRCCOPY
 static int cond_bmp_black(void) { return syswin_test_pixel(105, 105) == 0x00000000; }                                                 // PatBlt BLACKNESS
-static int cond_bmp_untouched(void) { return syswin_test_pixel(15, 155) == 0x00C8DCFF; }                                              // the refused SRCINVERT drew nothing
+static int cond_bmp_xor(void) { return syswin_test_pixel(15, 155) == 0x0037DCFF; }                                                   // SRCINVERT: the window's old pixels XOR red
+// WINBLEND.EXE: TransparentBlt and AlphaBlend; client = surface coordinates.
+static int cond_blend_trans(void) {                   // red where the source was not magenta, the background where it was; plain and stretched
+  return syswin_test_pixel(15, 15) == 0x00FF0000 && syswin_test_pixel(25, 15) == 0x00C8DCFF &&
+         syswin_test_pixel(105, 15) == 0x00FF0000 && syswin_test_pixel(135, 15) == 0x00C8DCFF;
+}
+static int cond_blend_alpha(void) { return syswin_test_pixel(20, 70) == 0x00640080 && syswin_test_pixel(110, 70) == 0x007F7FFF; }     // constant alpha, and the source's own
+static int cond_blend_window(void) {                  // the window as the source of BitBlt, plain and with SRCINVERT
+  return syswin_test_pixel(205, 15) == 0x00FF0000 && syswin_test_pixel(215, 15) == 0x00C8DCFF && syswin_test_pixel(305, 15) == 0x0037DCFF;
+}
 static int cond_pe_msgbox(void) { return syswin_test_count(0x003A78D6u) > 1000; }   // the default button
 
 static int pe_supervisor_task(void *arg) {
@@ -2829,7 +2838,7 @@ static int pe_supervisor_task(void *arg) {
   failures += pe_expect(pe_wait_for(cond_bmp_mirror, 500), "bitmaps: a negative width mirrors the picture");
   failures += pe_expect(pe_wait_for(cond_bmp_notsrc, 500), "bitmaps: NOTSRCCOPY");
   failures += pe_expect(pe_wait_for(cond_bmp_black, 500), "bitmaps: PatBlt BLACKNESS");
-  failures += pe_expect(cond_bmp_untouched(), "bitmaps: a blit that would read the window is refused and draws nothing");
+  failures += pe_expect(cond_bmp_xor(), "bitmaps: SRCINVERT onto the window read its old pixels back");
   syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
   code = 0xFFFFFFFFULL;
   failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
@@ -2838,6 +2847,24 @@ static int pe_supervisor_task(void *arg) {
     console_printf("[PE] WINBMP failed checks mask: 0x%x\r\n", (unsigned)code);
   }
   failures += pe_expect(pe_wait_for(cond_pe_no_windows, 500), "the bitmap window was released");
+
+  // TransparentBlt and AlphaBlend (msimg32), and the window as a blit source.
+  while (desktop_loop_count() < 3) {
+    wait_one_tick();
+  }
+  h = process_spawn("/APPS/WINBLEND.EXE");
+  failures += pe_expect(h >= 0 && pe_wait_for(cond_pe_window, 500), "WINBLEND.EXE: its window appeared");
+  failures += pe_expect(pe_wait_for(cond_blend_trans, 500), "TransparentBlt: the key colour is left out, also when stretched");
+  failures += pe_expect(pe_wait_for(cond_blend_alpha, 500), "AlphaBlend: constant alpha and per-pixel alpha blended with the window's pixels");
+  failures += pe_expect(pe_wait_for(cond_blend_window, 500), "a window as the source of BitBlt, and SRCINVERT onto a window");
+  syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
+  code = 0xFFFFFFFFULL;
+  failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
+                        "blending: every check in the program passed (exit code = failed checks bit mask)");
+  if (code != 0) {
+    console_printf("[PE] WINBLEND failed checks mask: 0x%x\r\n", (unsigned)code);
+  }
+  failures += pe_expect(pe_wait_for(cond_pe_no_windows, 500), "the blending window was released");
 
   // A windowed program: WinMain, window class, WM_PAINT with GDI, input and a timer. The desktop
   // task must be running (it is, as the idle callback).

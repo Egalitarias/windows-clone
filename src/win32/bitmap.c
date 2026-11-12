@@ -2,8 +2,8 @@
 // ternary raster operations, DIBs (CreateDIBSection, CreateDIBitmap, Get/SetDIBits, StretchDIBits)
 // and bitmap resources (LoadBitmap, LoadImage). Bitmaps are kept as 32-bit 0x00RRGGBB pixels. A
 // memory DC (CreateCompatibleDC) has sysid -1; everything gdi32.c draws goes to the selected bitmap
-// through rt_mem_fill / rt_mem_text. A window's surface can be drawn to by a blit (KS_WIN_BLIT) but not read back,
-// so a window DC can only be the destination of an operation that does not use the old pixels.
+// through rt_mem_fill / rt_mem_text. A window's surface is drawn to by KS_WIN_BLIT and read back by KS_WIN_READ, so a window DC can be the
+// source and the destination of any operation. TransparentBlt and AlphaBlend (msimg32) are here too.
 #include "internal.h"
 #include "../kernel/font8x8.h"
 
@@ -180,6 +180,18 @@ void rt_mem_text(dc_t *d, int x, int y, const char *s, int n, uint32_t rgb) {
 int rt_mem_getpixel(dc_t *d, int x, int y, COLORREF *c) {
   bmp_t *b = d->bmp;
 
+  if (d->sysid >= 0) {                                 // a window: one pixel read back from its surface, inside the clip rectangle
+    uint32_t v = 0;
+
+    x += d->ox;
+    y += d->oy;
+    if (x < d->cl || y < d->ct || x >= d->cr || y >= d->cb) {
+      return 0;
+    }
+    rt_win_read(d->sysid, x, y, 1, 1, &v);
+    *c = (COLORREF)rt_colorref_to_rgb((COLORREF)(v & 0x00FFFFFFu));
+    return 1;
+  }
   if (b == 0 || x < 0 || y < 0 || x >= b->w || y >= b->h) {
     return 0;
   }
@@ -439,22 +451,61 @@ EXPORT int WINAPI GetDIBits(HDC dc, HBITMAP hb, UINT start, UINT lines, LPVOID b
   return (int)lines;
 }
 
+// Read a rectangle of a window's surface (surface coordinates) into buf, w*h pixels. What lies outside the surface is left alone.
+void rt_win_read(int sysid, int x, int y, int w, int h, uint32_t *buf) {
+  sc_winop_t op;
+
+  op.x = x;
+  op.y = y;
+  op.w = w;
+  op.h = h;
+  op.color = 0;
+  op.scale = 0;
+  op.ptr = (uint64_t)(uintptr_t)buf;
+  sc3(KS_WIN_READ, sysid, (sl_t)&op, 0);
+}
+
 // ---- The blit engine --------------------------------------------------------------------------------
 
 // dst (x, y, w, h) <- rop(pattern, src (sx, sy, sw, sh) scaled, dst). `src` is 0 when the operation does not use a source.
-static BOOL blit(dc_t *d, int dx, int dy, int dw, int dh, bmp_t *src, int sx, int sy, int sw, int sh, DWORD rop) {
+// TransparentBlt and AlphaBlend replace the raster operation with a per-pixel function.
+typedef struct {
+  int alpha;                  // 0: skip the pixels equal to key; 1: blend with the constant alpha and, if perpixel, the source's own
+  uint32_t key;
+  int constant, perpixel;
+} blendp_t;
+
+static unsigned mul255(unsigned a, unsigned b) { return (a * b + 127) / 255; }
+
+static uint32_t mix(const blendp_t *bp, uint32_t raw, uint32_t s, uint32_t dv) {
+  unsigned a = (unsigned)bp->constant, k;
+  uint32_t out = 0;
+
+  if (!bp->alpha) {
+    return s == bp->key ? dv : s;
+  }
+  if (bp->perpixel) {
+    a = mul255((raw >> 24) & 0xFF, a);                 // the source is premultiplied: its colour is scaled by the constant only
+  }
+  for (k = 0; k < 24; k += 8) {
+    unsigned sc = (s >> k) & 0xFF, dc = (dv >> k) & 0xFF, r;
+
+    r = bp->perpixel ? mul255(sc, (unsigned)bp->constant) + mul255(dc, 255 - a) : mul255(sc, a) + mul255(dc, 255 - a);
+    out |= (r > 255 ? 255u : r) << k;
+  }
+  return out;
+}
+
+static BOOL blit(dc_t *d, int dx, int dy, int dw, int dh, bmp_t *src, int sx, int sy, int sw, int sh, DWORD rop, const blendp_t *bp) {
   unsigned t = (rop >> 16) & 0xFF;
-  int needs = ((t ^ (t >> 2)) & 0x33) != 0, needd = ((t ^ (t >> 1)) & 0x55) != 0;
+  int needs = bp != 0 || ((t ^ (t >> 2)) & 0x33) != 0, needd = bp != 0 || ((t ^ (t >> 1)) & 0x55) != 0;
   int flipx = 0, flipy = 0, lx0, lx1, ly0, ly1, lx, ly;
   unsigned long prgb = 0;
-  uint32_t textc, bkc, *buf = 0;
+  uint32_t textc, bkc, *buf = 0, *old = 0;
   int band = 64;
 
   if (needs && src == 0) {
     return FALSE;
-  }
-  if (needd && d->sysid >= 0) {
-    return FALSE;                                     // the old pixels of a window cannot be read
   }
   if (dw == 0 || dh == 0) {
     return TRUE;
@@ -487,10 +538,20 @@ static BOOL blit(dc_t *d, int dx, int dy, int dw, int dh, bmp_t *src, int sx, in
     if (buf == 0) {
       return FALSE;
     }
+    if (needd) {
+      old = rt_alloc((size_t)(lx1 - lx0) * (size_t)band * 4);   // the window's pixels under the band, read back
+      if (old == 0) {
+        rt_free(buf);
+        return FALSE;
+      }
+    }
   }
   for (ly = ly0; ly < ly1; ly += band) {
     int rows = ly1 - ly < band ? ly1 - ly : band, r;
 
+    if (old != 0) {
+      rt_win_read(d->sysid, dx + d->ox + lx0, dy + d->oy + ly, lx1 - lx0, rows, old);
+    }
     for (r = 0; r < rows; ++r) {
       int yy = ly + r, sy2 = 0, sxx;
       uint32_t *drow = 0;
@@ -502,25 +563,30 @@ static BOOL blit(dc_t *d, int dx, int dy, int dw, int dh, bmp_t *src, int sx, in
         sy2 = sy + (int)(((long long)(flipy ? dh - 1 - yy : yy) * sh) / dh);
       }
       for (lx = lx0; lx < lx1; ++lx) {
-        uint32_t s = 0, dv = 0, p = (uint32_t)prgb, res;
+        uint32_t s = 0, dv = 0, p = (uint32_t)prgb, res, raw = 0;
 
         if (needs) {
           sxx = sx + (int)(((long long)(flipx ? dw - 1 - lx : lx) * sw) / dw);
           if (sxx < 0 || sy2 < 0 || sxx >= src->w || sy2 >= src->h) {
             if (buf != 0) {
-              buf[(size_t)r * (size_t)(lx1 - lx0) + (size_t)(lx - lx0)] = 0;
+              buf[(size_t)r * (size_t)(lx1 - lx0) + (size_t)(lx - lx0)] = old != 0 ? old[(size_t)r * (size_t)(lx1 - lx0) + (size_t)(lx - lx0)] : 0;
             }
             continue;                                 // outside the source: left alone
           }
-          s = *px_at(src, sxx, sy2) & 0x00FFFFFFu;
+          raw = *px_at(src, sxx, sy2);
+          s = raw & 0x00FFFFFFu;
           if (src->mono) {
             s = s != 0 ? bkc : textc;
           }
         }
         if (drow != 0) {
           dv = drow[dx + lx] & 0x00FFFFFFu;
+        } else if (old != 0) {
+          dv = old[(size_t)r * (size_t)(lx1 - lx0) + (size_t)(lx - lx0)] & 0x00FFFFFFu;
         }
-        switch (t) {
+        if (bp != 0) {
+          res = mix(bp, raw, s, dv);
+        } else switch (t) {
           case 0xCC: res = s; break;
           case 0xF0: res = p; break;
           case 0x00: res = 0; break;
@@ -559,28 +625,98 @@ static BOOL blit(dc_t *d, int dx, int dy, int dw, int dh, bmp_t *src, int sx, in
     }
   }
   rt_free(buf);
+  rt_free(old);
   return TRUE;
 }
 
-EXPORT BOOL WINAPI StretchBlt(HDC hd, int dx, int dy, int dw, int dh, HDC hs, int sx, int sy, int sw, int sh, DWORD rop) {
+// The source of a blit: a memory DC's bitmap, or for a window DC a copy of the part of the surface that is used.
+// (*sx, *sy) are moved to index the returned bitmap; free tmp->pix when the DC is a window's.
+static bmp_t *src_open(dc_t *s, int *sx, int *sy, int sw, int sh, bmp_t *tmp) {
+  int minx, miny, w, h;
+
+  if (s->sysid < 0) {
+    return s->bmp;
+  }
+  minx = sw < 0 ? *sx + sw : *sx;
+  miny = sh < 0 ? *sy + sh : *sy;
+  w = sw < 0 ? -sw : sw;
+  h = sh < 0 ? -sh : sh;
+  if (w <= 0 || h <= 0 || w > 4096 || h > 4096) {
+    return 0;
+  }
+  rt_memset(tmp, 0, sizeof(*tmp));
+  tmp->used = 1;
+  tmp->w = w;
+  tmp->h = h;
+  tmp->pix = rt_alloc((size_t)w * (size_t)h * 4);
+  if (tmp->pix == 0) {
+    return 0;
+  }
+  rt_memset(tmp->pix, 0, (size_t)w * (size_t)h * 4);
+  rt_win_read(s->sysid, minx + s->ox, miny + s->oy, w, h, tmp->pix);
+  *sx -= minx;
+  *sy -= miny;
+  return tmp;
+}
+
+static BOOL blit_dcs(HDC hd, int dx, int dy, int dw, int dh, HDC hs, int sx, int sy, int sw, int sh, DWORD rop, const blendp_t *bp) {
   dc_t *d = gdi_dc(hd), *s = gdi_dc(hs);
   unsigned t = (rop >> 16) & 0xFF;
-  int needs = ((t ^ (t >> 2)) & 0x33) != 0;
+  int needs = bp != 0 || ((t ^ (t >> 2)) & 0x33) != 0;
+  bmp_t tmp, *sb = 0;
+  BOOL ok;
 
   if (d == 0 || (d->sysid < 0 && d->bmp == 0)) {
     return FALSE;
   }
-  if (needs && (s == 0 || s->sysid >= 0 || s->bmp == 0)) {
-    return FALSE;                                     // a window's surface cannot be a source
+  if (needs) {
+    if (s == 0 || (s->sysid < 0 && s->bmp == 0)) {
+      return FALSE;
+    }
+    sb = src_open(s, &sx, &sy, sw, sh, &tmp);
+    if (sb == 0) {
+      return sw == 0 || sh == 0;
+    }
   }
-  return blit(d, dx, dy, dw, dh, needs ? s->bmp : 0, sx, sy, sw, sh, rop);
+  ok = blit(d, dx, dy, dw, dh, sb, sx, sy, sw, sh, rop, bp);
+  if (needs && s->sysid >= 0) {
+    rt_free(tmp.pix);
+  }
+  return ok;
+}
+
+EXPORT BOOL WINAPI StretchBlt(HDC hd, int dx, int dy, int dw, int dh, HDC hs, int sx, int sy, int sw, int sh, DWORD rop) {
+  return blit_dcs(hd, dx, dy, dw, dh, hs, sx, sy, sw, sh, rop, 0);
 }
 
 EXPORT BOOL WINAPI BitBlt(HDC hd, int x, int y, int w, int h, HDC hs, int sx, int sy, DWORD rop) {
   return StretchBlt(hd, x, y, w, h, hs, sx, sy, w, h, rop);
 }
 
-// MaskBlt-less masking: a monochrome mask drawn first with SRCAND and the image with SRCPAINT works through the ordinary rops.
+// msimg32: copy a source without the pixels of one colour, and blend a source over the destination.
+EXPORT BOOL WINAPI TransparentBlt(HDC hd, int dx, int dy, int dw, int dh, HDC hs, int sx, int sy, int sw, int sh, UINT key) {
+  blendp_t bp;
+
+  bp.alpha = 0;
+  bp.key = (uint32_t)rt_colorref_to_rgb((COLORREF)key) & 0x00FFFFFFu;
+  bp.constant = 255;
+  bp.perpixel = 0;
+  return blit_dcs(hd, dx, dy, dw, dh, hs, sx, sy, sw, sh, 0, &bp);
+}
+
+// Only AC_SRC_OVER: the constant alpha and, with AC_SRC_ALPHA, the source's own premultiplied alpha (its top byte).
+EXPORT BOOL WINAPI AlphaBlend(HDC hd, int dx, int dy, int dw, int dh, HDC hs, int sx, int sy, int sw, int sh, BLENDFUNCTION bf) {
+  blendp_t bp;
+
+  if (bf.BlendOp != AC_SRC_OVER || bf.BlendFlags != 0 || (bf.AlphaFormat & ~AC_SRC_ALPHA) != 0 || dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0) {
+    return FALSE;
+  }
+  bp.alpha = 1;
+  bp.key = 0;
+  bp.constant = bf.SourceConstantAlpha;
+  bp.perpixel = (bf.AlphaFormat & AC_SRC_ALPHA) != 0;
+  return blit_dcs(hd, dx, dy, dw, dh, hs, sx, sy, sw, sh, 0, &bp);
+}
 
 // A DIB drawn on a DC: the picture is converted to a temporary bitmap first. For a bottom-up DIB ys counts from the bottom.
 EXPORT int WINAPI StretchDIBits(HDC hdc, int xd, int yd, int wd, int hd, int xs, int ys, int ws, int hs, const VOID *bits, const BITMAPINFO *bi, UINT usage, DWORD rop) {
@@ -603,7 +739,7 @@ EXPORT int WINAPI StretchDIBits(HDC hdc, int xd, int yd, int wd, int hd, int xs,
   }
   dib_load(&tmp, &di);
   y0 = di.topdown ? ys : di.h - ys - hs;
-  ok = blit(d, xd, yd, wd, hd, &tmp, xs, y0, ws, hs, rop);
+  ok = blit(d, xd, yd, wd, hd, &tmp, xs, y0, ws, hs, rop, 0);
   rt_free(tmp.pix);
   return ok ? hd : GDI_ERROR;
 }
