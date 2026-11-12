@@ -630,6 +630,8 @@ static int pe_bind_imports(uint8_t *m0, const uint8_t *m1) {
         const char *fname = pe_str(m0, pe, (t & 0x7FFFFFFFULL) + 2u);
 
         console_printf("[PE] unresolved import %s!%s (no such library)\r\n", dname, fname != 0 ? fname : "?");
+      } else if (known && pe_ieq(dname, "comctl32.dll") && (t & 0xFFFFULL) == 17ULL && pe_export(m1, dll, "InitCommonControls") != 0) {
+        addr = dll->load_base + pe_export(m1, dll, "InitCommonControls");       // comctl32.lib imports InitCommonControls by ordinal
       } else {
         console_printf("[PE] unresolved import %s!#%llu (by ordinal)\r\n", dname, t & 0xFFFFULL);
       }
@@ -2486,6 +2488,16 @@ static int cond_blend_grad(void) {                    // GradientFill: red to bl
   return syswin_test_pixel(10, 125) == 0x00FF0000 && syswin_test_pixel(109, 125) == 0x000000FF && syswin_test_pixel(130, 120) == 0x00000000 &&
          syswin_test_pixel(130, 179) == 0x00FFFFFF && syswin_test_pixel(255, 125) == 0x00C8DCFF && syswin_test_pixel(202, 178) != 0x00C8DCFF;
 }
+// WINCC.EXE: common controls; client = surface coordinates. Progress bar (10,10) 200x20 at 50 %, trackbar (10,50) 200x30,
+// up-down 17 wide at (53,100), tab control (10,140), a status bar at the bottom of the 341-pixel client area.
+static int cond_cc_first(void) {
+  return syswin_test_pixel(50, 20) == 0x0006B025 && syswin_test_pixel(150, 20) == 0x00F0F0F0 &&        // the bar is filled to half
+         syswin_test_pixel(12, 65) == 0x00FFFFFF && syswin_test_pixel(30, 250) == 0x00FF0000 &&          // the trackbar's thumb at 0, the first tab's page colour
+         syswin_test_pixel(20, 321) == 0x00808080;                                                         // the first status bar part's border
+}
+static int cond_cc_page(void) { return syswin_test_pixel(67, 65) == 0x00FFFFFF && syswin_test_pixel(12, 65) == 0x00F0F0F0; }   // a click in the channel moved the thumb a page
+static int cond_cc_drag(void) { return syswin_test_pixel(104, 65) == 0x00FFFFFF && syswin_test_pixel(67, 65) != 0x00FFFFFF; }  // the thumb was dragged to 5
+static int cond_cc_tab(void) { return syswin_test_pixel(30, 250) == 0x0000FF00; }                  // the second tab was selected
 static int cond_pe_msgbox(void) { return syswin_test_count(0x003A78D6u) > 1000; }   // the default button
 
 static int pe_supervisor_task(void *arg) {
@@ -2870,6 +2882,40 @@ static int pe_supervisor_task(void *arg) {
     console_printf("[PE] WINBLEND failed checks mask: 0x%x\r\n", (unsigned)code);
   }
   failures += pe_expect(pe_wait_for(cond_pe_no_windows, 500), "the blending window was released");
+
+  // Common controls: progress bar, trackbar, up-down, tab control, status bar.
+  while (desktop_loop_count() < 3) {
+    wait_one_tick();
+  }
+  h = process_spawn("/APPS/WINCC.EXE");
+  failures += pe_expect(h >= 0 && pe_wait_for(cond_pe_window, 500), "WINCC.EXE: its window appeared");
+  failures += pe_expect(pe_wait_for(cond_cc_first, 500), "common controls: progress bar filled to half, trackbar thumb, tab page, status bar part");
+  pe_click(160, 65);                                                     // the trackbar's channel right of the thumb: one page (3)
+  failures += pe_expect(pe_wait_for(cond_cc_page, 500), "trackbar: a click in the channel moved the thumb a page");
+  pe_pause(6);
+  syswin_test_inject(SYSWIN_EV_MOUSE_DOWN, 72, 65, 0);                   // drag the thumb
+  pe_move(90, 65);
+  pe_move(110, 65);
+  syswin_test_inject(SYSWIN_EV_MOUSE_UP, 110, 65, 0);
+  failures += pe_expect(pe_wait_for(cond_cc_drag, 500), "trackbar: dragging the thumb followed the mouse");
+  pe_pause(6);
+  pe_click(61, 104);                                                     // the up-down: up, up, down (5 -> 7 -> 6)
+  pe_pause(6);
+  pe_click(61, 104);
+  pe_pause(6);
+  pe_click(61, 118);
+  pe_pause(6);
+  pe_click(62, 150);                                                     // the second tab
+  failures += pe_expect(pe_wait_for(cond_cc_tab, 500), "tab control: clicking a tab selected it and told the parent");
+  pe_pause(6);
+  syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
+  code = 0xFFFFFFFFULL;
+  failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
+                        "common controls: every check in the program passed (exit code = failed checks bit mask)");
+  if (code != 0) {
+    console_printf("[PE] WINCC failed checks mask: 0x%x\r\n", (unsigned)code);
+  }
+  failures += pe_expect(pe_wait_for(cond_pe_no_windows, 500), "the common controls window was released");
 
   // A windowed program: WinMain, window class, WM_PAINT with GDI, input and a timer. The desktop
   // task must be running (it is, as the idle callback).

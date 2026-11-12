@@ -2667,4 +2667,5 @@ void rt_controls_register(void) {
     wc.lpszClassName = kClasses[i].name;
     RegisterClassExA(&wc);
   }
+  rt_comctl_register();
 }

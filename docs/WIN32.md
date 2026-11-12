@@ -175,6 +175,39 @@ hands out `\r\n`, and its selection positions count a line end as one character.
 owner-drawn controls, tooltips, accelerators, undo, `WS_BORDER`/`WS_EX_CLIENTEDGE` for windows
 that do not draw their own frame (controls always draw theirs), `SetParent`, an MDI client.
 
+## Common controls
+
+`comctl.c` registers five comctl32 classes at startup, so `InitCommonControls` and `InitCommonControlsEx`
+only have to exist (the loader also maps comctl32.lib's import of `InitCommonControls` by ordinal 17).
+Link with `comctl32.lib`. They draw with the 8x8 font and the same 3D look as the standard controls.
+
+- **Progress bar** (`msctls_progress32`): `PBM_SETRANGE`, `SETRANGE32`, `GETRANGE`, `SETPOS`, `DELTAPOS`,
+  `SETSTEP`, `STEPIT` (wraps to the minimum), `GETPOS`, `SETBARCOLOR`, `SETBKCOLOR`; `PBS_SMOOTH` and
+  `PBS_VERTICAL` (without smooth the bar is made of 8-pixel blocks).
+- **Status bar** (`msctls_statusbar32`, `CreateStatusWindowA`): parts (`SB_SETPARTS`, `GETPARTS`, `GETRECT`), text
+  per part (`SB_SETTEXT`, `GETTEXT`, `GETTEXTLENGTH`; `SBT_NOBORDERS`, `SBT_POPOUT`), simple mode, `WM_SETTEXT`
+  for the first part, `SBARS_SIZEGRIP`. The bar puts itself against the bottom (`CCS_TOP`: the top) of its
+  parent, 22 pixels high, when it is created and whenever it gets `WM_SIZE`, so the parent forwards its own
+  `WM_SIZE` as usual; `CCS_NORESIZE` turns that off.
+- **Trackbar** (`msctls_trackbar32`): range, position, page and line size, tick frequency, `TBS_AUTOTICKS`,
+  `TBS_VERT`; dragging the thumb, clicking the channel (a page) and the keys (arrows, Page Up/Down, Home, End)
+  send `WM_HSCROLL` / `WM_VSCROLL` to the parent with `TB_THUMBTRACK`, `THUMBPOSITION`, `PAGEUP`, ... and
+  `TB_ENDTRACK`. The trackbar moves its own thumb (unlike a SCROLLBAR). `TBM_GETTHUMBRECT` works.
+- **Up-down** (`msctls_updown32`): range (`UDM_SETRANGE`: the maximum is the low word), position, `UDM_SETBUDDY`
+  with `UDS_ALIGNRIGHT` / `UDS_ALIGNLEFT` (the buddy gets 17 pixels narrower and the control sits beside it),
+  `UDS_SETBUDDYINT` (the buddy's text is the position, in both directions), `UDS_WRAP`, `UDS_HORZ`. A click
+  (and the 400 ms / 100 ms auto-repeat) sends `WM_NOTIFY` `UDN_DELTAPOS` (the parent can cancel it or change
+  `iDelta`), then `WM_VSCROLL` / `WM_HSCROLL` with `SB_THUMBPOSITION`, and `SB_ENDSCROLL` on release.
+- **Tab control** (`SysTabControl32`): up to 32 tabs in one row (no scrolling, no `TCS_MULTILINE`, no images):
+  `TCM_INSERTITEM`, `DELETEITEM`, `DELETEALLITEMS`, `GETITEM`, `SETITEM`, `GETITEMCOUNT`, `GETCURSEL`, `SETCURSEL`
+  (no notification, as on Windows), `GETITEMRECT`, `HITTEST`, `ADJUSTRECT`. A click sends `TCN_SELCHANGING`
+  (the parent can veto it) and `TCN_SELCHANGE` as `WM_NOTIFY`. The control does not hide or show pages: the
+  program does that in the notification.
+
+Not there: list view, tree view, tool bar, header, rebar, tool tips, animation, date and month pickers, image
+lists, custom draw, marquee progress, `UDS_AUTOBUDDY`, `UDS_ARROWKEYS`, thousands separators in up-down buddies,
+visual styles (always the classic look).
+
 ## Menus
 
 `CreateMenu`/`CreatePopupMenu`, `AppendMenu`, `InsertMenu`, `ModifyMenu`, `DeleteMenu`, `RemoveMenu`,
@@ -225,7 +258,7 @@ runs until `EndDialog`; the close button sends `IDCANCEL`.
 
 Dialog units are converted with 7 x 12 pixels per 4 x 8 units (`GetDialogBaseUnits`), larger than
 Windows' 8-point font, because characters here are 8 pixels wide. Not there: controls this runtime lacks
-(common controls) in a template are skipped, `DS_` styles other than `DS_SETFONT` (the font is
+(list views, tool bars and the like) in a template are skipped, `DS_` styles other than `DS_SETFONT` (the font is
 ignored), dialog placement from the template (the window manager places it), `DM_SETDEFID`, system
 modal and `MessageBox` owner disabling.
 
@@ -509,6 +542,10 @@ virtual FAT drive is not a good place for that). It runs, on the real desktop:
   kernel scrolls the window with keys (`ScrollWindow` up and left, `ScrollWindowEx`); the program paints only the
   uncovered strip, so the pixels show whether they were really moved; `ScrollDC` on a bitmap and the reported
   update rectangles are checked in the program (10 checks);
+- `WINCC.EXE` (`tests/wincc.c`): a progress bar, a trackbar, an up-down with an edit as its buddy, a tab control
+  and a status bar. The kernel clicks the channel, drags the thumb, clicks the up-down's arrows and a tab; pixels
+  show the filled bar, the thumb, the status bar and the page the tab selected; the program checks its messages
+  and notifications (18 checks), exit code = bit mask of failures;
 - `WINBMP.EXE` (`tests/winbmp.c`, `winbmp.rc`, `pic.bmp`): memory DCs and bitmaps: raster operations,
   stretching and mirroring, DIB sections, `SetDIBits`/`GetDIBits`/`StretchDIBits`, a bitmap resource,
   text into a bitmap, a monochrome bitmap. 30 checks read pixels back from memory DCs; the kernel
@@ -535,4 +572,4 @@ screenshot (`python scripts/qemu-screenshot.py out/run/shot.png 28`).
 - Programs larger than about 900 KB (together with the runtime) do not fit the load window.
 - Not a Windows compatibility layer in the sense of running arbitrary software: it runs programs
   that stay inside the subset above. Programs from real toolchains that link the CRT, use
-  the C++ standard library, or use common controls will not get far yet.
+  the C++ standard library, or use the common controls this runtime lacks (list view, tree view, tool bar) will not get far yet.

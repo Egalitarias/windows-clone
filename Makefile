@@ -482,8 +482,8 @@ WIN32_CRT_LIBPATH := "-libpath:$(MSVC_ROOT)/lib/x64" "-libpath:$(WINSDK_ROOT)/Li
 # The C runtime part of the runtime uses SSE (doubles travel in XMM registers) and declares the
 # UCRT functions itself: the UCRT headers would mark them dllimport.
 WIN32_SSE_CFLAGS := $(filter-out -mno-sse,$(WIN32_CFLAGS)) -fno-math-errno -D_CRT_SECURE_NO_WARNINGS
-WIN32_RT_OBJS := $(WIN32_DIR)/kernel32.obj $(WIN32_DIR)/user32.obj $(WIN32_DIR)/gdi32.obj $(WIN32_DIR)/bitmap.obj $(WIN32_DIR)/controls.obj $(WIN32_DIR)/menu.obj $(WIN32_DIR)/dialog.obj $(WIN32_DIR)/crt.obj $(WIN32_DIR)/crtfmt.obj $(WIN32_DIR)/crtmath.obj $(WIN32_DIR)/threads.obj $(WIN32_DIR)/seh.obj $(WIN32_DIR)/cxxeh.obj
-WIN32_TESTS := hello badimp wingui winctl winmenu windlg wincombo winscroll winsbar winscrl winbmp winblend winmsg fptest crttest thrtest cxxtest
+WIN32_RT_OBJS := $(WIN32_DIR)/kernel32.obj $(WIN32_DIR)/user32.obj $(WIN32_DIR)/gdi32.obj $(WIN32_DIR)/bitmap.obj $(WIN32_DIR)/controls.obj $(WIN32_DIR)/comctl.obj $(WIN32_DIR)/menu.obj $(WIN32_DIR)/dialog.obj $(WIN32_DIR)/crt.obj $(WIN32_DIR)/crtfmt.obj $(WIN32_DIR)/crtmath.obj $(WIN32_DIR)/threads.obj $(WIN32_DIR)/seh.obj $(WIN32_DIR)/cxxeh.obj
+WIN32_TESTS := hello badimp wingui winctl winmenu windlg wincombo winscroll winsbar winscrl winbmp winblend wincc winmsg fptest crttest thrtest cxxtest
 WIN32_EXES := $(patsubst %,$(WIN32_DIR)/%.exe,$(WIN32_TESTS))
 
 $(WIN32_DIR)/%.obj: src/win32/%.c src/win32/internal.h
@@ -572,6 +572,9 @@ $(WIN32_DIR)/winscrl.exe: $(WIN32_DIR)/t_winscrl.obj $(WIN32_DIR)/t_crt.obj $(WI
 $(WIN32_DIR)/winblend.exe: $(WIN32_DIR)/t_winblend.obj $(WIN32_DIR)/t_crt.obj $(WIN32_DIR)/t_entry_gui.obj
 	$(UEFI_LLD_LINK) -subsystem:windows -entry:WinMainCRTStartup -nodefaultlib -out:$@ $^ $(WIN32_LIBPATH) kernel32.lib user32.lib gdi32.lib msimg32.lib
 
+$(WIN32_DIR)/wincc.exe: $(WIN32_DIR)/t_wincc.obj $(WIN32_DIR)/t_crt.obj $(WIN32_DIR)/t_entry_gui.obj
+	$(UEFI_LLD_LINK) -subsystem:windows -entry:WinMainCRTStartup -nodefaultlib -out:$@ $^ $(WIN32_LIBPATH) kernel32.lib user32.lib gdi32.lib comctl32.lib
+
 $(WIN32_DIR)/winbmp.res: src/win32/tests/winbmp.rc src/win32/tests/pic.bmp
 	@mkdir -p $(WIN32_DIR)
 	llvm-rc -FO $@ $<
@@ -601,6 +604,7 @@ win32-apps: $(WIN32_DIR)/win32.dll $(WIN32_EXES)
 	cp $(WIN32_DIR)/winscrl.exe $(UEFI_DIR)/APPS/WINSCRL.EXE
 	cp $(WIN32_DIR)/winbmp.exe $(UEFI_DIR)/APPS/WINBMP.EXE
 	cp $(WIN32_DIR)/winblend.exe $(UEFI_DIR)/APPS/WINBLEND.EXE
+	cp $(WIN32_DIR)/wincc.exe $(UEFI_DIR)/APPS/WINCC.EXE
 	cp $(WIN32_DIR)/winmsg.exe $(UEFI_DIR)/APPS/WINMSG.EXE
 	cp $(WIN32_DIR)/fptest.exe $(UEFI_DIR)/APPS/WINFP.EXE
 	cp $(WIN32_DIR)/crttest.exe $(UEFI_DIR)/APPS/WINCRT.EXE

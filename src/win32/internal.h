@@ -250,6 +250,7 @@ void rt_wnd_set_bars(HWND h, int vert, int horz);        // user32.c: show (1) o
 
 // ---- controls.c: the standard controls (BUTTON, STATIC, EDIT, LISTBOX), registered as window classes ----
 void rt_controls_register(void);
+void rt_comctl_register(void);                       // comctl.c: progress bar, status bar, trackbar, up-down, tab control
 LRESULT CALLBACK rt_dlg_proc(HWND h, UINT m, WPARAM wp, LPARAM lp);        // dialog.c: the "#32770" window class
 // user32.c: what a control keeps with its window.
 void *rt_wnd_ctl(HWND h);
