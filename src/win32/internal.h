@@ -181,7 +181,17 @@ uint64_t rt_dll_base(void);
 uint64_t rt_exe_base(void);
 
 // ---- user32.c / gdi32.c ----
-// A device context: a window's surface (sysid) plus the drawing state.
+// A bitmap (bitmap.c): 0x00RRGGBB pixels, top row first unless `flip` (a bottom-up DIB section).
+typedef struct bmp {
+  int used;
+  int w, h;
+  int flip;                      // row y is stored at h-1-y (the memory of a bottom-up DIB section)
+  int mono;                      // a monochrome bitmap: pixels are 0 or 0xFFFFFF and draw in the DC's text / background colours
+  int dib;                       // a DIB section: `pix` is shared with the program
+  uint32_t *pix;
+} bmp_t;
+
+// A device context: a window's surface (sysid), or with sysid < 0 a memory DC drawing into `bmp`, plus the drawing state.
 typedef struct {
   int used;
   int sysid;
@@ -191,6 +201,7 @@ typedef struct {
   int px, py;                    // current position (MoveToEx / LineTo)
   int ox, oy;                    // where the window's (0,0) is on the surface (a child window's place)
   int cl, ct, cr, cb;            // clip rectangle, in surface coordinates
+  bmp_t *bmp;                    // memory DC: the selected bitmap
 } dc_t;
 
 dc_t *gdi_dc_alloc(int sysid, int ox, int oy, const RECT *clip);
@@ -201,6 +212,18 @@ HBRUSH gdi_sys_brush(int index);
 unsigned long rt_colorref_to_rgb(COLORREF c);
 void gdi_fill(dc_t *d, int x, int y, int w, int h, uint32_t rgb);
 void gdi_text(dc_t *d, int x, int y, const char *s, int n, uint32_t rgb);
+int gdi_brush_rgb(HBRUSH b, unsigned long *rgb);
+
+// ---- bitmap.c: bitmaps, memory DCs, BitBlt/StretchBlt, DIBs ----
+bmp_t *rt_bmp(HGDIOBJ h);                                           // 0 if h is not a bitmap
+int rt_bmp_delete(HGDIOBJ h);                                       // 1 if h was a bitmap (deleted unless still selected)
+HGDIOBJ rt_bmp_select(dc_t *d, HGDIOBJ h);                          // SelectObject of a bitmap; 0 if not a memory DC
+void rt_bmp_dc_gone(dc_t *d);                                       // a memory DC is deleted
+int rt_bmp_getobject(HGDIOBJ h, int n, void *p);                    // GetObject; -1 if h is not a bitmap
+void rt_mem_fill(dc_t *d, int x, int y, int x1, int y1, uint32_t rgb);       // surface coordinates, already clipped
+void rt_mem_text(dc_t *d, int x, int y, const char *s, int n, uint32_t rgb);
+int rt_mem_getpixel(dc_t *d, int x, int y, COLORREF *c);
+HBITMAP rt_dib_to_bitmap(const BITMAPINFO *bi, const void *bits);   // bits == 0: they follow the header and colour table
 
 // ---- menu.c: menus, the menu bar, popup tracking, accelerators ----
 #define RT_MENU_H 18                  // height of the menu bar, at the top of a window's surface

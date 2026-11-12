@@ -1900,3 +1900,67 @@ done:
   sc3(KS_WIN_CLOSE, id, 0, 0);
   return result;
 }
+
+// ---- Rectangle helpers ---------------------------------------------------------------------------------
+
+EXPORT BOOL WINAPI SetRect(LPRECT r, int l, int t, int rt, int b) {
+  if (r == 0) return FALSE;
+  r->left = l; r->top = t; r->right = rt; r->bottom = b;
+  return TRUE;
+}
+
+EXPORT BOOL WINAPI SetRectEmpty(LPRECT r) { return SetRect(r, 0, 0, 0, 0); }
+
+EXPORT BOOL WINAPI CopyRect(LPRECT dst, const RECT *src) {
+  if (dst == 0 || src == 0) return FALSE;
+  *dst = *src;
+  return TRUE;
+}
+
+EXPORT BOOL WINAPI InflateRect(LPRECT r, int dx, int dy) {
+  if (r == 0) return FALSE;
+  r->left -= dx; r->right += dx; r->top -= dy; r->bottom += dy;
+  return TRUE;
+}
+
+EXPORT BOOL WINAPI OffsetRect(LPRECT r, int dx, int dy) {
+  if (r == 0) return FALSE;
+  r->left += dx; r->right += dx; r->top += dy; r->bottom += dy;
+  return TRUE;
+}
+
+EXPORT BOOL WINAPI IsRectEmpty(const RECT *r) { return r == 0 || r->right <= r->left || r->bottom <= r->top; }
+EXPORT BOOL WINAPI EqualRect(const RECT *a, const RECT *b) { return a->left == b->left && a->top == b->top && a->right == b->right && a->bottom == b->bottom; }
+EXPORT BOOL WINAPI PtInRect(const RECT *r, POINT p) { return p.x >= r->left && p.x < r->right && p.y >= r->top && p.y < r->bottom; }
+
+EXPORT BOOL WINAPI IntersectRect(LPRECT d, const RECT *a, const RECT *b) {
+  RECT r;
+
+  r.left = a->left > b->left ? a->left : b->left;
+  r.top = a->top > b->top ? a->top : b->top;
+  r.right = a->right < b->right ? a->right : b->right;
+  r.bottom = a->bottom < b->bottom ? a->bottom : b->bottom;
+  if (r.right <= r.left || r.bottom <= r.top) {
+    SetRectEmpty(d);
+    return FALSE;
+  }
+  *d = r;
+  return TRUE;
+}
+
+EXPORT BOOL WINAPI UnionRect(LPRECT d, const RECT *a, const RECT *b) {
+  RECT r;
+
+  if (IsRectEmpty(a)) {
+    if (IsRectEmpty(b)) { SetRectEmpty(d); return FALSE; }
+    *d = *b;
+    return TRUE;
+  }
+  if (IsRectEmpty(b)) { *d = *a; return TRUE; }
+  r.left = a->left < b->left ? a->left : b->left;
+  r.top = a->top < b->top ? a->top : b->top;
+  r.right = a->right > b->right ? a->right : b->right;
+  r.bottom = a->bottom > b->bottom ? a->bottom : b->bottom;
+  *d = r;
+  return TRUE;
+}

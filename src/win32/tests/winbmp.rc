@@ -1,0 +1,3 @@
+// Resources for WINBMP.EXE.
+1 BITMAP "pic.bmp"
+PICTURE BITMAP "pic.bmp"

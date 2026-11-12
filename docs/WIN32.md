@@ -87,7 +87,7 @@ and `WM_MOUSEMOVE` (moves only while the button is held), the wheel `WM_MOUSEWHE
 the close button `WM_CLOSE`. `WM_PAINT` is generated for invalidated windows; `BeginPaint` sends
 `WM_ERASEBKGND` and the default procedure fills with the class brush.
 
-Missing on purpose (for now): the `SCROLLBAR` control, memory DCs and bitmaps (`CreateCompatibleDC`, `BitBlt`), clipboard, resources, fonts other
+Missing on purpose (for now): the `SCROLLBAR` control, clipboard (beyond the edit control's), fonts other
 than the built-in one, right and middle mouse buttons, wide-character (`W`) window functions
 (only `DefWindowProcW`, `GetMessageW`, ...), real wall-clock time (time counts from 2026-01-01 at
 boot), environment variables, and anything about sockets.
@@ -176,8 +176,8 @@ menu, F10 and Alt alone for the bar (Alt+letter works), menu bar wrapping, scrol
 `FindResource[Ex]A`, `LoadResource`, `LockResource`, `SizeofResource`, `LoadStringA` (string
 tables), `LoadMenuA`/`LoadMenuIndirectA` (`MENU` resources, and `lpszMenuName` of a window class
 gives a window its menu), `LoadAcceleratorsA`. Build a `.rc` with `rc.exe` or `llvm-rc` and link the
-`.res` (the test does: `windlg.rc`). Not there: `MENUEX`, bitmaps, icons and cursors (`LoadIcon`
-and `LoadCursor` still return dummies), version info, the `W` forms.
+`.res` (the test does: `windlg.rc`). Bitmap resources are read too (next section). Not there: `MENUEX`,
+icons and cursors (`LoadIcon` and `LoadCursor` still return dummies), version info, the `W` forms.
 
 **Dialogs.** `DialogBoxParam`, `DialogBoxIndirectParam`, `CreateDialogParam`,
 `CreateDialogIndirectParam`, `EndDialog`, `DefDlgProc`, `GetDialogBaseUnits`, `MapDialogRect`, and
@@ -195,6 +195,44 @@ Windows' 8-point font, because characters here are 8 pixels wide. Not there: con
 (`SCROLLBAR`, common controls) in a template are skipped, `DS_` styles other than `DS_SETFONT` (the font is
 ignored), dialog placement from the template (the window manager places it), `DM_SETDEFID`, system
 modal and `MessageBox` owner disabling.
+
+## Bitmaps
+
+Bitmaps, memory DCs and the blit functions are in `bitmap.c`. A bitmap is a buffer of 32-bit
+`0x00RRGGBB` pixels; a memory DC (`CreateCompatibleDC`, no window behind it) draws into the bitmap
+selected into it, and everything in the GDI section works on one: `FillRect`, `TextOut`, `Rectangle`,
+`Ellipse`, lines, `SetPixel`, `GetPixel`. A new memory DC holds a 1 x 1 monochrome bitmap, as on
+Windows. Clipping to the bitmap is automatic. A bitmap cannot be deleted while it is selected into a
+DC (`DeleteObject` fails, as on Windows).
+
+- **Creating:** `CreateCompatibleBitmap` (always colour, unless the DC holds a monochrome bitmap),
+  `CreateBitmap` (1 or 32 bits per pixel), `CreateBitmapIndirect`, `CreateDIBitmap`,
+  `CreateDIBSection`, `LoadBitmapA` (a `BITMAP` resource, `.bmp` in the `.rc`), and `LoadImageA` with
+  `IMAGE_BITMAP`, from a resource or with `LR_LOADFROMFILE` from a `.bmp` file. `GetObjectA`
+  returns a `BITMAP` (a `DIBSECTION` for sections).
+- **Blitting:** `BitBlt`, `StretchBlt` (nearest-neighbour; a negative width or height mirrors) and
+  `PatBlt`, with every ternary raster operation (the 256 of them: the `SRCCOPY`, `SRCPAINT`,
+  `SRCAND`, `SRCINVERT`, `NOTSRCCOPY`, `PATINVERT`, `DSTINVERT`, `BLACKNESS`, `WHITENESS` names and
+  anything else a program builds with the ternary code; the pattern is the DC's solid brush). A
+  monochrome source is drawn in the destination DC's text colour (0 bits) and background colour (1 bits).
+- **DIBs:** `CreateDIBSection` for 32-bit sections (the program's pointer is the bitmap's memory, bottom-up
+  or top-down); `SetDIBits`, `GetDIBits` (24 or 32-bit output), `StretchDIBits` and
+  `SetDIBitsToDevice` read 1, 4, 8, 16 (5-5-5), 24 and 32-bit uncompressed DIBs with their colour tables.
+
+A window's surface can be written (a blit goes to the kernel as a pixel copy) but not read back,
+so a window DC works as the destination of operations that do not use the old pixels (`SRCCOPY`,
+`NOTSRCCOPY`, `PATCOPY`, `BLACKNESS`, `WHITENESS`), not as a source, and `SRCINVERT`, `DSTINVERT`
+and the like onto a window return `FALSE`; draw into a memory DC and blit that. `GetPixel` on a window DC
+returns `CLR_INVALID`. A program that wants flicker-free drawing does the usual thing: paint into a
+memory bitmap, then one `BitBlt` to the window in `WM_PAINT`.
+
+Not there: `CreateDIBSection` for anything but 32 bits, `MaskBlt`, `PlgBlt`, `TransparentBlt` and
+`AlphaBlend` (msimg32), `SetStretchBltMode` smoothing (always nearest), palettes, brush patterns
+(`CreatePatternBrush`, `CreateDIBPatternBrush`), icons and cursors as images, device-dependent bitmap
+bit access (`GetBitmapBits`).
+
+Rectangle helpers (`SetRect`, `InflateRect`, `OffsetRect`, `IntersectRect`, `UnionRect`, `PtInRect` ...)
+are in user32.
 
 ## The C runtime
 
@@ -413,6 +451,11 @@ virtual FAT drive is not a good place for that). It runs, on the real desktop:
 - `WINCOMBO.EXE` (`tests/wincombo.c`): a list-box combo and an editable one. The kernel opens them
   with the mouse, chooses items, types, uses Down/Enter/Escape and type-ahead; pixels show the list
   over the parent and the parent painted again; 16 checks of notifications, text and selection;
+- `WINBMP.EXE` (`tests/winbmp.c`, `winbmp.rc`, `pic.bmp`): memory DCs and bitmaps: raster operations,
+  stretching and mirroring, DIB sections, `SetDIBits`/`GetDIBits`/`StretchDIBits`, a bitmap resource,
+  text into a bitmap, a monochrome bitmap. 30 checks read pixels back from memory DCs; the kernel
+  checks pixels of the blits onto the window (a resource scaled 20 times, mirrored, `NOTSRCCOPY`,
+  `BLACKNESS`) and that a blit that would read the window draws nothing; exit code = bit mask of failures;
 - `WINDLG.EXE` (`tests/windlg.c`, `windlg.rc`): a `DIALOGEX`, a menu, accelerators and a string table
   compiled into the program; a modal `DialogBoxParam` driven by the kernel (typing, a click, Tab,
   Space), a dialog built from an in-memory `DLGTEMPLATE`; 15 checks, exit code = bit mask of failures;
@@ -430,4 +473,4 @@ screenshot (`python scripts/qemu-screenshot.py out/run/shot.png 28`).
 - Programs larger than about 900 KB (together with the runtime) do not fit the load window.
 - Not a Windows compatibility layer in the sense of running arbitrary software: it runs programs
   that stay inside the subset above. Programs from real toolchains that link the CRT, use
-  the C++ standard library, or draw with bitmaps and common controls will not get far yet.
+  the C++ standard library, or use common controls will not get far yet.

@@ -2444,6 +2444,18 @@ static int cond_cmb_a_open(void) { return syswin_test_pixel(100, 60) == 0x00FFFF
 static int cond_cmb_a_closed(void) { return syswin_test_pixel(100, 60) == 0x00C8DCFF; }     // gone, the parent shows again
 static int cond_cmb_b_open(void) { return syswin_test_pixel(300, 60) == 0x00FFFFFF; }
 static int cond_cmb_b_closed(void) { return syswin_test_pixel(300, 60) == 0x00C8DCFF; }
+// WINBMP.EXE: blits from memory DCs and a bitmap resource onto the window.
+static int cond_bmp_canvas(void) { return syswin_test_pixel(15, 15) == 0x00FF0000 && syswin_test_pixel(45, 15) == 0x000000FF; }       // a 40x30 canvas, red | blue
+static int cond_bmp_pic(void) {                       // the 4x2 resource at 20x: red green blue yellow / cyan . . black
+  return syswin_test_pixel(110, 20) == 0x00FF0000 && syswin_test_pixel(130, 20) == 0x0000FF00 && syswin_test_pixel(150, 20) == 0x000000FF &&
+         syswin_test_pixel(170, 20) == 0x00FFFF00 && syswin_test_pixel(110, 40) == 0x0000FFFF && syswin_test_pixel(170, 40) == 0x00000000;
+}
+static int cond_bmp_mirror(void) {                    // the same, with a negative width: left and right swapped
+  return syswin_test_pixel(110, 70) == 0x00FFFF00 && syswin_test_pixel(170, 70) == 0x00FF0000 && syswin_test_pixel(170, 90) == 0x0000FFFF;
+}
+static int cond_bmp_notsrc(void) { return syswin_test_pixel(15, 115) == 0x0000FFFF && syswin_test_pixel(45, 115) == 0x00FFFF00; }     // NOTSRCCOPY
+static int cond_bmp_black(void) { return syswin_test_pixel(105, 105) == 0x00000000; }                                                 // PatBlt BLACKNESS
+static int cond_bmp_untouched(void) { return syswin_test_pixel(15, 155) == 0x00C8DCFF; }                                              // the refused SRCINVERT drew nothing
 static int cond_pe_msgbox(void) { return syswin_test_count(0x003A78D6u) > 1000; }   // the default button
 
 static int pe_supervisor_task(void *arg) {
@@ -2688,6 +2700,27 @@ static int pe_supervisor_task(void *arg) {
     console_printf("[PE] WINCOMBO failed checks mask: 0x%x\r\n", (unsigned)code);
   }
   failures += pe_expect(pe_wait_for(cond_pe_no_windows, 500), "the combo box window was released");
+
+  // Bitmaps: memory DCs, raster operations, DIBs and a bitmap resource.
+  while (desktop_loop_count() < 3) {
+    wait_one_tick();
+  }
+  h = process_spawn("/APPS/WINBMP.EXE");
+  failures += pe_expect(h >= 0 && pe_wait_for(cond_pe_window, 500), "WINBMP.EXE: its window appeared");
+  failures += pe_expect(pe_wait_for(cond_bmp_canvas, 500), "bitmaps: BitBlt of a memory DC's bitmap onto the window");
+  failures += pe_expect(pe_wait_for(cond_bmp_pic, 500), "bitmaps: a bitmap resource stretched 20 times with StretchBlt");
+  failures += pe_expect(pe_wait_for(cond_bmp_mirror, 500), "bitmaps: a negative width mirrors the picture");
+  failures += pe_expect(pe_wait_for(cond_bmp_notsrc, 500), "bitmaps: NOTSRCCOPY");
+  failures += pe_expect(pe_wait_for(cond_bmp_black, 500), "bitmaps: PatBlt BLACKNESS");
+  failures += pe_expect(cond_bmp_untouched(), "bitmaps: a blit that would read the window is refused and draws nothing");
+  syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
+  code = 0xFFFFFFFFULL;
+  failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
+                        "bitmaps: every check in the program passed (exit code = failed checks bit mask)");
+  if (code != 0) {
+    console_printf("[PE] WINBMP failed checks mask: 0x%x\r\n", (unsigned)code);
+  }
+  failures += pe_expect(pe_wait_for(cond_pe_no_windows, 500), "the bitmap window was released");
 
   // A windowed program: WinMain, window class, WM_PAINT with GDI, input and a timer. The desktop
   // task must be running (it is, as the idle callback).

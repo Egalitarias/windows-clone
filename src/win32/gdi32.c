@@ -1,7 +1,8 @@
 // gdi32 (and the drawing functions of user32) for the Win32 runtime. Drawing goes straight to
 // the window's surface through the window syscalls: filled rectangles, 8x8-font text, lines
-// made of small rectangles. There are no memory DCs or bitmaps, no clipping, and a single
-// built-in font (8x8, so TEXTMETRIC and GetTextExtent report 8-pixel characters).
+// made of small rectangles. There is no clipping region, and a single
+// built-in font (8x8, so TEXTMETRIC and GetTextExtent report 8-pixel characters). Bitmaps and
+// memory DCs are in bitmap.c.
 #include "internal.h"
 
 #define MAX_DCS 16
@@ -92,7 +93,9 @@ static void stock_init(void) {
 HBRUSH gdi_sys_brush(int index) { return (HBRUSH)(uintptr_t)(index + 1); }
 
 // A brush handle is a table entry, or (COLOR_xxx + 1) as in window classes.
-static int brush_color(HBRUSH b, unsigned long *rgb) {
+int gdi_brush_rgb(HBRUSH b, unsigned long *rgb);
+static int brush_color(HBRUSH b, unsigned long *rgb) { return gdi_brush_rgb(b, rgb); }
+int gdi_brush_rgb(HBRUSH b, unsigned long *rgb) {
   gobj_t *o;
 
   if ((uintptr_t)b < 64) {
@@ -167,6 +170,10 @@ void gdi_fill(dc_t *d, int x, int y, int w, int h, uint32_t rgb) {
   if (x1 <= x || y1 <= y) {
     return;
   }
+  if (d->sysid < 0) {
+    rt_mem_fill(d, x, y, x1, y1, rgb);
+    return;
+  }
   op.x = x; op.y = y; op.w = x1 - x; op.h = y1 - y; op.color = rgb; op.scale = 0; op.ptr = 0;
   sc3(KS_WIN_FILL, d->sysid, (sl_t)&op, 0);
 }
@@ -184,6 +191,10 @@ static void text_out(dc_t *d, int x, int y, const char *s, int n, uint32_t rgb) 
 void gdi_text(dc_t *d, int x, int y, const char *s, int n, uint32_t rgb) {
   x += d->ox;
   y += d->oy;
+  if (d->sysid < 0) {
+    rt_mem_text(d, x, y, s, n, rgb);
+    return;
+  }
   if (n > 255) {
     n = 255;
   }
@@ -209,7 +220,15 @@ void gdi_text(dc_t *d, int x, int y, const char *s, int n, uint32_t rgb) {
 
 EXPORT int WINAPI SaveDC(HDC dc) { (void)dc; return 1; }
 EXPORT BOOL WINAPI RestoreDC(HDC dc, int n) { (void)dc; (void)n; return TRUE; }
-EXPORT BOOL WINAPI DeleteDC(HDC dc) { gdi_dc_free(gdi_dc(dc)); return TRUE; }
+EXPORT BOOL WINAPI DeleteDC(HDC dc) {
+  dc_t *d = gdi_dc(dc);
+
+  if (d != 0 && d->sysid < 0) {
+    rt_bmp_dc_gone(d);
+  }
+  gdi_dc_free(d);
+  return TRUE;
+}
 
 EXPORT int WINAPI GetDeviceCaps(HDC dc, int index) {
   sl_t s = sc3(KS_SCREEN, 0, 0, 0);
@@ -248,6 +267,9 @@ EXPORT HGDIOBJ WINAPI SelectObject(HDC h, HGDIOBJ o) {
   gobj_t *g = obj_get(o);
   HGDIOBJ old = 0;
 
+  if (d != 0 && rt_bmp(o) != 0) {
+    return rt_bmp_select(d, o);
+  }
   if (d == 0 || (g == 0 && (uintptr_t)o >= 64)) {
     return 0;
   }
@@ -268,14 +290,23 @@ EXPORT HGDIOBJ WINAPI SelectObject(HDC h, HGDIOBJ o) {
 EXPORT BOOL WINAPI DeleteObject(HGDIOBJ o) {
   gobj_t *g = obj_get(o);
 
+  int bd = rt_bmp_delete(o);
+
+  if (bd != 0) {
+    return bd == 1;                                    // (a bitmap still selected into a DC cannot be deleted)
+  }
   if (g != 0 && !g->stock) {
     g->used = 0;
   }
   return TRUE;
 }
 
-EXPORT int WINAPI GetObjectA(HANDLE h, int n, LPVOID p) { (void)h; (void)n; (void)p; return 0; }
-EXPORT DWORD WINAPI GetObjectType(HGDIOBJ h) { gobj_t *g = obj_get(h); return g != 0 ? (DWORD)g->type : 0; }
+EXPORT int WINAPI GetObjectA(HANDLE h, int n, LPVOID p) {
+  int r = rt_bmp_getobject(h, n, p);
+
+  return r >= 0 ? r : 0;
+}
+EXPORT DWORD WINAPI GetObjectType(HGDIOBJ h) { gobj_t *g = obj_get(h); return rt_bmp(h) != 0 ? OBJ_BITMAP : g != 0 ? (DWORD)g->type : 0; }
 
 // ---- State ------------------------------------------------------------------------------------------------
 
@@ -455,6 +486,9 @@ EXPORT BOOL WINAPI PatBlt(HDC h, int x, int y, int w, int ht, DWORD rop) {
 
   if (d == 0) {
     return FALSE;
+  }
+  if (rop != BLACKNESS && rop != WHITENESS && rop != PATCOPY) {
+    return BitBlt(h, x, y, w, ht, 0, 0, 0, rop);                 // (PATINVERT, DSTINVERT ...: bitmap.c)
   }
   if (rop == BLACKNESS) {
     rgb = 0;
@@ -638,4 +672,9 @@ EXPORT COLORREF WINAPI SetPixel(HDC h, int x, int y, COLORREF c) {
 }
 
 EXPORT BOOL WINAPI SetPixelV(HDC h, int x, int y, COLORREF c) { return SetPixel(h, x, y, c) != CLR_INVALID; }
-EXPORT COLORREF WINAPI GetPixel(HDC h, int x, int y) { (void)h; (void)x; (void)y; return CLR_INVALID; }
+EXPORT COLORREF WINAPI GetPixel(HDC h, int x, int y) {
+  dc_t *d = gdi_dc(h);
+  COLORREF c;
+
+  return d != 0 && d->sysid < 0 && rt_mem_getpixel(d, x, y, &c) ? c : CLR_INVALID;     // (a window's surface cannot be read back)
+}
