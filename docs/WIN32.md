@@ -87,7 +87,7 @@ and `WM_MOUSEMOVE` (moves only while the button is held), the wheel `WM_MOUSEWHE
 the close button `WM_CLOSE`. `WM_PAINT` is generated for invalidated windows; `BeginPaint` sends
 `WM_ERASEBKGND` and the default procedure fills with the class brush.
 
-Missing on purpose (for now): `COMBOBOX` and `SCROLLBAR` controls, memory DCs and bitmaps (`CreateCompatibleDC`, `BitBlt`), clipboard, resources, fonts other
+Missing on purpose (for now): the `SCROLLBAR` control, memory DCs and bitmaps (`CreateCompatibleDC`, `BitBlt`), clipboard, resources, fonts other
 than the built-in one, right and middle mouse buttons, wide-character (`W`) window functions
 (only `DefWindowProcW`, `GetMessageW`, ...), real wall-clock time (time counts from 2026-01-01 at
 boot), environment variables, and anything about sockets.
@@ -127,6 +127,14 @@ The classes are registered when the first window is created (`src/win32/controls
 | `STATIC` | `SS_LEFT/CENTER/RIGHT/SIMPLE/LEFTNOWORDWRAP` text with word wrap, `&` mnemonics stripped (`SS_NOPREFIX`), `SS_CENTERIMAGE`, black/gray/white rectangles and frames, etched lines and frames, `SS_NOTIFY` (`STN_CLICKED`/`STN_DBLCLK`) |
 | `EDIT` | single line and `ES_MULTILINE`; caret, selection (keys with Shift, mouse drag, double click selects a word, Ctrl+A), Home/End/arrows/Delete/Backspace, Ctrl+C/X/V through the system clipboard, `ES_PASSWORD`, `ES_READONLY`, `ES_NUMBER`, `ES_UPPERCASE/LOWERCASE`, scrolling both ways, mouse wheel; `EM_GETSEL/SETSEL/REPLACESEL/LIMITTEXT/GETLINECOUNT/LINEFROMCHAR/LINEINDEX/LINELENGTH/GETLINE/SETREADONLY/GETMODIFY/SETMODIFY/SCROLLCARET/SETPASSWORDCHAR/LINESCROLL`, `WM_CUT/COPY/PASTE/CLEAR`; `EN_CHANGE`, `EN_SETFOCUS`, `EN_KILLFOCUS` |
 | `LISTBOX` | single, multiple and extended selection, `LBS_SORT`, `LBS_NOTIFY` (`LBN_SELCHANGE`, `LBN_DBLCLK`); a scroll bar (arrows, track, draggable thumb), wheel, Up/Down/PageUp/PageDown/Home/End, type-ahead; `LB_ADDSTRING/INSERTSTRING/DELETESTRING/RESETCONTENT/GETCOUNT/GETCURSEL/SETCURSEL/GETSEL/SETSEL/GETSELCOUNT/GETSELITEMS/GETTEXT/GETTEXTLEN/FINDSTRING/FINDSTRINGEXACT/SELECTSTRING/GETITEMDATA/SETITEMDATA/GETTOPINDEX/SETTOPINDEX/GETITEMRECT/ITEMFROMPOINT` |
+
+| `COMBOBOX` | `CBS_SIMPLE`, `CBS_DROPDOWN` (an `EDIT` child, `CBN_EDITCHANGE`) and `CBS_DROPDOWNLIST`; `CBS_SORT`; Up/Down/PageUp/PageDown change the selection, F4 drops the list, Enter accepts and Escape cancels, type-ahead in the list box variety; `CB_ADDSTRING/INSERTSTRING/DELETESTRING/RESETCONTENT/GETCOUNT/GETCURSEL/SETCURSEL/GETLBTEXT/GETLBTEXTLEN/FINDSTRING/FINDSTRINGEXACT/SELECTSTRING/GETITEMDATA/SETITEMDATA/GETTOPINDEX/SETTOPINDEX/SHOWDROPDOWN/GETDROPPEDSTATE/LIMITTEXT/GETEDITSEL/SETEDITSEL/GETDROPPEDCONTROLRECT`; `CBN_SELCHANGE/DROPDOWN/CLOSEUP/SELENDOK/SELENDCANCEL/SETFOCUS/KILLFOCUS/DBLCLK` |
+
+A combo box follows Windows' layout rule: the height given to `CreateWindow` is the height of the drop-down
+list plus the field, but the window is only the field's height (20 pixels) while closed, so it
+does not cover what is under it; it grows while the list is down. The list is a `LISTBOX` child
+inside the combo box, which holds the mouse capture while it is down and passes the mouse to the
+list; clicking outside closes it. When it closes, the parent is painted again over the area.
 
 Characters are 8 x 8 pixels, so a control sized for a proportional font shows less text than on
 Windows; `WM_SETFONT` is remembered but changes nothing. A multi-line edit keeps `\n` internally and
@@ -183,8 +191,8 @@ a message loop with `IsDialogMessage` (Tab, Enter for the default button, Escape
 runs until `EndDialog`; the close button sends `IDCANCEL`.
 
 Dialog units are converted with 7 x 12 pixels per 4 x 8 units (`GetDialogBaseUnits`), larger than
-Windows' 8-point font, because characters here are 8 pixels wide. Not there: `COMBOBOX` and other
-unsupported controls in a template are skipped, `DS_` styles other than `DS_SETFONT` (the font is
+Windows' 8-point font, because characters here are 8 pixels wide. Not there: controls this runtime lacks
+(`SCROLLBAR`, common controls) in a template are skipped, `DS_` styles other than `DS_SETFONT` (the font is
 ignored), dialog placement from the template (the window manager places it), `DM_SETDEFID`, system
 modal and `MessageBox` owner disabling.
 
@@ -402,6 +410,9 @@ virtual FAT drive is not a good place for that). It runs, on the real desktop:
   the bar, a popup over the client area and the client painted again; the program checks 19 things
   (menu API, no command from a disabled item or Escape, client size under the bar) and exits with a
   bit mask of the failures;
+- `WINCOMBO.EXE` (`tests/wincombo.c`): a list-box combo and an editable one. The kernel opens them
+  with the mouse, chooses items, types, uses Down/Enter/Escape and type-ahead; pixels show the list
+  over the parent and the parent painted again; 16 checks of notifications, text and selection;
 - `WINDLG.EXE` (`tests/windlg.c`, `windlg.rc`): a `DIALOGEX`, a menu, accelerators and a string table
   compiled into the program; a modal `DialogBoxParam` driven by the kernel (typing, a click, Tab,
   Space), a dialog built from an in-memory `DLGTEMPLATE`; 15 checks, exit code = bit mask of failures;
@@ -419,4 +430,4 @@ screenshot (`python scripts/qemu-screenshot.py out/run/shot.png 28`).
 - Programs larger than about 900 KB (together with the runtime) do not fit the load window.
 - Not a Windows compatibility layer in the sense of running arbitrary software: it runs programs
   that stay inside the subset above. Programs from real toolchains that link the CRT, use
-  the C++ standard library, or draw with bitmaps and combo boxes will not get far yet.
+  the C++ standard library, or draw with bitmaps and common controls will not get far yet.

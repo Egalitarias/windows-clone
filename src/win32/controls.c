@@ -1580,6 +1580,397 @@ static LRESULT CALLBACK listbox_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
   }
 }
 
+// ---- COMBOBOX --------------------------------------------------------------------------------------------
+// A combo box is a field (an EDIT child for CBS_SIMPLE and CBS_DROPDOWN, text drawn by the combo for
+// CBS_DROPDOWNLIST), a button, and a LISTBOX child. The window is only the field's height while
+// closed (the height given to CreateWindow is the drop-down height, as on Windows) and grows when
+// the list drops; while it is down the combo box owns the mouse and passes it to the list.
+
+#define CB_FIELD_H 20
+#define CB_BTN_W   16
+#define CB_ID_LIST 1000
+#define CB_ID_EDIT 1001
+
+typedef struct {
+  int type;                                   // CBS_SIMPLE (1), CBS_DROPDOWN (2), CBS_DROPDOWNLIST (3)
+  int list_h, dropped, quiet, in_fwd, saved_sel;
+  HWND edit, list;
+  char saved[96];
+} combo_t;
+
+static LRESULT CALLBACK combo_proc(HWND h, UINT m, WPARAM wp, LPARAM lp);
+static combo_t *cb(HWND h) { return (combo_t *)rt_wnd_ctl(h); }
+
+static int is_dropped_combo(HWND h) {
+  return GetWindowLongPtrA(h, GWLP_WNDPROC) == (LONG_PTR)combo_proc && cb(h) != 0 && cb(h)->dropped;
+}
+
+static void cb_width(HWND h, int *w) {
+  RECT r;
+
+  GetClientRect(h, &r);
+  *w = r.right;
+}
+
+static void cb_sync_text(HWND h, combo_t *c) {
+  int i = (int)SendMessageA(c->list, LB_GETCURSEL, 0, 0);
+  char t[96];
+
+  if (i >= 0 && c->edit != 0) {
+    SendMessageA(c->list, LB_GETTEXT, (WPARAM)i, (LPARAM)t);
+    c->quiet = 1;
+    SendMessageA(c->edit, WM_SETTEXT, 0, (LPARAM)t);
+    SendMessageA(c->edit, EM_SETSEL, 0, (LPARAM)-1);
+    c->quiet = 0;
+  }
+  InvalidateRect(h, 0, FALSE);
+}
+
+static void cb_open(HWND h, combo_t *c) {
+  int w;
+
+  if (c->dropped || c->type == 1) {
+    return;
+  }
+  c->saved_sel = (int)SendMessageA(c->list, LB_GETCURSEL, 0, 0);
+  if (c->edit != 0) {
+    SendMessageA(c->edit, WM_GETTEXT, sizeof(c->saved), (LPARAM)c->saved);
+  }
+  cb_width(h, &w);
+  c->dropped = 1;
+  SetWindowPos(h, 0, 0, 0, w, CB_FIELD_H + c->list_h, SWP_NOMOVE | SWP_NOZORDER);
+  ShowWindow(c->list, SW_SHOW);
+  SetCapture(h);
+  InvalidateRect(h, 0, FALSE);
+  notify(h, CBN_DROPDOWN);
+}
+
+static void cb_close(HWND h, combo_t *c, int commit) {
+  int w;
+
+  if (!c->dropped || c->type == 1) {
+    return;
+  }
+  c->dropped = 0;
+  ReleaseCapture();
+  if (!commit) {
+    SendMessageA(c->list, LB_SETCURSEL, (WPARAM)c->saved_sel, 0);
+    if (c->edit != 0) {
+      c->quiet = 1;
+      SendMessageA(c->edit, WM_SETTEXT, 0, (LPARAM)c->saved);
+      c->quiet = 0;
+    }
+  }
+  ShowWindow(c->list, SW_HIDE);
+  cb_width(h, &w);
+  SetWindowPos(h, 0, 0, 0, w, CB_FIELD_H, SWP_NOMOVE | SWP_NOZORDER);   // the area it covered is painted again by the parent
+  InvalidateRect(h, 0, FALSE);
+  notify(h, commit ? CBN_SELENDOK : CBN_SELENDCANCEL);
+  notify(h, CBN_CLOSEUP);
+}
+
+static void cb_paint(HWND h) {
+  PAINTSTRUCT ps;
+  HDC dc = BeginPaint(h, &ps);
+  combo_t *c = cb(h);
+  int w, x0, i, cy = CB_FIELD_H / 2, down;
+  int enabled = IsWindowEnabled(h) != 0;
+
+  if (dc == 0 || c == 0) {
+    if (dc != 0) EndPaint(h, &ps);
+    return;
+  }
+  cb_width(h, &w);
+  x0 = w - CB_BTN_W;
+  if (c->type == 3) {                                       // the field: the selected item
+    char t[96];
+    int sel = (int)SendMessageA(c->list, LB_GETCURSEL, 0, 0), focused = GetFocus() == h, n;
+
+    t[0] = 0;
+    if (sel >= 0) SendMessageA(c->list, LB_GETTEXT, (WPARAM)sel, (LPARAM)t);
+    fill(dc, 0, 0, x0, CB_FIELD_H, RGB(255, 255, 255));
+    frame(dc, 0, 0, x0, CB_FIELD_H, RGB(122, 122, 122));
+    n = (int)rt_strlen(t);
+    if (n > (x0 - 8) / CH_W) n = (x0 - 8) / CH_W;
+    if (focused && n > 0) fill(dc, 2, 2, 6 + n * CH_W, CB_FIELD_H - 2, RGB(0, 120, 215));
+    text(dc, 4, (CB_FIELD_H - 8) / 2, t, n, !enabled ? RGB(128, 128, 128) : focused ? RGB(255, 255, 255) : RGB(0, 0, 0));
+  }
+  if (c->type != 1) {                                       // the drop-down button
+    down = c->dropped;
+    fill(dc, x0, 0, w, CB_FIELD_H, face());
+    if (down) {
+      frame(dc, x0, 0, w, CB_FIELD_H, RGB(105, 105, 105));
+    } else {
+      fill(dc, x0, 0, w, 1, RGB(255, 255, 255));
+      fill(dc, x0, 0, x0 + 1, CB_FIELD_H, RGB(255, 255, 255));
+      fill(dc, x0, CB_FIELD_H - 1, w, CB_FIELD_H, RGB(64, 64, 64));
+      fill(dc, w - 1, 0, w, CB_FIELD_H, RGB(64, 64, 64));
+    }
+    for (i = 0; i < 4; ++i) {
+      fill(dc, x0 + 4 + i + down, cy - 2 + i + down, x0 + 13 - i + down, cy - 1 + i + down, enabled ? RGB(0, 0, 0) : RGB(128, 128, 128));
+    }
+  }
+  EndPaint(h, &ps);
+}
+
+static void cb_key(HWND h, combo_t *c, UINT vk) {
+  switch (vk) {
+    case VK_F4:
+      if (c->dropped) cb_close(h, c, 1); else cb_open(h, c);
+      break;
+    case VK_UP: case VK_DOWN: case VK_PRIOR: case VK_NEXT: case VK_HOME: case VK_END:
+      if (c->edit != 0 && (vk == VK_HOME || vk == VK_END) && !c->dropped) {
+        break;                                              // those move the caret in the edit field
+      }
+      SendMessageA(c->list, WM_KEYDOWN, vk, 0);
+      break;
+    case VK_RETURN:
+      if (c->dropped) cb_close(h, c, 1);
+      break;
+    case VK_ESCAPE:
+      if (c->dropped) cb_close(h, c, 0);
+      break;
+    default:
+      break;
+  }
+}
+
+// The edit child: Up, Down, F4, Enter and Escape belong to the combo box.
+static LRESULT CALLBACK combo_edit_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
+  HWND p = GetParent(h);
+
+  if (m == WM_GETDLGCODE && is_dropped_combo(p)) {
+    return DLGC_WANTALLKEYS | DLGC_WANTCHARS;
+  }
+  if (m == WM_KEYDOWN && (wp == VK_UP || wp == VK_DOWN || wp == VK_F4 || wp == VK_PRIOR || wp == VK_NEXT ||
+                          (is_dropped_combo(p) && (wp == VK_RETURN || wp == VK_ESCAPE || wp == VK_HOME || wp == VK_END)))) {
+    cb_key(p, cb(p), (UINT)wp);
+    return 0;
+  }
+  if (m == WM_CHAR && is_dropped_combo(p) && (wp == 13 || wp == 27)) {
+    return 0;
+  }
+  return edit_proc(h, m, wp, lp);
+}
+
+static LRESULT cb_forward_mouse(HWND h, combo_t *c, UINT m, WPARAM wp, LPARAM lp) {
+  int x = (short)(lp & 0xFFFF), y = (short)((lp >> 16) & 0xFFFF), w;
+
+  cb_width(h, &w);
+  if (y >= CB_FIELD_H && y < CB_FIELD_H + c->list_h) {
+    int scroll = x >= w - 1 - 14;
+
+    c->in_fwd = 1;
+    SendMessageA(c->list, m, wp, MAKELONG(x, y - CB_FIELD_H));
+    SetFocus(c->edit != 0 ? c->edit : h);                    // the list took it on the click
+    c->in_fwd = 0;
+    if (c->dropped) SetCapture(h);
+    if (m == WM_LBUTTONUP && !scroll && c->dropped) {
+      cb_close(h, c, 1);
+    }
+    return 0;
+  }
+  if (m == WM_LBUTTONDOWN) {
+    cb_close(h, c, 0);                                      // a click outside the list closes it
+  }
+  return 0;
+}
+
+static LRESULT CALLBACK combo_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
+  combo_t *c = cb(h);
+
+  switch (m) {
+    case WM_NCCREATE:
+      c = rt_alloc(sizeof(*c));
+      if (c == 0) {
+        return 0;
+      }
+      rt_memset(c, 0, sizeof(*c));
+      rt_wnd_set_ctl(h, c);
+      return 1;
+    case WM_CREATE: {
+      const CREATESTRUCTA *cs = (const CREATESTRUCTA *)lp;
+      DWORD st = style_of(h);
+      int cy = cs->cy;
+
+      if (c == 0) return -1;
+      c->type = (int)(st & 3);
+      if (c->type == 0) c->type = 2;
+      c->list_h = cy > CB_FIELD_H + 24 ? cy - CB_FIELD_H : 104;
+      c->list = CreateWindowExA(0, "LISTBOX", "", WS_CHILD | WS_VSCROLL | LBS_NOTIFY | ((st & CBS_SORT) ? LBS_SORT : 0) | (c->type == 1 ? WS_VISIBLE : 0),
+                                0, CB_FIELD_H, cs->cx, c->list_h, h, (HMENU)(UINT_PTR)CB_ID_LIST, 0, 0);
+      if (c->type != 3) {
+        c->edit = CreateWindowExA(0, "EDIT", "", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 0, 0, c->type == 1 ? cs->cx : cs->cx - CB_BTN_W, CB_FIELD_H,
+                                  h, (HMENU)(UINT_PTR)CB_ID_EDIT, 0, 0);
+        if (c->edit != 0) SetWindowLongPtrA(c->edit, GWLP_WNDPROC, (LONG_PTR)combo_edit_proc);
+      }
+      if (c->type == 1) {
+        SetWindowPos(h, 0, 0, 0, cs->cx, CB_FIELD_H + c->list_h, SWP_NOMOVE | SWP_NOZORDER);
+      } else {
+        SetWindowPos(h, 0, 0, 0, cs->cx, CB_FIELD_H, SWP_NOMOVE | SWP_NOZORDER);
+      }
+      return 0;
+    }
+    case WM_NCDESTROY:
+      rt_free(c);
+      rt_wnd_set_ctl(h, 0);
+      return 0;
+    case WM_SIZE:
+      if (c != 0 && c->list != 0) {
+        RECT r;
+        int w = (short)(lp & 0xFFFF);
+
+        GetClientRect(c->list, &r);
+        if (r.right != w) MoveWindow(c->list, 0, CB_FIELD_H, w, c->list_h, FALSE);
+        if (c->edit != 0) {
+          GetClientRect(c->edit, &r);
+          if (r.right != (c->type == 1 ? w : w - CB_BTN_W)) MoveWindow(c->edit, 0, 0, c->type == 1 ? w : w - CB_BTN_W, CB_FIELD_H, FALSE);
+        }
+      }
+      return 0;
+    case WM_ERASEBKGND:
+      return 1;
+    case WM_PAINT:
+      cb_paint(h);
+      return 0;
+    case WM_ENABLE:
+      if (c != 0) {
+        if (c->edit != 0) EnableWindow(c->edit, wp != 0);
+        EnableWindow(c->list, wp != 0);
+      }
+      InvalidateRect(h, 0, FALSE);
+      return 0;
+    case WM_SETFOCUS:
+      if (c != 0 && c->edit != 0) SetFocus(c->edit);
+      InvalidateRect(h, 0, FALSE);
+      return 0;
+    case WM_KILLFOCUS:
+      if (c != 0 && !c->in_fwd && c->dropped) cb_close(h, c, 1);
+      InvalidateRect(h, 0, FALSE);
+      return 0;
+    case WM_GETDLGCODE:
+      return c != 0 && c->dropped ? DLGC_WANTALLKEYS | DLGC_WANTCHARS : DLGC_WANTARROWS | DLGC_WANTCHARS;
+    case WM_LBUTTONDOWN: case WM_LBUTTONDBLCLK:
+      if (c == 0) return 0;
+      if (c->dropped) return cb_forward_mouse(h, c, m, wp, lp);
+      if (c->type != 1) {
+        SetFocus(c->edit != 0 ? c->edit : h);
+        cb_open(h, c);
+      }
+      return 0;
+    case WM_LBUTTONUP: case WM_MOUSEMOVE: case WM_MOUSEWHEEL:
+      if (c != 0 && c->dropped) return cb_forward_mouse(h, c, m, wp, lp);
+      return 0;
+    case WM_KEYDOWN:
+      if (c != 0) cb_key(h, c, (UINT)wp);
+      return 0;
+    case WM_CHAR:
+      if (c != 0 && c->type == 3) {
+        if (c->dropped && (wp == 13 || wp == 27)) return 0;
+        SendMessageA(c->list, WM_CHAR, wp, lp);
+      }
+      return 0;
+    case WM_COMMAND: {
+      int id = LOWORD(wp), code = HIWORD(wp);
+
+      if (c == 0) return 0;
+      if (id == CB_ID_LIST && code == LBN_SELCHANGE) {
+        cb_sync_text(h, c);
+        notify(h, CBN_SELCHANGE);
+      } else if (id == CB_ID_LIST && code == LBN_DBLCLK) {
+        notify(h, CBN_DBLCLK);
+      } else if (id == CB_ID_EDIT) {
+        if (code == EN_CHANGE && !c->quiet) notify(h, CBN_EDITCHANGE);
+        if (code == EN_SETFOCUS) { notify(h, CBN_SETFOCUS); InvalidateRect(h, 0, FALSE); }
+        if (code == EN_KILLFOCUS && !c->in_fwd) {
+          if (c->dropped) cb_close(h, c, 1);
+          notify(h, CBN_KILLFOCUS);
+        }
+      }
+      return 0;
+    }
+    case WM_GETTEXT: case WM_GETTEXTLENGTH:
+      if (c == 0) return 0;
+      if (c->edit != 0) return SendMessageA(c->edit, m, wp, lp);
+      {
+        int i = (int)SendMessageA(c->list, LB_GETCURSEL, 0, 0);
+        char t[96];
+
+        t[0] = 0;
+        if (i >= 0) SendMessageA(c->list, LB_GETTEXT, (WPARAM)i, (LPARAM)t);
+        if (m == WM_GETTEXTLENGTH) return (LRESULT)rt_strlen(t);
+        if (wp == 0) return 0;
+        rt_copy((char *)lp, t, wp);
+        return (LRESULT)rt_strlen((char *)lp);
+      }
+    case WM_SETTEXT:
+      if (c == 0) return FALSE;
+      if (c->edit != 0) {
+        SendMessageA(c->edit, WM_SETTEXT, 0, lp);
+      } else {
+        SendMessageA(c->list, LB_SELECTSTRING, (WPARAM)-1, lp);
+        InvalidateRect(h, 0, FALSE);
+      }
+      return TRUE;
+    case CB_ADDSTRING: return c != 0 ? SendMessageA(c->list, LB_ADDSTRING, wp, lp) : CB_ERR;
+    case CB_INSERTSTRING: return c != 0 ? SendMessageA(c->list, LB_INSERTSTRING, wp, lp) : CB_ERR;
+    case CB_DELETESTRING: return c != 0 ? SendMessageA(c->list, LB_DELETESTRING, wp, lp) : CB_ERR;
+    case CB_RESETCONTENT:
+      if (c == 0) return 0;
+      SendMessageA(c->list, LB_RESETCONTENT, 0, 0);
+      if (c->edit != 0) { c->quiet = 1; SendMessageA(c->edit, WM_SETTEXT, 0, (LPARAM)""); c->quiet = 0; }
+      InvalidateRect(h, 0, FALSE);
+      return 0;
+    case CB_GETCOUNT: return c != 0 ? SendMessageA(c->list, LB_GETCOUNT, 0, 0) : CB_ERR;
+    case CB_GETCURSEL: return c != 0 ? SendMessageA(c->list, LB_GETCURSEL, 0, 0) : CB_ERR;
+    case CB_SETCURSEL: {
+      LRESULT r;
+
+      if (c == 0) return CB_ERR;
+      r = SendMessageA(c->list, LB_SETCURSEL, wp, 0);
+      if (r != LB_ERR) cb_sync_text(h, c);
+      else InvalidateRect(h, 0, FALSE);
+      return r;
+    }
+    case CB_GETLBTEXT: return c != 0 ? SendMessageA(c->list, LB_GETTEXT, wp, lp) : CB_ERR;
+    case CB_GETLBTEXTLEN: return c != 0 ? SendMessageA(c->list, LB_GETTEXTLEN, wp, lp) : CB_ERR;
+    case CB_FINDSTRING: return c != 0 ? SendMessageA(c->list, LB_FINDSTRING, wp, lp) : CB_ERR;
+    case CB_FINDSTRINGEXACT: return c != 0 ? SendMessageA(c->list, LB_FINDSTRINGEXACT, wp, lp) : CB_ERR;
+    case CB_SELECTSTRING: {
+      LRESULT r;
+
+      if (c == 0) return CB_ERR;
+      r = SendMessageA(c->list, LB_SELECTSTRING, wp, lp);
+      if (r != LB_ERR) cb_sync_text(h, c);
+      return r;
+    }
+    case CB_GETITEMDATA: return c != 0 ? SendMessageA(c->list, LB_GETITEMDATA, wp, lp) : CB_ERR;
+    case CB_SETITEMDATA: return c != 0 ? SendMessageA(c->list, LB_SETITEMDATA, wp, lp) : CB_ERR;
+    case CB_GETTOPINDEX: return c != 0 ? SendMessageA(c->list, LB_GETTOPINDEX, 0, 0) : CB_ERR;
+    case CB_SETTOPINDEX: return c != 0 ? SendMessageA(c->list, LB_SETTOPINDEX, wp, 0) : CB_ERR;
+    case CB_SHOWDROPDOWN:
+      if (c != 0) { if (wp) cb_open(h, c); else cb_close(h, c, 0); }
+      return TRUE;
+    case CB_GETDROPPEDSTATE: return c != 0 && c->dropped;
+    case CB_LIMITTEXT: return c != 0 && c->edit != 0 ? SendMessageA(c->edit, EM_LIMITTEXT, wp, 0) : 0;
+    case CB_GETEDITSEL: return c != 0 && c->edit != 0 ? SendMessageA(c->edit, EM_GETSEL, wp, lp) : CB_ERR;
+    case CB_SETEDITSEL: return c != 0 && c->edit != 0 ? SendMessageA(c->edit, EM_SETSEL, (WPARAM)(short)LOWORD(lp), (LPARAM)(short)HIWORD(lp)) : CB_ERR;
+    case CB_SETITEMHEIGHT: case CB_SETEXTENDEDUI: case CB_SETHORIZONTALEXTENT: case CB_GETEXTENDEDUI:
+      return 0;
+    case CB_GETDROPPEDCONTROLRECT:
+      if (c != 0 && lp != 0) {
+        RECT *r = (RECT *)lp;
+
+        GetWindowRect(h, r);
+        r->bottom = r->top + CB_FIELD_H + c->list_h;
+        return TRUE;
+      }
+      return CB_ERR;
+    default:
+      return DefWindowProcA(h, m, wp, lp);
+  }
+}
+
 // ---- registration -------------------------------------------------------------------------------------------
 
 void rt_controls_register(void) {
@@ -1588,6 +1979,7 @@ void rt_controls_register(void) {
     {"STATIC", static_proc, COLOR_BTNFACE, 0},
     {"EDIT", edit_proc, COLOR_WINDOW, CS_DBLCLKS},
     {"LISTBOX", listbox_proc, COLOR_WINDOW, CS_DBLCLKS},
+    {"COMBOBOX", combo_proc, COLOR_WINDOW, 0},
     {"#32770", rt_dlg_proc, COLOR_BTNFACE, 0},
   };
   int i;

@@ -1742,7 +1742,7 @@ static wnd_t *default_button(wnd_t *dlg) {
 // focused push button (or the default one), Escape sends IDCANCEL; those keys and their
 // WM_CHAR are consumed. Anything else is left for the caller to dispatch.
 EXPORT BOOL WINAPI IsDialogMessageA(HWND dlg, LPMSG m) {
-  wnd_t *d = w_get(dlg), *t, *f;
+  wnd_t *d = w_get(dlg), *t, *f, *fd;
 
   if (d == 0 || (m->hwnd != dlg && !IsChild(dlg, m->hwnd))) {
     return FALSE;
@@ -1751,12 +1751,16 @@ EXPORT BOOL WINAPI IsDialogMessageA(HWND dlg, LPMSG m) {
     return FALSE;
   }
   f = d->focus != 0 ? d->focus : 0;
+  fd = f;                                              // the dialog's control that holds the focus (a combo box's edit field is inside one)
+  while (fd != 0 && fd->parent != d) {
+    fd = fd->parent;
+  }
   if (f != 0 && (SendMessageA(w_hwnd(f), WM_GETDLGCODE, 0, 0) & DLGC_WANTALLKEYS) != 0) {
     return FALSE;
   }
   if (m->wParam == VK_TAB || (m->message == WM_CHAR && m->wParam == 9)) {
     if (m->message == WM_KEYDOWN) {
-      t = next_tab(d, f, (g_mods & 1) != 0);
+      t = next_tab(d, fd, (g_mods & 1) != 0);
       if (t != 0) {
         SetFocus(w_hwnd(t));
       }

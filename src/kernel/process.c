@@ -2438,6 +2438,12 @@ static int cond_mnu_gone(void) { return syswin_test_pixel(130, 25) == 0x00C8DCFF
 // WINDLG.EXE: a dialog from a compiled resource.
 static int cond_dlg_bg(void) { return syswin_test_pixel(270, 110) == 0x00F0F0F0; }          // the dialog class background
 static int cond_dlg_edit(void) { return syswin_test_pixel(150, 22) == 0x00FFFFFF; }         // its edit control
+// WINCOMBO.EXE: drop-down lists over the parent window.
+static int cond_cmb_field(void) { return syswin_test_pixel(100, 20) == 0x00FFFFFF; }         // the list box combo's field
+static int cond_cmb_a_open(void) { return syswin_test_pixel(100, 60) == 0x00FFFFFF; }       // its list, over the parent
+static int cond_cmb_a_closed(void) { return syswin_test_pixel(100, 60) == 0x00C8DCFF; }     // gone, the parent shows again
+static int cond_cmb_b_open(void) { return syswin_test_pixel(300, 60) == 0x00FFFFFF; }
+static int cond_cmb_b_closed(void) { return syswin_test_pixel(300, 60) == 0x00C8DCFF; }
 static int cond_pe_msgbox(void) { return syswin_test_count(0x003A78D6u) > 1000; }   // the default button
 
 static int pe_supervisor_task(void *arg) {
@@ -2643,6 +2649,45 @@ static int pe_supervisor_task(void *arg) {
     console_printf("[PE] WINDLG failed checks mask: 0x%x\r\n", (unsigned)code);
   }
   failures += pe_expect(pe_wait_for(cond_pe_no_windows, 500), "the dialog windows were released");
+
+  // Combo boxes: a CBS_DROPDOWNLIST and an editable CBS_DROPDOWN.
+  while (desktop_loop_count() < 3) {
+    wait_one_tick();
+  }
+  h = process_spawn("/APPS/WINCOMBO.EXE");
+  failures += pe_expect(h >= 0 && pe_wait_for(cond_pe_window, 500), "WINCOMBO.EXE: its window appeared");
+  failures += pe_expect(pe_wait_for(cond_cmb_field, 500), "combo boxes: the field was drawn");
+  failures += pe_expect(pe_wait_for(cond_cmb_a_closed, 500), "combo boxes: closed, the window is only the field's height (nothing under it)");
+  pe_click(60, 20);                                                      // open the first one
+  failures += pe_expect(pe_wait_for(cond_cmb_a_open, 500), "combo boxes: the list dropped over the parent");
+  pe_click(60, 62);                                                      // choose Blue
+  failures += pe_expect(pe_wait_for(cond_cmb_a_closed, 500), "combo boxes: choosing an item closed the list and the parent was painted again");
+  pe_click(250, 20);                                                     // into the editable one
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 'z');
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 'z');
+  pe_pause(4);
+  pe_click(342, 20);                                                     // its button
+  failures += pe_expect(pe_wait_for(cond_cmb_b_open, 500), "combo boxes: the editable one dropped its list");
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 0x1F);                        // Down, Down: alpha, beta
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 0x1F);
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 10);                          // Enter accepts
+  failures += pe_expect(pe_wait_for(cond_cmb_b_closed, 500), "combo boxes: Enter closed the list");
+  pe_click(60, 20);                                                      // the first one again
+  pe_pause(6);
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 0x1F);                        // Down while dropped
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 27);                          // Escape cancels: back to Blue
+  pe_pause(6);
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 0x1F);                        // Down while closed: Yellow
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 'c');                         // type-ahead: Cyan
+  pe_pause(8);
+  syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
+  code = 0xFFFFFFFFULL;
+  failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
+                        "combo boxes: every check in the program passed (exit code = failed checks bit mask)");
+  if (code != 0) {
+    console_printf("[PE] WINCOMBO failed checks mask: 0x%x\r\n", (unsigned)code);
+  }
+  failures += pe_expect(pe_wait_for(cond_pe_no_windows, 500), "the combo box window was released");
 
   // A windowed program: WinMain, window class, WM_PAINT with GDI, input and a timer. The desktop
   // task must be running (it is, as the idle callback).
