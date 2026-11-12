@@ -2482,6 +2482,10 @@ static int cond_blend_alpha(void) { return syswin_test_pixel(20, 70) == 0x006400
 static int cond_blend_window(void) {                  // the window as the source of BitBlt, plain and with SRCINVERT
   return syswin_test_pixel(205, 15) == 0x00FF0000 && syswin_test_pixel(215, 15) == 0x00C8DCFF && syswin_test_pixel(305, 15) == 0x0037DCFF;
 }
+static int cond_blend_grad(void) {                    // GradientFill: red to blue across, black to white down, a triangle inside and its outside
+  return syswin_test_pixel(10, 125) == 0x00FF0000 && syswin_test_pixel(109, 125) == 0x000000FF && syswin_test_pixel(130, 120) == 0x00000000 &&
+         syswin_test_pixel(130, 179) == 0x00FFFFFF && syswin_test_pixel(255, 125) == 0x00C8DCFF && syswin_test_pixel(202, 178) != 0x00C8DCFF;
+}
 static int cond_pe_msgbox(void) { return syswin_test_count(0x003A78D6u) > 1000; }   // the default button
 
 static int pe_supervisor_task(void *arg) {
@@ -2857,6 +2861,7 @@ static int pe_supervisor_task(void *arg) {
   failures += pe_expect(pe_wait_for(cond_blend_trans, 500), "TransparentBlt: the key colour is left out, also when stretched");
   failures += pe_expect(pe_wait_for(cond_blend_alpha, 500), "AlphaBlend: constant alpha and per-pixel alpha blended with the window's pixels");
   failures += pe_expect(pe_wait_for(cond_blend_window, 500), "a window as the source of BitBlt, and SRCINVERT onto a window");
+  failures += pe_expect(pe_wait_for(cond_blend_grad, 500), "GradientFill: horizontal and vertical rectangles and a triangle onto a window");
   syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
   code = 0xFFFFFFFFULL;
   failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,

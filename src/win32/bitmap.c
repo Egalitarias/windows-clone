@@ -470,7 +470,7 @@ void rt_win_read(int sysid, int x, int y, int w, int h, uint32_t *buf) {
 // dst (x, y, w, h) <- rop(pattern, src (sx, sy, sw, sh) scaled, dst). `src` is 0 when the operation does not use a source.
 // TransparentBlt and AlphaBlend replace the raster operation with a per-pixel function.
 typedef struct {
-  int alpha;                  // 0: skip the pixels equal to key; 1: blend with the constant alpha and, if perpixel, the source's own
+  int alpha;                  // 0: skip the pixels equal to key; 1: blend with the constant alpha and, if perpixel, the source's own; 2: skip the pixels whose top byte is 0
   uint32_t key;
   int constant, perpixel;
 } blendp_t;
@@ -481,6 +481,9 @@ static uint32_t mix(const blendp_t *bp, uint32_t raw, uint32_t s, uint32_t dv) {
   unsigned a = (unsigned)bp->constant, k;
   uint32_t out = 0;
 
+  if (bp->alpha == 2) {
+    return (raw >> 24) != 0 ? s : dv;                  // a gradient: the top byte marks the pixels the shape covers
+  }
   if (!bp->alpha) {
     return s == bp->key ? dv : s;
   }
@@ -691,6 +694,138 @@ EXPORT BOOL WINAPI StretchBlt(HDC hd, int dx, int dy, int dw, int dh, HDC hs, in
 
 EXPORT BOOL WINAPI BitBlt(HDC hd, int x, int y, int w, int h, HDC hs, int sx, int sy, DWORD rop) {
   return StretchBlt(hd, x, y, w, h, hs, sx, sy, w, h, rop);
+}
+
+// ---- GradientFill (msimg32) ------------------------------------------------------------------------
+
+typedef struct {
+  long x, y;
+  int c[3];                   // red, green, blue, 0..255
+} gv_t;
+
+static int lerp_n(int a, int b, long long i, long long n) { return n > 0 ? (int)(((long long)a * (n - i) + (long long)b * i) / n) : a; }
+
+// The colour of pixel (x, y) in a shape, or -1 if the shape does not cover it. kind: 0 rectangle left to right, 1 top to bottom, 2 triangle.
+static long gf_pixel(int kind, const gv_t *v, int x, int y) {
+  int c[3], k;
+
+  if (kind < 2) {
+    int l = (int)v[0].x, t = (int)v[0].y, r = (int)v[1].x, b = (int)v[1].y;
+
+    if (x < l || x >= r || y < t || y >= b) {
+      return -1;
+    }
+    for (k = 0; k < 3; ++k) {
+      c[k] = kind == 0 ? lerp_n(v[0].c[k], v[1].c[k], x - l, r - l - 1) : lerp_n(v[0].c[k], v[1].c[k], y - t, b - t - 1);
+    }
+  } else {
+    long long px = 2LL * x + 1, py = 2LL * y + 1, w[3], area;      // the pixel's centre, in doubled coordinates
+
+    {
+      long long ax = ((long long)v[1].x - v[0].x) * 2, ay = ((long long)v[1].y - v[0].y) * 2;
+      long long bx = ((long long)v[2].x - v[0].x) * 2, by = ((long long)v[2].y - v[0].y) * 2;
+
+      area = ax * by - ay * bx;
+    }
+    if (area == 0) {
+      return -1;
+    }
+    w[0] = (((long long)v[2].x - v[1].x) * 2) * (py - (long long)v[1].y * 2) - (((long long)v[2].y - v[1].y) * 2) * (px - (long long)v[1].x * 2);
+    w[1] = (((long long)v[0].x - v[2].x) * 2) * (py - (long long)v[2].y * 2) - (((long long)v[0].y - v[2].y) * 2) * (px - (long long)v[2].x * 2);
+    w[2] = (((long long)v[1].x - v[0].x) * 2) * (py - (long long)v[0].y * 2) - (((long long)v[1].y - v[0].y) * 2) * (px - (long long)v[0].x * 2);
+    if (area < 0) {
+      w[0] = -w[0];
+      w[1] = -w[1];
+      w[2] = -w[2];
+      area = -area;
+    }
+    if (w[0] < 0 || w[1] < 0 || w[2] < 0) {
+      return -1;
+    }
+    for (k = 0; k < 3; ++k) {
+      c[k] = (int)((w[0] * v[0].c[k] + w[1] * v[1].c[k] + w[2] * v[2].c[k]) / area);
+    }
+  }
+  return (long)(((unsigned)c[0] << 16) | ((unsigned)c[1] << 8) | (unsigned)c[2]);
+}
+
+// Draw one shape: its bounding box, clipped to the DC, in bands of rows through the blit engine.
+static BOOL gf_shape(dc_t *d, int kind, const gv_t *v) {
+  int n = kind < 2 ? 2 : 3, i, x0, y0, x1, y1, y, bandh = 32, x;
+  blendp_t bp;
+  bmp_t tmp;
+  BOOL ok = TRUE;
+
+  x0 = x1 = (int)v[0].x;
+  y0 = y1 = (int)v[0].y;
+  for (i = 1; i < n; ++i) {
+    if (v[i].x < x0) x0 = (int)v[i].x;
+    if (v[i].x > x1) x1 = (int)v[i].x;
+    if (v[i].y < y0) y0 = (int)v[i].y;
+    if (v[i].y > y1) y1 = (int)v[i].y;
+  }
+  if (x0 < d->cl - d->ox) x0 = d->cl - d->ox;                      // clip to the DC (the clip rectangle is in surface coordinates)
+  if (y0 < d->ct - d->oy) y0 = d->ct - d->oy;
+  if (x1 > d->cr - d->ox) x1 = d->cr - d->ox;
+  if (y1 > d->cb - d->oy) y1 = d->cb - d->oy;
+  if (x1 <= x0 || y1 <= y0) {
+    return TRUE;
+  }
+  bp.alpha = 2;
+  bp.key = 0;
+  bp.constant = 255;
+  bp.perpixel = 0;
+  rt_memset(&tmp, 0, sizeof(tmp));
+  tmp.used = 1;
+  tmp.w = x1 - x0;
+  tmp.pix = rt_alloc((size_t)tmp.w * (size_t)bandh * 4);
+  if (tmp.pix == 0) {
+    return FALSE;
+  }
+  for (y = y0; y < y1 && ok; y += bandh) {
+    int rows = y1 - y < bandh ? y1 - y : bandh, r;
+
+    tmp.h = rows;
+    for (r = 0; r < rows; ++r) {
+      for (x = x0; x < x1; ++x) {
+        long c = gf_pixel(kind, v, x, y + r);
+
+        tmp.pix[(size_t)r * (size_t)tmp.w + (size_t)(x - x0)] = c < 0 ? 0u : (0xFF000000u | (uint32_t)c);
+      }
+    }
+    ok = blit(d, x0, y, tmp.w, rows, &tmp, 0, 0, tmp.w, rows, 0, &bp);
+  }
+  rt_free(tmp.pix);
+  return ok;
+}
+
+EXPORT BOOL WINAPI GradientFill(HDC hdc, PTRIVERTEX vert, ULONG nv, PVOID mesh, ULONG nm, ULONG mode) {
+  dc_t *d = gdi_dc(hdc);
+  ULONG i;
+  int per = mode == GRADIENT_FILL_TRIANGLE ? 3 : 2, k;
+
+  if (d == 0 || (d->sysid < 0 && d->bmp == 0) || vert == 0 || mesh == 0 || mode > GRADIENT_FILL_TRIANGLE || nv == 0) {
+    return FALSE;
+  }
+  for (i = 0; i < nm; ++i) {
+    const ULONG *ix = (const ULONG *)mesh + (size_t)i * (size_t)per;
+    gv_t v[3];
+
+    for (k = 0; k < per; ++k) {
+      if (ix[k] >= nv) {
+        return FALSE;
+      }
+      v[k].x = vert[ix[k]].x;
+      v[k].y = vert[ix[k]].y;
+      v[k].c[0] = vert[ix[k]].Red >> 8;
+      v[k].c[1] = vert[ix[k]].Green >> 8;
+      v[k].c[2] = vert[ix[k]].Blue >> 8;
+    }
+    if (!gf_shape(d, (int)mode, v)) {
+      return FALSE;
+    }
+  }
+  return TRUE;
 }
 
 // msimg32: copy a source without the pixels of one colour, and blend a source over the destination.

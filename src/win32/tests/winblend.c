@@ -56,6 +56,17 @@ static void mem_checks(void) {
   CHECK(6, GetPixel(dc, 0, 0) == RGB(255, 0, 0) && GetPixel(dc, 3, 3) == RGB(0, 0, 255));                     // the magenta half left the destination alone
   fill(dc, 0, 0, 4, 4, RGB(0, 0, 255));
   CHECK(7, TransparentBlt(dc, 0, 0, 2, 4, sd, 0, 0, 4, 4, RGB(255, 0, 255)) && GetPixel(dc, 0, 0) == RGB(255, 0, 0) && GetPixel(dc, 1, 3) == RGB(0, 0, 255));       // shrunk to half: the columns sampled are red and magenta
+  {                                                                                                           // GradientFill into an 11 x 1 bitmap: black to white
+    HBITMAP gb = CreateCompatibleBitmap(dc, 11, 1), gold = (HBITMAP)SelectObject(dc, gb);
+    TRIVERTEX tv[2] = {{0, 0, 0, 0, 0, 0}, {11, 1, 0xFF00, 0xFF00, 0xFF00, 0}};
+    GRADIENT_RECT gr = {0, 1};
+    ULONG bad[2] = {0, 5};
+
+    CHECK(19, GradientFill(dc, tv, 2, &gr, 1, GRADIENT_FILL_RECT_H) && GetPixel(dc, 0, 0) == RGB(0, 0, 0) && GetPixel(dc, 10, 0) == RGB(255, 255, 255) && GetPixel(dc, 5, 0) == RGB(127, 127, 127));
+    CHECK(20, !GradientFill(dc, tv, 2, &gr, 1, 7) && !GradientFill(dc, tv, 2, bad, 1, GRADIENT_FILL_RECT_H));    // a bad mode, a bad vertex index
+    SelectObject(dc, gold);
+    DeleteObject(gb);
+  }
   SelectObject(sd, sold);
   SelectObject(dc, dold);
   DeleteObject(db);
@@ -114,6 +125,19 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
       SelectObject(td, told);
       DeleteObject(tb);
       DeleteDC(td);
+      {                                                                                                       // gradients: red to blue across, black to white down, a triangle
+        TRIVERTEX hv[2] = {{10, 120, 0xFF00, 0, 0, 0}, {110, 140, 0, 0, 0xFF00, 0}};
+        TRIVERTEX vv[2] = {{120, 120, 0, 0, 0, 0}, {140, 180, 0xFF00, 0xFF00, 0xFF00, 0}};
+        TRIVERTEX tr[3] = {{200, 120, 0xFF00, 0, 0, 0}, {260, 180, 0, 0xFF00, 0, 0}, {200, 180, 0, 0, 0xFF00, 0}};
+        GRADIENT_RECT gr = {0, 1};
+        GRADIENT_TRIANGLE gt = {0, 1, 2};
+
+        CHECK(21, GradientFill(dc, hv, 2, &gr, 1, GRADIENT_FILL_RECT_H) && GradientFill(dc, vv, 2, &gr, 1, GRADIENT_FILL_RECT_V));
+        CHECK(22, GetPixel(dc, 10, 125) == RGB(255, 0, 0) && GetPixel(dc, 109, 125) == RGB(0, 0, 255) && GetPixel(dc, 60, 125) == RGB(126, 0, 128) && GetPixel(dc, 110, 125) == RGB(200, 220, 255));
+        CHECK(23, GetPixel(dc, 130, 120) == RGB(0, 0, 0) && GetPixel(dc, 130, 179) == RGB(255, 255, 255) && GetPixel(dc, 130, 180) == RGB(200, 220, 255));
+        CHECK(24, GradientFill(dc, tr, 3, &gt, 1, GRADIENT_FILL_TRIANGLE));
+        CHECK(25, GetPixel(dc, 255, 125) == RGB(200, 220, 255) && GetPixel(dc, 202, 178) != RGB(200, 220, 255) && GetPixel(dc, 202, 178) != CLR_INVALID);
+      }
       DeleteObject(key);
       DeleteObject(blue);
       if (sect != 0) DeleteObject(sect);

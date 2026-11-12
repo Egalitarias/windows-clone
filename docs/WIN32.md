@@ -265,9 +265,14 @@ colour, which leave the destination alone. `AlphaBlend` blends a source over the
 constant alpha of the `BLENDFUNCTION` (0 to 255) and, with `AC_SRC_ALPHA`, the source's own premultiplied
 alpha (the top byte of a 32-bit bitmap, as in a `CreateDIBSection` bitmap); only `AC_SRC_OVER` exists, any
 other blend operation or flag returns `FALSE`. Both work onto windows and memory DCs. `msimg32.dll` is
-one more name the loader binds to `WIN32.DLL`; link with `msimg32.lib`. `GradientFill` is not there.
+one more name the loader binds to `WIN32.DLL`; link with `msimg32.lib`.
 
-Not there: `CreateDIBSection` for anything but 32 bits, `MaskBlt`, `PlgBlt`, `GradientFill`,
+`GradientFill` draws `GRADIENT_FILL_RECT_H`, `RECT_V` and `TRIANGLE` meshes (colours are the 16-bit `TRIVERTEX`
+values, the top byte is used). Rectangle ends are exact: the first and last pixel have the vertex colours. A
+triangle is shaded with barycentric weights at the pixel centres. Coordinates are device coordinates (there
+is no world transform), and drawing is clipped to the DC. A bad mode or vertex index returns `FALSE`.
+
+Not there: `CreateDIBSection` for anything but 32 bits, `MaskBlt`, `PlgBlt`,
 `SetStretchBltMode` smoothing (always nearest), palettes, brush patterns
 (`CreatePatternBrush`, `CreateDIBPatternBrush`), icons and cursors as images, device-dependent bitmap
 bit access (`GetBitmapBits`).
@@ -509,9 +514,9 @@ virtual FAT drive is not a good place for that). It runs, on the real desktop:
   text into a bitmap, a monochrome bitmap. 30 checks read pixels back from memory DCs; the kernel
   checks pixels of the blits onto the window (a resource scaled 20 times, mirrored, `NOTSRCCOPY`,
   `BLACKNESS`) and `SRCINVERT` onto the window (which reads its old pixels back); exit code = bit mask of failures;
-- `WINBLEND.EXE` (`tests/winblend.c`): `TransparentBlt` and `AlphaBlend` onto a window (plain, stretched,
-  constant alpha, per-pixel alpha from a DIB section) and between memory DCs, a window as a `BitBlt` source,
-  `GetPixel` on a window; the kernel checks the pixels of the surface; 19 checks in the program, exit code =
+- `WINBLEND.EXE` (`tests/winblend.c`): `TransparentBlt`, `AlphaBlend` and `GradientFill` onto a window (plain, stretched,
+  constant alpha, per-pixel alpha from a DIB section, gradient rectangles and a triangle) and between memory DCs, a window as a `BitBlt` source,
+  `GetPixel` on a window; the kernel checks the pixels of the surface; 25 checks in the program, exit code =
   bit mask of failures;
 - `WINDLG.EXE` (`tests/windlg.c`, `windlg.rc`): a `DIALOGEX`, a menu, accelerators and a string table
   compiled into the program; a modal `DialogBoxParam` driven by the kernel (typing, a click, Tab,
