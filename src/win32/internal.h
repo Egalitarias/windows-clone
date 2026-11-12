@@ -189,13 +189,25 @@ typedef struct {
   int bkmode, align;
   HGDIOBJ pen, brush, font;
   int px, py;                    // current position (MoveToEx / LineTo)
+  int ox, oy;                    // where the window's (0,0) is on the surface (a child window's place)
+  int cl, ct, cr, cb;            // clip rectangle, in surface coordinates
 } dc_t;
 
-dc_t *gdi_dc_alloc(int sysid);
+dc_t *gdi_dc_alloc(int sysid, int ox, int oy, const RECT *clip);
 void gdi_dc_free(dc_t *dc);
 dc_t *gdi_dc(HDC h);
 COLORREF gdi_sys_color(int index);
 HBRUSH gdi_sys_brush(int index);
 unsigned long rt_colorref_to_rgb(COLORREF c);
+void gdi_fill(dc_t *d, int x, int y, int w, int h, uint32_t rgb);
+void gdi_text(dc_t *d, int x, int y, const char *s, int n, uint32_t rgb);
+
+// ---- controls.c: the standard controls (BUTTON, STATIC, EDIT, LISTBOX), registered as window classes ----
+void rt_controls_register(void);
+// user32.c: what a control keeps with its window.
+void *rt_wnd_ctl(HWND h);
+void rt_wnd_set_ctl(HWND h, void *p);
+const char *rt_wnd_text(HWND h);
+void rt_wnd_set_text(HWND h, const char *t);
 
 #endif

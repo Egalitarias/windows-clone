@@ -73,24 +73,67 @@ headers). Highlights:
   `PostQuitMessage`, `DefWindowProc`, `InvalidateRect`, `BeginPaint`/`EndPaint`, `GetDC`/`ReleaseDC`,
   `SetTimer`/`KillTimer`, `GetClientRect`, `MoveWindow`/`SetWindowPos`, `SetWindowText`,
   `Get/SetWindowLong(Ptr)`, `GetSystemMetrics`, `GetKeyState`, `MessageBoxA` (a window of its own with
-  the standard button sets), `wsprintfA`.
+  the standard button sets), `wsprintfA`; child windows and the dialog helpers (`GetDlgItem`,
+  `Set/GetDlgItemText`, `Set/GetDlgItemInt`, `CheckDlgButton`, `CheckRadioButton`, `IsDialogMessage`,
+  `EnumChildWindows`, `GetWindow`, `GetParent`, `SetFocus`, `SetCapture`, `ClientToScreen`...).
 - **gdi32**: device contexts, solid brushes, pens, stock objects, `FillRect`, `FrameRect`, `Rectangle`,
   `Ellipse`, `MoveToEx`/`LineTo`, `Polyline`, `SetPixel`, `PatBlt`, `TextOutA`, `ExtTextOutA`, `DrawTextA`,
   `GetTextExtentPoint32A`, `GetTextMetricsA`, `SetTextColor`, `SetBkColor`, `SetBkMode`, `GetDeviceCaps`.
 
 Windows are WinClone windows: a pixel surface per window, at most 800 x 600 client pixels, two
-windows per program, drawn with the window syscalls (so there is no clipping, and text is the
-built-in 8x8 font). Input events become messages: a key press gives `WM_KEYDOWN`, `WM_CHAR` and
+top-level windows per program, drawn with the window syscalls (text is the built-in 8x8 font). Input events become messages: a key press gives `WM_KEYDOWN`, `WM_CHAR` and
 `WM_KEYUP` together (so `TranslateMessage` does nothing), the left button gives `WM_LBUTTONDOWN/UP`
 and `WM_MOUSEMOVE` (moves only while the button is held), the wheel `WM_MOUSEWHEEL`, a resize `WM_SIZE`,
 the close button `WM_CLOSE`. `WM_PAINT` is generated for invalidated windows; `BeginPaint` sends
 `WM_ERASEBKGND` and the default procedure fills with the class brush.
 
-Missing on purpose (for now): child windows and the standard controls (`BUTTON`, `EDIT`, ...), menus,
-dialogs, memory DCs and bitmaps (`CreateCompatibleDC`, `BitBlt`), clipboard, resources, fonts other
+Missing on purpose (for now): `COMBOBOX` and `SCROLLBAR` controls, menus, dialog templates
+(`DialogBox`, resources), memory DCs and bitmaps (`CreateCompatibleDC`, `BitBlt`), clipboard, resources, fonts other
 than the built-in one, right and middle mouse buttons, wide-character (`W`) window functions
 (only `DefWindowProcW`, `GetMessageW`, ...), real wall-clock time (time counts from 2026-01-01 at
 boot), environment variables, and anything about sockets.
+
+## Child windows and standard controls
+
+`CreateWindowEx` with `WS_CHILD` makes a child window: up to 64 windows per program, in a tree with
+a z-order (creation order). A child has no surface of its own. It draws on its top-level window's,
+through a device context whose origin is the child's place in the window and whose clip rectangle is
+its client area cut by its ancestors', so a control never draws outside itself and `ClientToScreen`,
+`GetWindowRect`, `MapWindowPoints` work in the top-level window's client coordinates. Behaviour that
+matches Windows:
+
+- **Painting.** `WM_PAINT` goes to the first shown window that needs it, parents before children.
+  When a window is painted its children are painted again over it (there is no `WS_CLIPCHILDREN`),
+  so a parent that erases its background does not hide its controls. Hiding, moving or destroying a
+  child repaints the parent behind it.
+- **Mouse.** A click goes to the topmost visible, enabled child under the pointer, with coordinates
+  of that child; `SetCapture` sends everything to one window until `ReleaseCapture`. Disabled
+  windows get no mouse input.
+- **Keyboard.** Keys go to the window with the focus (`SetFocus`, `WM_SETFOCUS`/`WM_KILLFOCUS`; a
+  control takes the focus when clicked). Mouse and keyboard input is aimed when the message is
+  taken from the queue, not when it arrives, so a click that moves the focus decides where the keys
+  typed right after it go. `IsDialogMessage` does what dialogs do: Tab and Shift+Tab move between
+  the controls with `WS_TABSTOP`, Enter presses the focused or the default push button, Escape sends
+  `IDCANCEL`.
+- **Notifications** go to the parent as `WM_COMMAND` (`MAKEWPARAM(id, code)`, the control's handle
+  in `lParam`), and before painting a control sends `WM_CTLCOLORBTN/STATIC/EDIT/LISTBOX` to its
+  parent, so applications choose the colors (the default procedure answers with the usual button
+  face and window colors).
+
+The classes are registered when the first window is created (`src/win32/controls.c`):
+
+| class | styles and messages |
+| --- | --- |
+| `BUTTON` | push buttons (`BS_PUSHBUTTON`, `BS_DEFPUSHBUTTON`), check boxes (plain, auto, 3-state), radio buttons (plain and auto, with `WS_GROUP` groups), `BS_GROUPBOX`, `BS_PUSHLIKE`; `BM_GETCHECK/SETCHECK/GETSTATE/SETSTATE/CLICK`; `BN_CLICKED`; Space presses it |
+| `STATIC` | `SS_LEFT/CENTER/RIGHT/SIMPLE/LEFTNOWORDWRAP` text with word wrap, `&` mnemonics stripped (`SS_NOPREFIX`), `SS_CENTERIMAGE`, black/gray/white rectangles and frames, etched lines and frames, `SS_NOTIFY` (`STN_CLICKED`/`STN_DBLCLK`) |
+| `EDIT` | single line and `ES_MULTILINE`; caret, selection (keys with Shift, mouse drag, double click selects a word, Ctrl+A), Home/End/arrows/Delete/Backspace, Ctrl+C/X/V through the system clipboard, `ES_PASSWORD`, `ES_READONLY`, `ES_NUMBER`, `ES_UPPERCASE/LOWERCASE`, scrolling both ways, mouse wheel; `EM_GETSEL/SETSEL/REPLACESEL/LIMITTEXT/GETLINECOUNT/LINEFROMCHAR/LINEINDEX/LINELENGTH/GETLINE/SETREADONLY/GETMODIFY/SETMODIFY/SCROLLCARET/SETPASSWORDCHAR/LINESCROLL`, `WM_CUT/COPY/PASTE/CLEAR`; `EN_CHANGE`, `EN_SETFOCUS`, `EN_KILLFOCUS` |
+| `LISTBOX` | single, multiple and extended selection, `LBS_SORT`, `LBS_NOTIFY` (`LBN_SELCHANGE`, `LBN_DBLCLK`); a scroll bar (arrows, track, draggable thumb), wheel, Up/Down/PageUp/PageDown/Home/End, type-ahead; `LB_ADDSTRING/INSERTSTRING/DELETESTRING/RESETCONTENT/GETCOUNT/GETCURSEL/SETCURSEL/GETSEL/SETSEL/GETSELCOUNT/GETSELITEMS/GETTEXT/GETTEXTLEN/FINDSTRING/FINDSTRINGEXACT/SELECTSTRING/GETITEMDATA/SETITEMDATA/GETTOPINDEX/SETTOPINDEX/GETITEMRECT/ITEMFROMPOINT` |
+
+Characters are 8 x 8 pixels, so a control sized for a proportional font shows less text than on
+Windows; `WM_SETFONT` is remembered but changes nothing. A multi-line edit keeps `\n` internally and
+hands out `\r\n`, and its selection positions count a line end as one character. Not there:
+owner-drawn controls, tooltips, accelerators, undo, `WS_BORDER`/`WS_EX_CLIENTEDGE` for windows
+that do not draw their own frame (controls always draw theirs), `SetParent`, an MDI client.
 
 ## The C runtime
 
@@ -295,11 +338,17 @@ virtual FAT drive is not a good place for that). It runs, on the real desktop:
 - `WINFP.EXE` three at once: long floating-point computations that must repeat exactly while the
   others run (fails if the SSE state is not saved per task: checked by disabling the save);
 - `WINMSG.EXE`: `MessageBoxA`; Enter returns `IDYES`;
+- `WINCTL.EXE` (`tests/winctl.c`): the standard controls. The kernel clicks, types, presses Tab,
+  Space and Enter and double-clicks; pixels of every control and a custom child window are checked
+  (class brush, STATIC, EDIT, BUTTON, LISTBOX with its scroll bar, device context origin), and the
+  program checks 32 things (dialog item API, notifications, radio groups, focus, `IsDialogMessage`,
+  disabled windows, `ES_NUMBER`, multi-line edit, child coordinates) and exits with a bit mask of the
+  ones that failed (0 = all passed);
 - `WINGUI.EXE`: window class, `WM_PAINT` with GDI (pixels are checked), mouse clicks, typed
   characters, a timer and `PostQuitMessage` (the exit code encodes what it saw);
 - six more runs and a leak check (image, DLL and heap are freed).
 
-`USER_SELFTEST=11` just starts `WINGUI.EXE` and `WINMSG.EXE` and leaves them on the desktop, for a
+`USER_SELFTEST=11` just starts `WINCTL.EXE` and leaves it on the desktop, for a
 screenshot (`python scripts/qemu-screenshot.py out/run/shot.png 28`).
 
 ## Limits worth knowing
@@ -309,4 +358,4 @@ screenshot (`python scripts/qemu-screenshot.py out/run/shot.png 28`).
 - Programs larger than about 900 KB (together with the runtime) do not fit the load window.
 - Not a Windows compatibility layer in the sense of running arbitrary software: it runs programs
   that stay inside the subset above. Programs from real toolchains that link the CRT, use
-  the C++ standard library, or draw with bitmaps and controls will not get far yet.
+  the C++ standard library, or draw with bitmaps, menus and dialogs will not get far yet.

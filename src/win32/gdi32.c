@@ -109,7 +109,7 @@ static int brush_color(HBRUSH b, unsigned long *rgb) {
 
 // ---- Device contexts -----------------------------------------------------------------------------
 
-dc_t *gdi_dc_alloc(int sysid) {
+dc_t *gdi_dc_alloc(int sysid, int ox, int oy, const RECT *clip) {
   int i;
 
   stock_init();
@@ -120,6 +120,12 @@ dc_t *gdi_dc_alloc(int sysid) {
       rt_memset(d, 0, sizeof(*d));
       d->used = 1;
       d->sysid = sysid;
+      d->ox = ox;
+      d->oy = oy;
+      d->cl = clip->left;
+      d->ct = clip->top;
+      d->cr = clip->right;
+      d->cb = clip->bottom;
       d->text = RGB(0, 0, 0);
       d->bk = RGB(255, 255, 255);
       d->bkmode = OPAQUE;
@@ -144,27 +150,61 @@ dc_t *gdi_dc(HDC h) {
   return (d >= g_dc && d < g_dc + MAX_DCS && d->used) ? d : 0;
 }
 
-void gdi_fill(int sysid, int x, int y, int w, int h, uint32_t rgb) {
+// Everything drawn goes through these two: the device context's origin (a child window's place on
+// its top-level window's surface) is added and the clip rectangle applied.
+void gdi_fill(dc_t *d, int x, int y, int w, int h, uint32_t rgb) {
   sc_winop_t op;
+  int x1, y1;
 
-  if (w <= 0 || h <= 0) {
+  x += d->ox;
+  y += d->oy;
+  x1 = x + w;
+  y1 = y + h;
+  if (x < d->cl) x = d->cl;
+  if (y < d->ct) y = d->ct;
+  if (x1 > d->cr) x1 = d->cr;
+  if (y1 > d->cb) y1 = d->cb;
+  if (x1 <= x || y1 <= y) {
     return;
   }
-  op.x = x; op.y = y; op.w = w; op.h = h; op.color = rgb; op.scale = 0; op.ptr = 0;
-  sc3(KS_WIN_FILL, sysid, (sl_t)&op, 0);
+  op.x = x; op.y = y; op.w = x1 - x; op.h = y1 - y; op.color = rgb; op.scale = 0; op.ptr = 0;
+  sc3(KS_WIN_FILL, d->sysid, (sl_t)&op, 0);
 }
 
-void gdi_text(int sysid, int x, int y, const char *s, int n, uint32_t rgb) {
+static void text_out(dc_t *d, int x, int y, const char *s, int n, uint32_t rgb) {
   char buf[256];
   sc_winop_t op;
 
-  if (n > 255) {
-    n = 255;
-  }
   rt_memcpy(buf, s, (size_t)n);
   buf[n] = 0;
   op.x = x; op.y = y; op.w = 0; op.h = 0; op.color = rgb; op.scale = 1; op.ptr = (uint64_t)(uintptr_t)buf;
-  sc3(KS_WIN_TEXT, sysid, (sl_t)&op, 0);
+  sc3(KS_WIN_TEXT, d->sysid, (sl_t)&op, 0);
+}
+
+void gdi_text(dc_t *d, int x, int y, const char *s, int n, uint32_t rgb) {
+  x += d->ox;
+  y += d->oy;
+  if (n > 255) {
+    n = 255;
+  }
+  if (n <= 0 || y < d->ct || y + 8 > d->cb || x >= d->cr || x + n * 8 <= d->cl) {
+    return;                                   // (a character cell is drawn whole or not at all)
+  }
+  if (x >= d->cl && x + n * 8 <= d->cr) {
+    text_out(d, x, y, s, n, rgb);
+    return;
+  }
+  while (n > 0 && x < d->cl) {                // clipped at the sides: the cells that fit
+    ++s;
+    --n;
+    x += 8;
+  }
+  while (n > 0 && x + n * 8 > d->cr) {
+    --n;
+  }
+  if (n > 0) {
+    text_out(d, x, y, s, n, rgb);
+  }
 }
 
 EXPORT int WINAPI SaveDC(HDC dc) { (void)dc; return 1; }
@@ -290,9 +330,9 @@ EXPORT BOOL WINAPI TextOutA(HDC h, int x, int y, LPCSTR s, int n) {
     x -= w;
   }
   if (d->bkmode == OPAQUE) {
-    gdi_fill(d->sysid, x, y, w, 8, (uint32_t)rt_colorref_to_rgb(d->bk));
+    gdi_fill(d, x, y, w, 8, (uint32_t)rt_colorref_to_rgb(d->bk));
   }
-  gdi_text(d->sysid, x, y, s, n, (uint32_t)rt_colorref_to_rgb(d->text));
+  gdi_text(d, x, y, s, n, (uint32_t)rt_colorref_to_rgb(d->text));
   return TRUE;
 }
 
@@ -304,7 +344,7 @@ EXPORT BOOL WINAPI ExtTextOutA(HDC h, int x, int y, UINT opts, const RECT *r, LP
     return FALSE;
   }
   if ((opts & ETO_OPAQUE) && r != 0) {
-    gdi_fill(d->sysid, r->left, r->top, r->right - r->left, r->bottom - r->top, (uint32_t)rt_colorref_to_rgb(d->bk));
+    gdi_fill(d, r->left, r->top, r->right - r->left, r->bottom - r->top, (uint32_t)rt_colorref_to_rgb(d->bk));
   }
   return s != 0 ? TextOutA(h, x, y, s, (int)n) : TRUE;
 }
@@ -373,9 +413,9 @@ EXPORT int WINAPI DrawTextA(HDC h, LPCSTR text, int n, LPRECT r, UINT fmt) {
       x = r->right - tw;
     }
     if (d->bkmode == OPAQUE) {
-      gdi_fill(d->sysid, x, y, tw, 8, (uint32_t)rt_colorref_to_rgb(d->bk));
+      gdi_fill(d, x, y, tw, 8, (uint32_t)rt_colorref_to_rgb(d->bk));
     }
-    gdi_text(d->sysid, x, y, text + ln[i].start, ln[i].len, (uint32_t)rt_colorref_to_rgb(d->text));
+    gdi_text(d, x, y, text + ln[i].start, ln[i].len, (uint32_t)rt_colorref_to_rgb(d->text));
     y += 10;
   }
   return lines * 10;
@@ -390,7 +430,7 @@ EXPORT int WINAPI FillRect(HDC h, const RECT *r, HBRUSH b) {
   if (d == 0 || !brush_color(b, &rgb)) {
     return 0;
   }
-  gdi_fill(d->sysid, r->left, r->top, r->right - r->left, r->bottom - r->top, (uint32_t)rgb);
+  gdi_fill(d, r->left, r->top, r->right - r->left, r->bottom - r->top, (uint32_t)rgb);
   return 1;
 }
 
@@ -402,10 +442,10 @@ EXPORT int WINAPI FrameRect(HDC h, const RECT *r, HBRUSH b) {
   if (d == 0 || !brush_color(b, &rgb)) {
     return 0;
   }
-  gdi_fill(d->sysid, r->left, r->top, w, 1, (uint32_t)rgb);
-  gdi_fill(d->sysid, r->left, r->bottom - 1, w, 1, (uint32_t)rgb);
-  gdi_fill(d->sysid, r->left, r->top, 1, ht, (uint32_t)rgb);
-  gdi_fill(d->sysid, r->right - 1, r->top, 1, ht, (uint32_t)rgb);
+  gdi_fill(d, r->left, r->top, w, 1, (uint32_t)rgb);
+  gdi_fill(d, r->left, r->bottom - 1, w, 1, (uint32_t)rgb);
+  gdi_fill(d, r->left, r->top, 1, ht, (uint32_t)rgb);
+  gdi_fill(d, r->right - 1, r->top, 1, ht, (uint32_t)rgb);
   return 1;
 }
 
@@ -423,7 +463,7 @@ EXPORT BOOL WINAPI PatBlt(HDC h, int x, int y, int w, int ht, DWORD rop) {
   } else if (!brush_color((HBRUSH)d->brush, &rgb)) {
     return TRUE;
   }
-  gdi_fill(d->sysid, x, y, w, ht, (uint32_t)rgb);
+  gdi_fill(d, x, y, w, ht, (uint32_t)rgb);
   return TRUE;
 }
 
@@ -447,13 +487,13 @@ EXPORT BOOL WINAPI Rectangle(HDC h, int l, int t, int r, int b) {
     return FALSE;
   }
   if (brush_color((HBRUSH)d->brush, &rgb)) {
-    gdi_fill(d->sysid, l, t, r - l, b - t, (uint32_t)rgb);
+    gdi_fill(d, l, t, r - l, b - t, (uint32_t)rgb);
   }
   if (pen_info(d, &rgb, &pw)) {
-    gdi_fill(d->sysid, l, t, r - l, pw, (uint32_t)rgb);
-    gdi_fill(d->sysid, l, b - pw, r - l, pw, (uint32_t)rgb);
-    gdi_fill(d->sysid, l, t, pw, b - t, (uint32_t)rgb);
-    gdi_fill(d->sysid, r - pw, t, pw, b - t, (uint32_t)rgb);
+    gdi_fill(d, l, t, r - l, pw, (uint32_t)rgb);
+    gdi_fill(d, l, b - pw, r - l, pw, (uint32_t)rgb);
+    gdi_fill(d, l, t, pw, b - t, (uint32_t)rgb);
+    gdi_fill(d, r - pw, t, pw, b - t, (uint32_t)rgb);
   }
   return TRUE;
 }
@@ -502,13 +542,13 @@ EXPORT BOOL WINAPI Ellipse(HDC h, int l, int t, int r, int b) {
     int x0 = cx - (int)span, x1 = cx + (int)span;
 
     if (fill) {
-      gdi_fill(d->sysid, x0, cy + y, x1 - x0, 1, (uint32_t)frgb);
+      gdi_fill(d, x0, cy + y, x1 - x0, 1, (uint32_t)frgb);
     }
     if (pen) {
       int edge = pw > (int)span ? (int)span : pw;
 
-      gdi_fill(d->sysid, x0, cy + y, edge > 0 ? edge : 1, 1, (uint32_t)prgb);
-      gdi_fill(d->sysid, x1 - (edge > 0 ? edge : 1), cy + y, edge > 0 ? edge : 1, 1, (uint32_t)prgb);
+      gdi_fill(d, x0, cy + y, edge > 0 ? edge : 1, 1, (uint32_t)prgb);
+      gdi_fill(d, x1 - (edge > 0 ? edge : 1), cy + y, edge > 0 ? edge : 1, 1, (uint32_t)prgb);
     }
   }
   return TRUE;
@@ -545,11 +585,11 @@ EXPORT BOOL WINAPI LineTo(HDC h, int x1, int y1) {
     return TRUE;
   }
   if (y0 == y1) {                                        // horizontal: one rectangle
-    gdi_fill(d->sysid, x0 < x1 ? x0 : x1, y0 - pw / 2, (x0 < x1 ? x1 - x0 : x0 - x1) + 1, pw, (uint32_t)rgb);
+    gdi_fill(d, x0 < x1 ? x0 : x1, y0 - pw / 2, (x0 < x1 ? x1 - x0 : x0 - x1) + 1, pw, (uint32_t)rgb);
     return TRUE;
   }
   if (x0 == x1) {
-    gdi_fill(d->sysid, x0 - pw / 2, y0 < y1 ? y0 : y1, pw, (y0 < y1 ? y1 - y0 : y0 - y1) + 1, (uint32_t)rgb);
+    gdi_fill(d, x0 - pw / 2, y0 < y1 ? y0 : y1, pw, (y0 < y1 ? y1 - y0 : y0 - y1) + 1, (uint32_t)rgb);
     return TRUE;
   }
   dx = x1 > x0 ? x1 - x0 : x0 - x1;
@@ -558,7 +598,7 @@ EXPORT BOOL WINAPI LineTo(HDC h, int x1, int y1) {
   sy = y0 < y1 ? 1 : -1;
   err = dx + dy;
   for (;;) {
-    gdi_fill(d->sysid, x0 - pw / 2, y0 - pw / 2, pw, pw, (uint32_t)rgb);
+    gdi_fill(d, x0 - pw / 2, y0 - pw / 2, pw, pw, (uint32_t)rgb);
     if (x0 == x1 && y0 == y1) {
       break;
     }
@@ -593,7 +633,7 @@ EXPORT COLORREF WINAPI SetPixel(HDC h, int x, int y, COLORREF c) {
   if (d == 0) {
     return CLR_INVALID;
   }
-  gdi_fill(d->sysid, x, y, 1, 1, (uint32_t)rt_colorref_to_rgb(c));
+  gdi_fill(d, x, y, 1, 1, (uint32_t)rt_colorref_to_rgb(c));
   return c;
 }
 

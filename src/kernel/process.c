@@ -2390,6 +2390,11 @@ static int pe_expect(int ok, const char *what) {
   return ok ? 0 : 1;
 }
 
+static void pe_click(int x, int y) {
+  syswin_test_inject(SYSWIN_EV_MOUSE_DOWN, x, y, 0);
+  syswin_test_inject(SYSWIN_EV_MOUSE_UP, x, y, 0);
+}
+
 static int pe_wait_for(int (*cond)(void), int ticks) {
   while (ticks-- > 0 && !cond()) {
     wait_one_tick();
@@ -2407,6 +2412,14 @@ static int cond_pe_blue_text(void) { return syswin_test_count(0x000000FFu) > 40;
 static int cond_pe_marker(void) { return syswin_test_pixel(300, 150) == 0x0028C828; }     // drawn at the click position
 static int cond_pe_typed(void) { return syswin_test_count(0x00FF00FFu) > 20; }            // typed characters
 
+// WINCTL.EXE (the standard controls): what each control draws.
+static int cond_ctl_bg(void) { return syswin_test_pixel(300, 10) == 0x00C8DCFF; }          // the window class brush
+static int cond_ctl_static(void) { return syswin_test_pixel(58, 12) == 0x00F0F0F0; }        // STATIC: the button face color
+static int cond_ctl_edit(void) { return syswin_test_pixel(200, 20) == 0x00FFFFFF; }        // EDIT: white inside
+static int cond_ctl_button(void) { return syswin_test_pixel(20, 45) == 0x00F0F0F0; }       // BUTTON
+static int cond_ctl_panel(void) { return syswin_test_pixel(350, 215) == 0x00C82828; }      // a custom child window, translated
+static int cond_ctl_list(void) { return syswin_test_pixel(320, 60) == 0x00FFFFFF; }        // LISTBOX
+static int cond_ctl_scroll(void) { return syswin_test_pixel(342, 90) == 0x00CDCDCD; }      // its scroll bar thumb
 static int cond_pe_msgbox(void) { return syswin_test_count(0x003A78D6u) > 1000; }   // the default button
 
 static int pe_supervisor_task(void *arg) {
@@ -2496,6 +2509,54 @@ static int pe_supervisor_task(void *arg) {
   failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 6, "MessageBoxA returned IDYES when Enter was pressed");
   failures += pe_expect(pe_wait_for(cond_pe_no_windows, 500), "the message box window was released");
 
+  // Standard controls: child windows, buttons, edit, list box, focus, Tab and Enter.
+  while (desktop_loop_count() < 3) {
+    wait_one_tick();
+  }
+  h = process_spawn("/APPS/WINCTL.EXE");
+  failures += pe_expect(h >= 0 && pe_wait_for(cond_pe_window, 500), "WINCTL.EXE: its window appeared");
+  failures += pe_expect(pe_wait_for(cond_ctl_bg, 500), "controls: the parent window was erased with its class brush");
+  failures += pe_expect(pe_wait_for(cond_ctl_static, 500), "controls: STATIC drew its background");
+  failures += pe_expect(pe_wait_for(cond_ctl_edit, 500), "controls: EDIT drew white inside");
+  failures += pe_expect(pe_wait_for(cond_ctl_button, 500), "controls: BUTTON drew its face");
+  failures += pe_expect(pe_wait_for(cond_ctl_panel, 500), "controls: a custom child window painted at its place (device context origin)");
+  failures += pe_expect(pe_wait_for(cond_ctl_list, 500), "controls: LISTBOX drew white inside");
+  failures += pe_expect(pe_wait_for(cond_ctl_scroll, 500), "controls: LISTBOX drew its scroll bar thumb");
+  pe_click(50, 52);                                                      // OK
+  pe_click(140, 52);                                                     // the disabled button
+  pe_click(15, 78);                                                      // the check box
+  pe_click(15, 123);                                                     // the second radio button
+  pe_click(80, 17);                                                      // into the edit control, after the 'a'
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 'x');
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 'y');
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 'z');
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 8);                           // backspace
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 9);                         // Tab: to the OK button
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, ' ');                          // space presses it
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 10);                         // Enter presses the default button
+  pe_click(50, 170);                                                     // the ES_NUMBER edit control
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, '4');
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 'a');
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, '2');
+  pe_click(210, 72);                                                     // list item 2
+  pe_click(210, 84);                                                     // list item 3, then a double click on it
+  syswin_test_inject(SYSWIN_EV_MOUSE_DOWN, 210, 84, 0);
+  syswin_test_inject(SYSWIN_EV_MOUSE_DOUBLE, 210, 84, 0);
+  syswin_test_inject(SYSWIN_EV_MOUSE_UP, 210, 84, 0);
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 0x1F);                        // Down arrow
+  pe_click(310, 200);                                                    // the custom child window
+  for (a = 0; a < 40; ++a) {
+    wait_one_tick();
+  }
+  syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
+  code = 0xFFFFFFFFULL;
+  failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
+                        "controls: every check in the program passed (exit code = failed checks bit mask)");
+  if (code != 0) {
+    console_printf("[PE] WINCTL failed checks mask: 0x%x\r\n", (unsigned)code);
+  }
+  failures += pe_expect(pe_wait_for(cond_pe_no_windows, 500), "the controls window was released");
+
   // A windowed program: WinMain, window class, WM_PAINT with GDI, input and a timer. The desktop
   // task must be running (it is, as the idle callback).
   while (desktop_loop_count() < 3) {
@@ -2557,8 +2618,7 @@ static int pe_demo_task(void *arg) {
   while (desktop_loop_count() < 3) {
     wait_one_tick();
   }
-  process_spawn("/APPS/WINGUI.EXE");
-  process_spawn("/APPS/WINMSG.EXE");
+  process_spawn("/APPS/WINCTL.EXE");
   for (;;) {
     wait_one_tick();
   }
