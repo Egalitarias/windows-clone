@@ -1187,6 +1187,7 @@ void rt_comctl_register(void) {
     {TRACKBAR_CLASSA, trackbar_proc, CS_DBLCLKS},
     {UPDOWN_CLASSA, updown_proc, CS_DBLCLKS},
     {WC_TABCONTROLA, tab_proc, CS_DBLCLKS},
+    {WC_LISTVIEWA, rt_listview_proc, CS_DBLCLKS},
   };
   int i;
 

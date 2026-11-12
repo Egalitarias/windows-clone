@@ -2498,6 +2498,17 @@ static int cond_cc_first(void) {
 static int cond_cc_page(void) { return syswin_test_pixel(67, 65) == 0x00FFFFFF && syswin_test_pixel(12, 65) == 0x00F0F0F0; }   // a click in the channel moved the thumb a page
 static int cond_cc_drag(void) { return syswin_test_pixel(104, 65) == 0x00FFFFFF && syswin_test_pixel(67, 65) != 0x00FFFFFF; }  // the thumb was dragged to 5
 static int cond_cc_tab(void) { return syswin_test_pixel(30, 250) == 0x0000FF00; }                  // the second tab was selected
+// WINLV.EXE: a report list view at (10,10) 300x120 (header 18, rows 14, columns 100/80/80, a vertical scroll bar) and a list view at (10,140).
+static int cond_lv_first(void) {
+  return syswin_test_pixel(50, 10) == 0x00FFFFFF && syswin_test_pixel(50, 13) == 0x00F0F0F0 &&          // the header
+         syswin_test_pixel(105, 35) == 0x00FFFFFF && syswin_test_pixel(301, 60) == 0x00CDCDCD &&        // an item row, the scroll bar's thumb
+         syswin_test_pixel(301, 100) == 0x00F0F0F0;
+}
+static int cond_lv_sel2(void) { return syswin_test_pixel(105, 63) == 0x000078D7 && syswin_test_pixel(250, 63) == 0x00FFFFFF; }     // item 2: its label is highlighted, not the whole row
+static int cond_lv_sel4(void) { return syswin_test_pixel(105, 91) == 0x000078D7 && syswin_test_pixel(105, 63) == 0x00FFFFFF; }     // two Down keys: item 4
+static int cond_lv_scrolled(void) { return syswin_test_pixel(105, 30) == 0x000078D7; }          // the page click scrolled 66 pixels: item 4 sits under the header's edge
+static int cond_lv_sorted(void) { return syswin_test_pixel(105, 67) == 0x000078D7 && syswin_test_pixel(105, 30) != 0x000078D7; }   // sorted descending: the selected item moved to index 7
+static int cond_lv_list(void) { return syswin_test_pixel(86, 152) == 0x000078D7; }                // the list view's item 4, in its second column
 static int cond_pe_msgbox(void) { return syswin_test_count(0x003A78D6u) > 1000; }   // the default button
 
 static int pe_supervisor_task(void *arg) {
@@ -2916,6 +2927,39 @@ static int pe_supervisor_task(void *arg) {
     console_printf("[PE] WINCC failed checks mask: 0x%x\r\n", (unsigned)code);
   }
   failures += pe_expect(pe_wait_for(cond_pe_no_windows, 500), "the common controls window was released");
+
+  // List view: report and list views, selection, scrolling, header click, sorting.
+  while (desktop_loop_count() < 3) {
+    wait_one_tick();
+  }
+  h = process_spawn("/APPS/WINLV.EXE");
+  failures += pe_expect(h >= 0 && pe_wait_for(cond_pe_window, 500), "WINLV.EXE: its window appeared");
+  failures += pe_expect(pe_wait_for(cond_lv_first, 500), "list view: header, item rows and a scroll bar for the twelve items");
+  pe_click(50, 63);                                                      // item 2
+  failures += pe_expect(pe_wait_for(cond_lv_sel2, 500), "list view: a click selected the item (label highlighted)");
+  pe_pause(4);
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 0x1F);                        // Down, Down
+  pe_pause(4);
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 0x1F);
+  failures += pe_expect(pe_wait_for(cond_lv_sel4, 500), "list view: the arrow keys moved the selection");
+  pe_pause(4);
+  pe_click(301, 100);                                                    // the scroll bar's track below the thumb: a page down
+  failures += pe_expect(pe_wait_for(cond_lv_scrolled, 500), "list view: the scroll bar scrolled the items");
+  pe_pause(4);
+  pe_click(30, 18);                                                      // the first column's header: the program sorts the items
+  failures += pe_expect(pe_wait_for(cond_lv_sorted, 500), "list view: a header click (LVN_COLUMNCLICK) and LVM_SORTITEMS reordered the items");
+  pe_pause(4);
+  pe_click(60, 145);                                                     // the list view: second column
+  failures += pe_expect(pe_wait_for(cond_lv_list, 500), "list view: LVS_LIST flows the items into columns; a click selected one");
+  pe_pause(4);
+  syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
+  code = 0xFFFFFFFFULL;
+  failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
+                        "list view: every check in the program passed (exit code = failed checks bit mask)");
+  if (code != 0) {
+    console_printf("[PE] WINLV failed checks mask: 0x%x\r\n", (unsigned)code);
+  }
+  failures += pe_expect(pe_wait_for(cond_pe_no_windows, 500), "the list view window was released");
 
   // A windowed program: WinMain, window class, WM_PAINT with GDI, input and a timer. The desktop
   // task must be running (it is, as the idle callback).

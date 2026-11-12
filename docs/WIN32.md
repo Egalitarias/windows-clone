@@ -204,7 +204,25 @@ Link with `comctl32.lib`. They draw with the 8x8 font and the same 3D look as th
   (the parent can veto it) and `TCN_SELCHANGE` as `WM_NOTIFY`. The control does not hide or show pages: the
   program does that in the notification.
 
-Not there: list view, tree view, tool bar, header, rebar, tool tips, animation, date and month pickers, image
+- **List view** (`SysListView32`, `listview.c`): report view (columns with a header you can click, which sends
+  `LVN_COLUMNCLICK`, and drag the dividers of), list view (items flow down in columns), small-icon and icon
+  views (items flow across in cells; there are no image lists, so an item is its label). Up to 16 columns,
+  sub-item text, `LVCFMT_` alignment, `LVM_SETCOLUMNWIDTH` with `LVSCW_AUTOSIZE` / `_USEHEADER`. Selection with
+  the mouse (Ctrl toggles, Shift selects a range), the arrow keys, Home, End, Page Up/Down and Space,
+  `LVS_SINGLESEL`, `LVS_SHOWSELALWAYS`, a focus item with the dotted rectangle, `LVS_EX_FULLROWSELECT`,
+  `LVS_EX_GRIDLINES`, `LVS_EX_CHECKBOXES` (state image 1 = unchecked, 2 = checked; a click on the box or Space
+  toggles it). Items: `LVM_INSERTITEM`, `SETITEM`, `GETITEM`, `SETITEMTEXT`, `GETITEMTEXT`, `DELETEITEM`,
+  `DELETEALLITEMS`, `GETNEXTITEM` (all / focused / selected), `SETITEMSTATE`, `GETITEMSTATE`, `FINDITEM` (string,
+  partial, param), `SORTITEMS` (a callback on the item parameters; the selection and focus travel with the
+  items), `HITTEST`, `SUBITEMHITTEST`, `GETITEMRECT`, `GETSUBITEMRECT`, `ENSUREVISIBLE`, `SCROLL`,
+  `GETTOPINDEX`, `GETCOUNTPERPAGE`, colours. Notifications (`WM_NOTIFY`): `LVN_ITEMCHANGED` (selection and focus
+  changes, with old and new state), `LVN_DELETEITEM`, `LVN_DELETEALLITEMS`, `LVN_COLUMNCLICK`, `LVN_KEYDOWN`,
+  `NM_CLICK`, `NM_DBLCLK`, `NM_RETURN`. The list scrolls with the *frame scroll bars* of the control's window
+  (see "Scroll bars in the frame"): they appear when the content does not fit, in pixels. Not there: images and
+  icons, label editing, groups, tiles, `LVS_OWNERDATA`, column reordering, `LVN_ITEMCHANGING`,
+  `LVS_SORTASCENDING` at insertion, `LVM_GETHEADER` (the header is drawn by the control; the message returns 0).
+
+Not there: tree view, tool bar, header control, rebar, tool tips, animation, date and month pickers, image
 lists, custom draw, marquee progress, `UDS_AUTOBUDDY`, `UDS_ARROWKEYS`, thousands separators in up-down buddies,
 visual styles (always the classic look).
 
@@ -258,7 +276,7 @@ runs until `EndDialog`; the close button sends `IDCANCEL`.
 
 Dialog units are converted with 7 x 12 pixels per 4 x 8 units (`GetDialogBaseUnits`), larger than
 Windows' 8-point font, because characters here are 8 pixels wide. Not there: controls this runtime lacks
-(list views, tool bars and the like) in a template are skipped, `DS_` styles other than `DS_SETFONT` (the font is
+(tree views, tool bars and the like) in a template are skipped, `DS_` styles other than `DS_SETFONT` (the font is
 ignored), dialog placement from the template (the window manager places it), `DM_SETDEFID`, system
 modal and `MessageBox` owner disabling.
 
@@ -546,6 +564,11 @@ virtual FAT drive is not a good place for that). It runs, on the real desktop:
   and a status bar. The kernel clicks the channel, drags the thumb, clicks the up-down's arrows and a tab; pixels
   show the filled bar, the thumb, the status bar and the page the tab selected; the program checks its messages
   and notifications (18 checks), exit code = bit mask of failures;
+- `WINLV.EXE` (`tests/winlv.c`): a report list view with twelve items (so it needs a scroll bar) and a list view. The
+  program checks the message API on a scratch list view (items, sub-items, state, find, hit test, rectangles,
+  sorting, columns, check boxes); the kernel clicks an item, moves the selection with the arrow keys, clicks the
+  scroll bar's track and a column header (the program sorts), and clicks the list view; pixels show the header, the
+  highlight and the scrolling, and the program counts its notifications (24 checks), exit code = bit mask of failures;
 - `WINBMP.EXE` (`tests/winbmp.c`, `winbmp.rc`, `pic.bmp`): memory DCs and bitmaps: raster operations,
   stretching and mirroring, DIB sections, `SetDIBits`/`GetDIBits`/`StretchDIBits`, a bitmap resource,
   text into a bitmap, a monochrome bitmap. 30 checks read pixels back from memory DCs; the kernel
@@ -572,4 +595,4 @@ screenshot (`python scripts/qemu-screenshot.py out/run/shot.png 28`).
 - Programs larger than about 900 KB (together with the runtime) do not fit the load window.
 - Not a Windows compatibility layer in the sense of running arbitrary software: it runs programs
   that stay inside the subset above. Programs from real toolchains that link the CRT, use
-  the C++ standard library, or use the common controls this runtime lacks (list view, tree view, tool bar) will not get far yet.
+  the C++ standard library, or use the common controls this runtime lacks (tree view, tool bar) will not get far yet.
