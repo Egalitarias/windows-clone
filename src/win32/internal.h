@@ -236,6 +236,14 @@ int rt_menu_alt_key(HWND h, unsigned ch);       // Alt+letter: opens the bar ite
 HMENU rt_wnd_menu(HWND h);
 int rt_wnd_surface(HWND h, int *sysid, int *cw, int *ch, int *mb);
 
+// ---- scroll bars in the frame of a window (controls.c has the bar, user32.c the window) ----
+#define RT_SB_THICK 17                                   // width of a vertical bar, height of a horizontal one
+void rt_sb_forget(HWND h);                               // a window was created or destroyed: drop its bars' state
+void rt_sb_nc_paint(HWND h, HDC dc, int bar);            // draw the bar (SB_HORZ / SB_VERT) at the DC's (0,0)
+void rt_sb_nc_event(HWND h, int bar, UINT msg, int x, int y);   // WM_LBUTTONDOWN / MOUSEMOVE / LBUTTONUP, in the bar's coordinates
+void rt_wnd_nc_draw(HWND h);                             // user32.c: draw the window's frame bars now
+void rt_wnd_set_bars(HWND h, int vert, int horz);        // user32.c: show (1) or hide (0) the frame bars, -1 leaves one alone
+
 // ---- controls.c: the standard controls (BUTTON, STATIC, EDIT, LISTBOX), registered as window classes ----
 void rt_controls_register(void);
 LRESULT CALLBACK rt_dlg_proc(HWND h, UINT m, WPARAM wp, LPARAM lp);        // dialog.c: the "#32770" window class

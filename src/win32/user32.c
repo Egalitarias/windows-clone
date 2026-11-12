@@ -50,6 +50,7 @@ struct wnd {
   void *ctl;                    // state of a standard control
   void *menu;                   // top-level: its menu bar (menu.c), drawn in the top RT_MENU_H pixels of the surface
   int menubar;                  // RT_MENU_H if it has a menu, else 0: the client area starts that far down
+  int sbv, sbh;                 // RT_SB_THICK while the window shows a vertical / horizontal scroll bar (in its frame, right of / below the client area), else 0
 };
 
 typedef struct {
@@ -68,6 +69,8 @@ static MSG g_q[QUEUE];
 static unsigned char g_qraw[QUEUE];   // 1: a key, 2: a mouse message, still addressed to the top-level window (see resolve_input)
 static int g_qh, g_qt;
 static wnd_t *g_capture;
+static wnd_t *g_nc;                       // the window whose frame scroll bar is tracking the mouse
+static int g_nc_bar;
 static int g_quit, g_quit_code;
 static int g_controls_ready;
 static int g_lbutton;
@@ -131,6 +134,25 @@ static dc_t *dc_for(wnd_t *w) {
   origin(w, &ox, &oy);
   clip_of(w, &clip);
   return gdi_dc_alloc(w->sysid, ox, oy, &clip);
+}
+
+// The window's whole rectangle in its parent: the client area and the scroll bars next to it.
+static void outer_rect(const wnd_t *w, RECT *r) {
+  r->left = w->x;
+  r->top = w->y;
+  r->right = w->x + w->w + w->sbv;
+  r->bottom = w->y + w->h + w->sbh;
+}
+
+// Standard controls draw their own scroll bars (the list box inside, SBS_ for SCROLLBAR itself).
+static int own_scrollbars(const cls_t *c) {
+  static const char *const k[] = {"BUTTON", "STATIC", "EDIT", "LISTBOX", "COMBOBOX", "SCROLLBAR"};
+  int i;
+
+  for (i = 0; i < 6; ++i) {
+    if (c != 0 && rt_stricmp(c->name, k[i]) == 0) return 1;
+  }
+  return 0;
 }
 
 static int shown(const wnd_t *w) {
@@ -372,13 +394,19 @@ EXPORT HWND WINAPI CreateWindowExA(DWORD exstyle, LPCSTR cls, LPCSTR title, DWOR
     menu = LoadMenuA(inst != 0 ? inst : c->inst, c->menu);
   }
   hm = !(style & WS_CHILD) && rt_menu_valid(menu);
+  if (!own_scrollbars(c)) {
+    w->sbv = (style & WS_VSCROLL) ? RT_SB_THICK : 0;
+    w->sbh = (style & WS_HSCROLL) ? RT_SB_THICK : 0;
+  }
   if (style & WS_CHILD) {
     wnd_t *p = w_get(parent);
 
     if (cw == CW_USEDEFAULT || cw < 0) cw = 0;
     if (ch == CW_USEDEFAULT || ch < 0) ch = 0;
-    cwid = cw;
-    chei = ch;
+    cwid = cw - w->sbv;                               // (cw, ch: the window; the bars come out of it)
+    chei = ch - w->sbh;
+    if (cwid < 0) cwid = 0;
+    if (chei < 0) chei = 0;
     id = p->sysid;
     w->parent = p;
     w->x = x == CW_USEDEFAULT ? 0 : x;
@@ -389,18 +417,20 @@ EXPORT HWND WINAPI CreateWindowExA(DWORD exstyle, LPCSTR cls, LPCSTR title, DWOR
   } else {
     if (cw == CW_USEDEFAULT) cw = 640;
     if (ch == CW_USEDEFAULT) ch = 480;
-    cwid = cw - FRAME_W;
-    chei = ch - FRAME_H - (hm ? RT_MENU_H : 0);
+    cwid = cw - FRAME_W - w->sbv;
+    chei = ch - FRAME_H - (hm ? RT_MENU_H : 0) - w->sbh;
     clamp_client(&cwid, &chei);
-    if (hm && chei > 600 - RT_MENU_H) chei = 600 - RT_MENU_H;
+    if (cwid + w->sbv > 800) cwid = 800 - w->sbv;
+    if (chei + w->sbh + (hm ? RT_MENU_H : 0) > 600) chei = 600 - w->sbh - (hm ? RT_MENU_H : 0);
     rt_copy(t, title != 0 ? title : "", sizeof(t));
-    id = sc3(KS_WIN_CREATE, (sl_t)t, cwid, chei + (hm ? RT_MENU_H : 0));
+    id = sc3(KS_WIN_CREATE, (sl_t)t, cwid + w->sbv, chei + w->sbh + (hm ? RT_MENU_H : 0));
     if (id < 0) {
       SetLastError(ERROR_NOT_ENOUGH_MEMORY);          // the kernel allows two windows per program
       return 0;
     }
   }
   w->used = 1;
+  rt_sb_forget(w_hwnd(w));
   w->sysid = (int)id;
   w->proc = c->proc;
   w->cls = c;
@@ -444,6 +474,7 @@ EXPORT HWND WINAPI CreateWindowExA(DWORD exstyle, LPCSTR cls, LPCSTR title, DWOR
     unlink_child(w);
     rt_free(w->text);
     w->used = 0;
+    rt_sb_forget(w_hwnd(w));
     return 0;
   }
   call_proc(w, WM_SIZE, SIZE_RESTORED, mklp(w->w, w->h));
@@ -473,8 +504,9 @@ EXPORT BOOL WINAPI ShowWindow(HWND h, int cmd) {
   if (w->visible) {
     invalidate(w, 0, 1);
   } else if (was && w->parent != 0) {
-    RECT r = {w->x, w->y, w->x + w->w, w->y + w->h};
+    RECT r;
 
+    outer_rect(w, &r);
     invalidate_behind(w, &r);
   }
   return was;
@@ -488,6 +520,9 @@ static void painted(wnd_t *w) {
   w->invalid = 0;
   if (w->menu != 0) {
     rt_menu_draw_bar(w_hwnd(w));
+  }
+  if (w->sbv != 0 || w->sbh != 0) {
+    rt_wnd_nc_draw(w_hwnd(w));
   }
   for (c = w->first; c != 0; c = c->next) {
     invalidate(c, 0, 1);
@@ -554,12 +589,17 @@ EXPORT BOOL WINAPI DestroyWindow(HWND h) {
   }
   destroy_tree(w, 1);
   if (w->parent != 0 && shown(w)) {
-    RECT r = {w->x, w->y, w->x + w->w, w->y + w->h};
+    RECT r;
 
+    outer_rect(w, &r);
     invalidate_behind(w, &r);
   }
   call_proc(w, WM_DESTROY, 0, 0);
   call_proc(w, WM_NCDESTROY, 0, 0);
+  rt_sb_forget(h);
+  if (g_nc == w) {
+    g_nc = 0;
+  }
   if (w->used) {
     if (w->parent == 0) {
       sc3(KS_WIN_CLOSE, w->sysid, 0, 0);
@@ -717,14 +757,14 @@ EXPORT BOOL WINAPI GetWindowRect(HWND h, LPRECT r) {
     origin(w, &ox, &oy);
     r->left = ox;
     r->top = oy;
-    r->right = ox + w->w;
-    r->bottom = oy + w->h;
+    r->right = ox + w->w + w->sbv;
+    r->bottom = oy + w->h + w->sbh;
     return TRUE;
   }
   r->left = 0;
   r->top = 0;
-  r->right = w->w + FRAME_W;
-  r->bottom = w->h + FRAME_H;
+  r->right = w->w + w->sbv + FRAME_W;
+  r->bottom = w->h + w->sbh + FRAME_H;
   return TRUE;
 }
 
@@ -779,15 +819,17 @@ EXPORT int WINAPI MapWindowPoints(HWND from, HWND to, LPPOINT pts, UINT n) {
   return (int)(((unsigned)(ay - by) & 0xFFFFu) << 16 | ((unsigned)(ax - bx) & 0xFFFFu));
 }
 
-static void do_resize(wnd_t *w, int cw, int ch) {
+static void do_resize(wnd_t *w, int cw, int ch) {      // cw, ch: the client area plus the scroll bars
+  cw -= w->sbv;
+  ch -= w->sbh;
   clamp_client(&cw, &ch);
   if (cw == w->w && ch == w->h) {
     return;
   }
-  if (ch + w->menubar > 600) {
-    ch = 600 - w->menubar;
+  if (ch + w->sbh + w->menubar > 600) {
+    ch = 600 - w->menubar - w->sbh;
   }
-  sc3(KS_WIN_RESIZE, w->sysid, cw, ch + w->menubar);
+  sc3(KS_WIN_RESIZE, w->sysid, cw + w->sbv, ch + w->sbh + w->menubar);
   w->w = cw;
   w->h = ch;
   q_push(w_hwnd(w), WM_SIZE, SIZE_RESTORED, mklp(cw, ch));
@@ -796,11 +838,15 @@ static void do_resize(wnd_t *w, int cw, int ch) {
 
 // A child window takes a new place and size in its parent's client area.
 static void move_child(wnd_t *w, int x, int y, int cw, int ch) {
-  RECT old = {w->x, w->y, w->x + w->w, w->y + w->h};
-  int resized = cw != w->w || ch != w->h;
+  RECT old;
+  int resized;
 
+  outer_rect(w, &old);
+  cw -= w->sbv;                                         // (cw, ch: the whole window)
+  ch -= w->sbh;
   if (cw < 0) cw = 0;
   if (ch < 0) ch = 0;
+  resized = cw != w->w || ch != w->h;
   w->x = x;
   w->y = y;
   w->w = cw;
@@ -838,8 +884,8 @@ EXPORT BOOL WINAPI SetWindowPos(HWND h, HWND after, int x, int y, int cx, int cy
     return FALSE;
   }
   if (w->parent != 0) {
-    move_child(w, (flags & SWP_NOMOVE) ? w->x : x, (flags & SWP_NOMOVE) ? w->y : y, (flags & SWP_NOSIZE) ? w->w : cx,
-               (flags & SWP_NOSIZE) ? w->h : cy);
+    move_child(w, (flags & SWP_NOMOVE) ? w->x : x, (flags & SWP_NOMOVE) ? w->y : y, (flags & SWP_NOSIZE) ? w->w + w->sbv : cx,
+               (flags & SWP_NOSIZE) ? w->h + w->sbh : cy);
     if (flags & SWP_SHOWWINDOW) ShowWindow(h, SW_SHOW);
     if (flags & SWP_HIDEWINDOW) ShowWindow(h, SW_HIDE);
     return TRUE;
@@ -998,8 +1044,8 @@ int rt_wnd_surface(HWND h, int *sysid, int *cw, int *ch, int *mb) {
     return 0;
   }
   *sysid = w->sysid;
-  *cw = w->w;
-  *ch = w->h;
+  *cw = w->w + w->sbv;
+  *ch = w->h + w->sbh;
   *mb = w->menubar;
   return 1;
 }
@@ -1016,9 +1062,9 @@ EXPORT BOOL WINAPI SetMenu(HWND h, HMENU m) {
   mb = rt_menu_valid(m) ? RT_MENU_H : 0;
   w->menu = mb ? m : 0;
   if (mb != w->menubar) {                               // the client area keeps its size: the surface grows or shrinks
-    int ch = w->h > 600 - mb ? 600 - mb : w->h;
+    int ch = w->h > 600 - mb - w->sbh ? 600 - mb - w->sbh : w->h;
 
-    sc3(KS_WIN_RESIZE, w->sysid, w->w, ch + mb);
+    sc3(KS_WIN_RESIZE, w->sysid, w->w + w->sbv, ch + w->sbh + mb);
     w->menubar = mb;
     w->h = ch;
     q_push(h, WM_SIZE, SIZE_RESTORED, mklp(w->w, w->h));
@@ -1251,7 +1297,10 @@ static wnd_t *hit_test(wnd_t *w, int x, int y) {
   wnd_t *c;
 
   for (c = w->last; c != 0; c = c->prev) {
-    if (c->visible && x >= c->x && y >= c->y && x < c->x + c->w && y < c->y + c->h) {
+    if (c->visible && x >= c->x && y >= c->y && x < c->x + c->w + c->sbv && y < c->y + c->h + c->sbh) {
+      if (x - c->x >= c->w || y - c->y >= c->h) {
+        return c;                                      // on its scroll bars
+      }
       return hit_test(c, x - c->x, y - c->y);
     }
   }
@@ -1262,6 +1311,113 @@ static wnd_t *hit_test(wnd_t *w, int x, int y) {
 // aims it at the window under the pointer (or the one that captured the mouse).
 static void mouse_message(wnd_t *top, UINT msg, WPARAM wp, int x, int y) {
   q_push_kind(w_hwnd(top), msg, wp, mklp(x, y), 2);
+}
+
+// ---- Scroll bars in a window's frame ---------------------------------------------------------------------
+// (the bar itself, its state and its drawing are in controls.c; g_nc is the window whose bar is tracking the mouse)
+
+// A window's frame bars: the vertical one right of the client area, the horizontal one below it.
+static void nc_bar_origin(const wnd_t *t, int bar, int *bx, int *by) {
+  *bx = bar == SB_VERT ? t->w : 0;
+  *by = bar == SB_VERT ? 0 : t->h;
+}
+
+// The mouse went down at (cx, cy) in t's client coordinates, outside the client area.
+static int nc_start(wnd_t *t, int cx, int cy) {
+  int bar, bx, by;
+
+  if (cx >= t->w && cy >= 0 && cy < t->h && t->sbv != 0) {
+    bar = SB_VERT;
+  } else if (cy >= t->h && cx >= 0 && cx < t->w && t->sbh != 0) {
+    bar = SB_HORZ;
+  } else {
+    return 0;                                             // the corner
+  }
+  g_nc_bar = bar;
+  nc_bar_origin(t, bar, &bx, &by);
+  rt_sb_nc_event(w_hwnd(t), bar, WM_LBUTTONDOWN, cx - bx, cy - by);
+  return 1;
+}
+
+// A move or release while a frame bar tracks the mouse; (x, y) are surface coordinates.
+static void nc_mouse(wnd_t *t, int bar, UINT msg, int x, int y) {
+  int ox, oy, bx, by;
+
+  origin(t, &ox, &oy);
+  nc_bar_origin(t, bar, &bx, &by);
+  rt_sb_nc_event(w_hwnd(t), bar, msg, x - ox - bx, y - oy - by);
+}
+
+static dc_t *nc_dc(wnd_t *w, int bx, int by, int bw, int bh) {
+  int ox, oy;
+  RECT clip;
+
+  origin(w, &ox, &oy);
+  clip.left = ox + bx;
+  clip.top = oy + by;
+  clip.right = clip.left + bw;
+  clip.bottom = clip.top + bh;
+  if (w->parent != 0) {
+    RECT p;
+
+    clip_of(w->parent, &p);
+    if (clip.left < p.left) clip.left = p.left;
+    if (clip.top < p.top) clip.top = p.top;
+    if (clip.right > p.right) clip.right = p.right;
+    if (clip.bottom > p.bottom) clip.bottom = p.bottom;
+  }
+  return gdi_dc_alloc(w->sysid, ox + bx, oy + by, &clip);
+}
+
+void rt_wnd_nc_draw(HWND h) {
+  wnd_t *w = w_get(h);
+  dc_t *d;
+
+  if (w == 0 || !shown(w)) {
+    return;
+  }
+  if (w->sbv != 0 && (d = nc_dc(w, w->w, 0, w->sbv, w->h)) != 0) {
+    rt_sb_nc_paint(h, (HDC)d, SB_VERT);
+    gdi_dc_free(d);
+  }
+  if (w->sbh != 0 && (d = nc_dc(w, 0, w->h, w->w, w->sbh)) != 0) {
+    rt_sb_nc_paint(h, (HDC)d, SB_HORZ);
+    gdi_dc_free(d);
+  }
+  if (w->sbv != 0 && w->sbh != 0 && (d = nc_dc(w, w->w, w->h, w->sbv, w->sbh)) != 0) {
+    gdi_fill(d, 0, 0, w->sbv, w->sbh, 0x00F0F0F0u);        // the corner between them
+    gdi_dc_free(d);
+  }
+}
+
+// Show or hide the frame bars (the window keeps its size: the client area gives or takes the room).
+void rt_wnd_set_bars(HWND h, int vert, int horz) {
+  wnd_t *w = w_get(h);
+  int nv, nh;
+
+  if (w == 0 || own_scrollbars(w->cls)) {
+    return;
+  }
+  nv = vert < 0 ? w->sbv : (vert ? RT_SB_THICK : 0);
+  nh = horz < 0 ? w->sbh : (horz ? RT_SB_THICK : 0);
+  if (nv == w->sbv && nh == w->sbh) {
+    return;
+  }
+  w->w += w->sbv - nv;
+  w->h += w->sbh - nh;
+  if (w->w < 0) w->w = 0;
+  if (w->h < 0) w->h = 0;
+  w->sbv = nv;
+  w->sbh = nh;
+  w->style = (w->style & ~(DWORD)(WS_VSCROLL | WS_HSCROLL)) | (nv ? WS_VSCROLL : 0) | (nh ? WS_HSCROLL : 0);
+  call_proc(w, WM_SIZE, SIZE_RESTORED, mklp(w->w, w->h));
+  invalidate(w, 0, 1);
+  if (w->parent != 0) {
+    RECT r;
+
+    outer_rect(w, &r);
+    invalidate_behind(w, &r);
+  }
 }
 
 static int resolve_input(MSG *m, int raw) {
@@ -1275,9 +1431,32 @@ static int resolve_input(MSG *m, int raw) {
   } else {
     int x = (short)(m->lParam & 0xFFFF), y = (short)((m->lParam >> 16) & 0xFFFF), ox, oy;
 
+    if (g_nc != 0 && !g_nc->used) {
+      g_nc = 0;
+    }
+    if (g_nc != 0) {                                      // a scroll bar in a window's frame has the mouse until the button is released
+      if (m->message == WM_MOUSEMOVE || m->message == WM_LBUTTONUP) {
+        nc_mouse(g_nc, g_nc_bar, m->message, x, y);
+        if (m->message == WM_LBUTTONUP) {
+          g_nc = 0;
+        }
+      }
+      return 0;
+    }
     t = g_capture != 0 && top_of(g_capture) == top ? g_capture : hit_test(top, x, y - top->menubar);
     if (!IsWindowEnabled(w_hwnd(t))) {
       return 0;
+    }
+    if (t != g_capture) {                                 // the mouse is over a window's scroll bar, not its client area
+      origin(t, &ox, &oy);
+      if ((x - ox >= t->w && t->sbv != 0) || (y - oy >= t->h && t->sbh != 0)) {
+        if (m->message == WM_LBUTTONDOWN || m->message == WM_LBUTTONDBLCLK) {
+          if (nc_start(t, x - ox, y - oy)) {
+            g_nc = t;
+          }
+        }
+        return 0;
+      }
     }
     if (m->message == WM_LBUTTONDBLCLK && (t->cls == 0 || !(t->cls->style & CS_DBLCLKS))) {
       return 0;
@@ -1331,9 +1510,9 @@ static void handle_event(wnd_t *w, const sc_winev_t *ev) {
       q_push(h, WM_CLOSE, 0, 0);
       break;
     case SCEV_RESIZE:
-      w->w = ev->x;
-      w->h = ev->y - w->menubar;
-      q_push(h, WM_SIZE, SIZE_RESTORED, mklp(ev->x, ev->y));
+      w->w = ev->x - w->sbv;
+      w->h = ev->y - w->menubar - w->sbh;
+      q_push(h, WM_SIZE, SIZE_RESTORED, mklp(w->w, w->h));
       invalidate(w, 0, 1);
       break;
     default:

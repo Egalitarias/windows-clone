@@ -1975,11 +1975,13 @@ static LRESULT CALLBACK combo_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
 
 // ---- SCROLLBAR -------------------------------------------------------------------------------------------
 //
-// The control (SBS_HORZ / SBS_VERT, and the size box) and the scroll bar API. The state is the
-// SCROLLINFO of Windows: range, page, position. Like the real one the control does not move itself:
-// it tells its parent (WM_HSCROLL / WM_VSCROLL with SB_LINEUP, SB_PAGEDOWN, SB_THUMBTRACK ...) and the
-// parent calls SetScrollPos or SetScrollInfo. The scroll bars of ordinary windows (SB_HORZ, SB_VERT
-// for WS_HSCROLL / WS_VSCROLL) keep their state in a table so the API works, but they are not drawn.
+// Two users of one implementation: the SCROLLBAR control (a window of its own: SBS_HORZ / SBS_VERT and
+// the size box) and the scroll bars in the frame of an ordinary window (WS_VSCROLL / WS_HSCROLL,
+// SB_VERT / SB_HORZ), which user32.c draws and routes the mouse to through rt_sb_nc_paint and
+// rt_sb_nc_event. The state is the SCROLLINFO of Windows: range, page, position. As on Windows the bar
+// does not move itself: it tells its owner (WM_HSCROLL / WM_VSCROLL with SB_LINEUP, SB_PAGEDOWN,
+// SB_THUMBTRACK ...; a control tells its parent with lParam = the control, a window bar tells its
+// window with lParam = 0) and the owner calls SetScrollPos or SetScrollInfo.
 
 typedef struct {
   int min, max, page, pos;
@@ -1988,20 +1990,21 @@ typedef struct {
   int drag;                                   // 1: dragging the thumb
   int thumb_off;                              // where in the thumb the mouse took hold
   int down;                                   // the part held down (SBP_*), 0 for none
-  int mx, my;                                 // the last mouse position
+  int mx, my;                                 // the last mouse position (in the bar's coordinates)
   int sent;                                   // a keyboard action is waiting for its SB_ENDSCROLL
 } sb_t;
 
 enum { SBP_NONE, SBP_LINE1, SBP_PAGE1, SBP_THUMB, SBP_PAGE2, SBP_LINE2 };
 
-#define SB_TIMER 7
+#define SB_TIMER 7                            // a control's repeat timer (its own window)
+#define SB_NC_TIMER 0x7E5B0000u               // a window bar's: + SB_HORZ / SB_VERT, with a TIMERPROC so the program never sees it
 #define SB_FIRST_DELAY 400
 #define SB_REPEAT 50
 #define SB_MIN_THUMB 8
 
-static void sb_init(sb_t *s) {
+static void sb_init(sb_t *s, int max) {
   rt_memset(s, 0, sizeof(*s));
-  s->max = 100;
+  s->max = max;
 }
 
 static int sb_maxpos(const sb_t *s) {
@@ -2024,7 +2027,7 @@ static int sb_is_ctl(HWND h) {
   return GetClassNameA(h, name, sizeof(name)) > 0 && rt_stricmp(name, "SCROLLBAR") == 0;
 }
 
-// The scroll bars of ordinary windows: two per window, in a small table.
+// The scroll bars of ordinary windows: two per window, in a small table (a control keeps its own).
 #define SB_WINDOWS 32
 static struct { HWND h; sb_t bar[2]; } g_sbw[SB_WINDOWS];
 
@@ -2052,28 +2055,71 @@ static sb_t *sb_state(HWND h, int bar) {
     return 0;
   }
   g_sbw[free_slot].h = h;
-  sb_init(&g_sbw[free_slot].bar[0]);
-  sb_init(&g_sbw[free_slot].bar[1]);
+  sb_init(&g_sbw[free_slot].bar[0], 0);                       // nothing to scroll until the program says so
+  sb_init(&g_sbw[free_slot].bar[1], 0);
   return &g_sbw[free_slot].bar[bar];
 }
 
+// A new window must not inherit what an earlier one with the same handle left behind.
+void rt_sb_forget(HWND h) {
+  int i;
+
+  for (i = 0; i < SB_WINDOWS; ++i) {
+    if (g_sbw[i].h == h) {
+      g_sbw[i].h = 0;
+    }
+  }
+}
+
+// One bar to work on: a control, or a bar in the frame of a window.
+typedef struct {
+  HWND h;
+  sb_t *s;
+  int bar;                                    // SB_CTL, SB_HORZ or SB_VERT
+  int vert;
+  int len, cross;                             // the bar's size along and across
+  int enabled;
+} sbx_t;
+
 static int sb_vert(HWND h) { return (style_of(h) & SBS_VERT) != 0; }
+
+static int sb_ctx(HWND h, int bar, sbx_t *x) {
+  RECT rc;
+
+  x->h = h;
+  x->bar = bar;
+  x->s = sb_state(h, bar);
+  if (x->s == 0) {
+    return 0;
+  }
+  GetClientRect(h, &rc);
+  x->enabled = IsWindowEnabled(h);
+  if (bar == SB_CTL) {
+    x->vert = sb_vert(h);
+    x->len = x->vert ? rc.bottom : rc.right;
+    x->cross = x->vert ? rc.right : rc.bottom;
+  } else {                                                   // in the window's frame: as long as the client area, 17 thick
+    x->vert = bar == SB_VERT;
+    x->len = x->vert ? rc.bottom : rc.right;
+    x->cross = RT_SB_THICK;
+  }
+  return 1;
+}
 
 // Geometry along the bar: the arrows, the track between them, the thumb in it.
 typedef struct { int len, cross, arrow, track, t0, t1; } sbg_t;
 
-static void sb_geom(HWND h, sb_t *s, sbg_t *g) {
-  RECT rc;
+static void sb_geom(const sbx_t *x, sbg_t *g) {
+  const sb_t *s = x->s;
   int range, cur;
 
-  GetClientRect(h, &rc);
-  g->len = sb_vert(h) ? rc.bottom : rc.right;
-  g->cross = sb_vert(h) ? rc.right : rc.bottom;
+  g->len = x->len;
+  g->cross = x->cross;
   g->arrow = g->cross;
   if (g->arrow * 2 > g->len) g->arrow = g->len / 2;
   g->track = g->len - 2 * g->arrow;
   g->t0 = g->t1 = g->arrow;
-  if (!sb_scrollable(s) || !IsWindowEnabled(h) || g->track < SB_MIN_THUMB) {
+  if (!sb_scrollable(s) || !x->enabled || g->track < SB_MIN_THUMB) {
     return;                                                  // nothing to drag
   }
   range = s->max - s->min + 1;
@@ -2089,11 +2135,11 @@ static void sb_geom(HWND h, sb_t *s, sbg_t *g) {
   }
 }
 
-static int sb_hit(HWND h, sb_t *s, int x, int y) {
+static int sb_hit(const sbx_t *x, int px, int py) {
   sbg_t g;
-  int a = sb_vert(h) ? y : x;
+  int a = x->vert ? py : px;
 
-  sb_geom(h, s, &g);
+  sb_geom(x, &g);
   if (a < 0 || a >= g.len) return SBP_NONE;
   if (a < g.arrow) return SBP_LINE1;
   if (a >= g.len - g.arrow) return SBP_LINE2;
@@ -2101,11 +2147,23 @@ static int sb_hit(HWND h, sb_t *s, int x, int y) {
   return a < g.t0 ? SBP_PAGE1 : a >= g.t1 ? SBP_PAGE2 : SBP_THUMB;
 }
 
-static void sb_send(HWND h, int code, int pos) {
-  HWND p = GetParent(h);
+static void sb_send(const sbx_t *x, int code, int pos) {
+  UINT msg = x->vert ? WM_VSCROLL : WM_HSCROLL;
 
-  if (p != 0) {
-    SendMessageA(p, sb_vert(h) ? WM_VSCROLL : WM_HSCROLL, MAKEWPARAM(code, pos), (LPARAM)h);
+  if (x->bar == SB_CTL) {
+    HWND p = GetParent(x->h);
+
+    if (p != 0) SendMessageA(p, msg, MAKEWPARAM(code, pos), (LPARAM)x->h);
+  } else {
+    SendMessageA(x->h, msg, MAKEWPARAM(code, pos), 0);
+  }
+}
+
+static void sb_redraw(const sbx_t *x) {
+  if (x->bar == SB_CTL) {
+    InvalidateRect(x->h, 0, FALSE);
+  } else {
+    rt_wnd_nc_draw(x->h);
   }
 }
 
@@ -2134,11 +2192,41 @@ static void sb_arrow(HDC dc, int vert, int a0, int size, int cross, int forward,
   }
 }
 
+// Draw the bar with its top-left corner at the DC's (0, 0).
+static void sb_draw(const sbx_t *x, HDC dc) {
+  const sb_t *s = x->s;
+  sbg_t g;
+  int live;
+
+  sb_geom(x, &g);
+  live = x->enabled && sb_scrollable(s);
+  sb_rect(dc, x->vert, 0, 0, g.len, g.cross, RGB(240, 240, 240));       // the track
+  sb_arrow(dc, x->vert, 0, g.arrow, g.cross, 0, s->down == SBP_LINE1, live && !(s->off & ESB_DISABLE_LTUP));
+  sb_arrow(dc, x->vert, g.len - g.arrow, g.arrow, g.cross, 1, s->down == SBP_LINE2, live && !(s->off & ESB_DISABLE_RTDN));
+  if (g.t1 > g.t0) {
+    COLORREF body = (s->drag || s->down == SBP_THUMB) ? RGB(130, 130, 130) : RGB(205, 205, 205);
+    COLORREF edge = RGB(150, 150, 150);
+
+    sb_rect(dc, x->vert, g.t0, 0, g.t1, g.cross, body);
+    sb_rect(dc, x->vert, g.t0, 0, g.t1, 1, edge);
+    sb_rect(dc, x->vert, g.t0, g.cross - 1, g.t1, g.cross, edge);
+    sb_rect(dc, x->vert, g.t0, 0, g.t0 + 1, g.cross, edge);
+    sb_rect(dc, x->vert, g.t1 - 1, 0, g.t1, g.cross, edge);
+  }
+}
+
+void rt_sb_nc_paint(HWND h, HDC dc, int bar) {
+  sbx_t x;
+
+  if (sb_ctx(h, bar, &x)) {
+    sb_draw(&x, dc);
+  }
+}
+
 static void sb_paint(HWND h, sb_t *s) {
   PAINTSTRUCT ps;
   HDC dc = BeginPaint(h, &ps);
-  sbg_t g;
-  int vert = sb_vert(h), en = IsWindowEnabled(h), live;
+  sbx_t x;
 
   if (dc == 0) {
     return;
@@ -2148,23 +2236,10 @@ static void sb_paint(HWND h, sb_t *s) {
 
     GetClientRect(h, &rc);
     fill(dc, 0, 0, rc.right, rc.bottom, RGB(240, 240, 240));
-    EndPaint(h, &ps);
-    return;
+  } else if (sb_ctx(h, SB_CTL, &x)) {
+    sb_draw(&x, dc);
   }
-  sb_geom(h, s, &g);
-  live = en && sb_scrollable(s);
-  sb_rect(dc, vert, 0, 0, g.len, g.cross, RGB(240, 240, 240));          // the track
-  sb_arrow(dc, vert, 0, g.arrow, g.cross, 0, s->down == SBP_LINE1, live && !(s->off & ESB_DISABLE_LTUP));
-  sb_arrow(dc, vert, g.len - g.arrow, g.arrow, g.cross, 1, s->down == SBP_LINE2, live && !(s->off & ESB_DISABLE_RTDN));
-  if (g.t1 > g.t0) {
-    COLORREF body = (s->drag || s->down == SBP_THUMB) ? RGB(130, 130, 130) : RGB(205, 205, 205);
-
-    sb_rect(dc, vert, g.t0, 0, g.t1, g.cross, body);
-    sb_rect(dc, vert, g.t0, 0, g.t1, 1, RGB(150, 150, 150));
-    sb_rect(dc, vert, g.t0, g.cross - 1, g.t1, g.cross, RGB(150, 150, 150));
-    sb_rect(dc, vert, g.t0, 0, g.t0 + 1, g.cross, RGB(150, 150, 150));
-    sb_rect(dc, vert, g.t1 - 1, 0, g.t1, g.cross, RGB(150, 150, 150));
-  }
+  (void)s;
   EndPaint(h, &ps);
 }
 
@@ -2196,14 +2271,6 @@ static void sb_get(sb_t *s, SCROLLINFO *si) {
   if (si->fMask & SIF_TRACKPOS) si->nTrackPos = s->drag ? s->track : s->pos;
 }
 
-static void sb_stop(HWND h, sb_t *s) {
-  if (s->down) {
-    KillTimer(h, SB_TIMER);
-  }
-  s->down = 0;
-  s->drag = 0;
-}
-
 // What the held-down part asks for now (the arrows and the page areas repeat).
 static int sb_part_code(int part) {
   switch (part) {
@@ -2214,8 +2281,127 @@ static int sb_part_code(int part) {
   }
 }
 
+static VOID CALLBACK sb_nc_timer(HWND h, UINT m, UINT_PTR id, DWORD t);
+
+static UINT_PTR sb_timer_id(const sbx_t *x) { return x->bar == SB_CTL ? SB_TIMER : SB_NC_TIMER + (UINT)x->bar; }
+
+static void sb_timer_set(const sbx_t *x, UINT ms) {
+  SetTimer(x->h, sb_timer_id(x), ms, x->bar == SB_CTL ? 0 : sb_nc_timer);
+}
+
+static void sb_stop(const sbx_t *x) {
+  if (x->s->down) {
+    KillTimer(x->h, sb_timer_id(x));
+  }
+  x->s->down = 0;
+  x->s->drag = 0;
+}
+
+// The mouse went down on the bar at (px, py) (the bar's own coordinates). Returns 1 when the bar now
+// tracks the mouse (the caller keeps the mouse for it until sb_release).
+static int sb_press(const sbx_t *x, int px, int py) {
+  sb_t *s = x->s;
+  sbg_t g;
+  int part;
+
+  if (!sb_scrollable(s) || !x->enabled) return 0;
+  part = sb_hit(x, px, py);
+  if ((part == SBP_LINE1 && (s->off & ESB_DISABLE_LTUP)) || (part == SBP_LINE2 && (s->off & ESB_DISABLE_RTDN)) || part == SBP_NONE) {
+    return 0;
+  }
+  s->mx = px;
+  s->my = py;
+  sb_geom(x, &g);
+  if (part == SBP_THUMB) {
+    s->drag = 1;
+    s->track = s->pos;
+    s->thumb_off = (x->vert ? py : px) - g.t0;
+    sb_redraw(x);
+    return 1;
+  }
+  s->down = part;
+  sb_send(x, sb_part_code(part), 0);
+  if (x->s->down) {                                          // (the handler may have destroyed the window, or released things)
+    sb_timer_set(x, SB_FIRST_DELAY);
+    sb_redraw(x);
+  }
+  return 1;
+}
+
+static void sb_move(const sbx_t *x, int px, int py) {
+  sb_t *s = x->s;
+
+  s->mx = px;
+  s->my = py;
+  if (s->drag) {
+    sbg_t g;
+    int a = (x->vert ? py : px) - s->thumb_off, span = sb_maxpos(s) - s->min, room, np;
+
+    sb_geom(x, &g);
+    room = g.track - (g.t1 - g.t0);
+    np = room > 0 ? s->min + (a - g.arrow) * span / room : s->min;
+    np = sb_clamp(s, np);
+    if (np != s->track) {
+      s->track = np;
+      sb_send(x, SB_THUMBTRACK, np);
+      sb_redraw(x);
+    }
+  }
+}
+
+static void sb_release(const sbx_t *x) {
+  sb_t *s = x->s;
+
+  if (s->drag) {
+    sb_send(x, SB_THUMBPOSITION, s->track);
+  }
+  sb_stop(x);
+  sb_send(x, SB_ENDSCROLL, 0);
+  sb_redraw(x);
+}
+
+static void sb_tick(const sbx_t *x) {
+  sb_t *s = x->s;
+
+  if (s->down != 0 && sb_hit(x, s->mx, s->my) == s->down) {
+    sb_send(x, sb_part_code(s->down), 0);
+  }
+  if (s->down != 0) {
+    sb_timer_set(x, SB_REPEAT);
+  }
+}
+
+static VOID CALLBACK sb_nc_timer(HWND h, UINT m, UINT_PTR id, DWORD t) {
+  sbx_t x;
+
+  (void)m;
+  (void)t;
+  if (sb_ctx(h, (int)(id - SB_NC_TIMER), &x)) {
+    sb_tick(&x);
+  } else {
+    KillTimer(h, id);
+  }
+}
+
+// The mouse over the frame bar of a window: x, y in the bar's own coordinates (they can lie outside it while dragging).
+void rt_sb_nc_event(HWND h, int bar, UINT msg, int px, int py) {
+  sbx_t x;
+
+  if (!sb_ctx(h, bar, &x)) {
+    return;
+  }
+  if (msg == WM_LBUTTONDOWN) {
+    sb_press(&x, px, py);
+  } else if (msg == WM_MOUSEMOVE) {
+    sb_move(&x, px, py);
+  } else if (msg == WM_LBUTTONUP) {
+    sb_release(&x);
+  }
+}
+
 static LRESULT CALLBACK scrollbar_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
   sb_t *s = (sb_t *)rt_wnd_ctl(h);
+  sbx_t x;
 
   switch (m) {
     case WM_NCCREATE:
@@ -2223,7 +2409,7 @@ static LRESULT CALLBACK scrollbar_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
       if (s == 0) {
         return 0;
       }
-      sb_init(s);
+      sb_init(s, 100);
       rt_wnd_set_ctl(h, s);
       return 1;
     case WM_NCDESTROY:
@@ -2288,68 +2474,24 @@ static LRESULT CALLBACK scrollbar_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
       if (s == 0 || lp == 0) return FALSE;
       sb_get(s, (SCROLLINFO *)lp);
       return TRUE;
-    case WM_LBUTTONDOWN: case WM_LBUTTONDBLCLK: {
-      int x = (short)(lp & 0xFFFF), y = (short)((lp >> 16) & 0xFFFF), part;
-      sbg_t g;
-
-      if (s == 0 || (style_of(h) & (SBS_SIZEBOX | SBS_SIZEGRIP)) || !sb_scrollable(s) || !IsWindowEnabled(h)) return 0;
-      part = sb_hit(h, s, x, y);
-      if ((part == SBP_LINE1 && (s->off & ESB_DISABLE_LTUP)) || (part == SBP_LINE2 && (s->off & ESB_DISABLE_RTDN)) || part == SBP_NONE) {
-        return 0;
+    case WM_LBUTTONDOWN: case WM_LBUTTONDBLCLK:
+      if (s == 0 || (style_of(h) & (SBS_SIZEBOX | SBS_SIZEGRIP)) || !sb_ctx(h, SB_CTL, &x)) return 0;
+      if (sb_press(&x, (short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF))) {
+        SetCapture(h);
       }
-      s->mx = x;
-      s->my = y;
-      sb_geom(h, s, &g);
-      SetCapture(h);
-      if (part == SBP_THUMB) {
-        s->drag = 1;
-        s->track = s->pos;
-        s->thumb_off = (sb_vert(h) ? y : x) - g.t0;
-        InvalidateRect(h, 0, FALSE);
-        return 0;
-      }
-      s->down = part;
-      sb_send(h, sb_part_code(part), 0);
-      SetTimer(h, SB_TIMER, SB_FIRST_DELAY, 0);
-      InvalidateRect(h, 0, FALSE);
       return 0;
-    }
     case WM_MOUSEMOVE:
-      if (s == 0) return 0;
-      s->mx = (short)(lp & 0xFFFF);
-      s->my = (short)((lp >> 16) & 0xFFFF);
-      if (s->drag) {
-        sbg_t g;
-        int a = (sb_vert(h) ? s->my : s->mx) - s->thumb_off - 0, span = sb_maxpos(s) - s->min, room, np;
-
-        sb_geom(h, s, &g);
-        room = g.track - (g.t1 - g.t0);
-        np = room > 0 ? s->min + (a - g.arrow) * span / room : s->min;
-        np = sb_clamp(s, np);
-        if (np != s->track) {
-          s->track = np;
-          sb_send(h, SB_THUMBTRACK, np);
-          InvalidateRect(h, 0, FALSE);
-        }
-      }
+      if (s != 0 && sb_ctx(h, SB_CTL, &x)) sb_move(&x, (short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF));
       return 0;
     case WM_TIMER:
-      if (s != 0 && wp == SB_TIMER) {
-        if (s->down != 0 && sb_hit(h, s, s->mx, s->my) == s->down) {
-          sb_send(h, sb_part_code(s->down), 0);
-        }
-        SetTimer(h, SB_TIMER, SB_REPEAT, 0);
+      if (s != 0 && wp == SB_TIMER && sb_ctx(h, SB_CTL, &x)) {
+        sb_tick(&x);
       }
       return 0;
     case WM_LBUTTONUP:
-      if (s != 0 && (s->drag || s->down)) {
-        if (s->drag) {
-          sb_send(h, SB_THUMBPOSITION, s->track);
-        }
-        sb_stop(h, s);
+      if (s != 0 && (s->drag || s->down) && sb_ctx(h, SB_CTL, &x)) {
         ReleaseCapture();
-        sb_send(h, SB_ENDSCROLL, 0);
-        InvalidateRect(h, 0, FALSE);
+        sb_release(&x);
       }
       return 0;
     case WM_KEYDOWN: {
@@ -2367,21 +2509,28 @@ static LRESULT CALLBACK scrollbar_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         case VK_END: code = SB_BOTTOM; break;
         default: break;
       }
-      if (code >= 0) {
+      if (code >= 0 && sb_ctx(h, SB_CTL, &x)) {
         s->sent = 1;
-        sb_send(h, code, 0);
+        sb_send(&x, code, 0);
       }
       return 0;
     }
     case WM_KEYUP:
-      if (s != 0 && s->sent) {
+      if (s != 0 && s->sent && sb_ctx(h, SB_CTL, &x)) {
         s->sent = 0;
-        sb_send(h, SB_ENDSCROLL, 0);
+        sb_send(&x, SB_ENDSCROLL, 0);
       }
       return 0;
     default:
       return DefWindowProcA(h, m, wp, lp);
   }
+}
+
+// A bar in a window's frame appears when it has something to scroll and goes away when it has not
+// (unless the program asked for it to stay, disabled), as on Windows.
+static void sb_frame_visibility(HWND h, int bar, int show) {
+  if (bar == SB_VERT) rt_wnd_set_bars(h, show, -1);
+  else if (bar == SB_HORZ) rt_wnd_set_bars(h, -1, show);
 }
 
 EXPORT int WINAPI SetScrollInfo(HWND h, int bar, LPCSCROLLINFO si, BOOL redraw) {
@@ -2392,7 +2541,12 @@ EXPORT int WINAPI SetScrollInfo(HWND h, int bar, LPCSCROLLINFO si, BOOL redraw) 
     return 0;
   }
   r = sb_apply(s, si);
-  if (redraw && bar == SB_CTL) InvalidateRect(h, 0, FALSE);
+  if (bar == SB_CTL) {
+    if (redraw) InvalidateRect(h, 0, FALSE);
+  } else {
+    sb_frame_visibility(h, bar, sb_scrollable(s) || (si->fMask & SIF_DISABLENOSCROLL));
+    if (redraw) rt_wnd_nc_draw(h);
+  }
   return r;
 }
 
@@ -2415,7 +2569,9 @@ EXPORT int WINAPI SetScrollPos(HWND h, int bar, int pos, BOOL redraw) {
   }
   old = s->pos;
   s->pos = sb_clamp(s, pos);
-  if (redraw && bar == SB_CTL) InvalidateRect(h, 0, FALSE);
+  if (redraw) {
+    if (bar == SB_CTL) InvalidateRect(h, 0, FALSE); else rt_wnd_nc_draw(h);
+  }
   return old;
 }
 
@@ -2436,7 +2592,12 @@ EXPORT BOOL WINAPI SetScrollRange(HWND h, int bar, int lo, int hi, BOOL redraw) 
   si.nMin = lo;
   si.nMax = hi;
   sb_apply(s, &si);
-  if (redraw && bar == SB_CTL) InvalidateRect(h, 0, FALSE);
+  if (bar == SB_CTL) {
+    if (redraw) InvalidateRect(h, 0, FALSE);
+  } else {
+    sb_frame_visibility(h, bar, lo != 0 || hi != 0);          // a range of 0, 0 hides the bar
+    if (redraw) rt_wnd_nc_draw(h);
+  }
   return TRUE;
 }
 
@@ -2452,21 +2613,35 @@ EXPORT BOOL WINAPI GetScrollRange(HWND h, int bar, LPINT lo, LPINT hi) {
 }
 
 EXPORT BOOL WINAPI EnableScrollBar(HWND h, UINT bar, UINT flags) {
-  sb_t *s = sb_state(h, (int)bar);
+  int b;
 
-  if (s == 0) {
-    return FALSE;
+  for (b = SB_HORZ; b <= SB_VERT; ++b) {
+    sb_t *s;
+
+    if (bar != SB_BOTH && (int)bar != b) continue;
+    s = sb_state(h, b);
+    if (s != 0) s->off = (int)flags & (ESB_DISABLE_LTUP | ESB_DISABLE_RTDN);
   }
-  s->off = (int)flags & (ESB_DISABLE_LTUP | ESB_DISABLE_RTDN);
-  if (bar == SB_CTL) InvalidateRect(h, 0, FALSE);
-  return TRUE;
+  if (bar == SB_CTL) {
+    if (sb_state(h, SB_CTL) == 0) return FALSE;
+    sb_state(h, SB_CTL)->off = (int)flags & (ESB_DISABLE_LTUP | ESB_DISABLE_RTDN);
+    InvalidateRect(h, 0, FALSE);
+    return TRUE;
+  }
+  rt_wnd_nc_draw(h);
+  return IsWindow(h);
 }
 
 EXPORT BOOL WINAPI ShowScrollBar(HWND h, int bar, BOOL show) {
   if (bar == SB_CTL) {
     return ShowWindow(h, show ? SW_SHOW : SW_HIDE), TRUE;
   }
-  return sb_state(h, bar) != 0;                                // (the bars of ordinary windows are not drawn)
+  if (!IsWindow(h)) {
+    return FALSE;
+  }
+  if (bar == SB_VERT || bar == SB_BOTH) sb_frame_visibility(h, SB_VERT, show);
+  if (bar == SB_HORZ || bar == SB_BOTH) sb_frame_visibility(h, SB_HORZ, show);
+  return TRUE;
 }
 
 void rt_controls_register(void) {

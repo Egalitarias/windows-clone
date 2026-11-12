@@ -87,7 +87,7 @@ and `WM_MOUSEMOVE` (moves only while the button is held), the wheel `WM_MOUSEWHE
 the close button `WM_CLOSE`. `WM_PAINT` is generated for invalidated windows; `BeginPaint` sends
 `WM_ERASEBKGND` and the default procedure fills with the class brush.
 
-Missing on purpose (for now): the scroll bars of ordinary windows (`WS_VSCROLL` frames), clipboard (beyond the edit control's), fonts other
+Missing on purpose (for now): clipboard (beyond the edit control's), fonts other
 than the built-in one, right and middle mouse buttons, wide-character (`W`) window functions
 (only `DefWindowProcW`, `GetMessageW`, ...), real wall-clock time (time counts from 2026-01-01 at
 boot), environment variables, and anything about sockets.
@@ -134,9 +134,23 @@ The classes are registered when the first window is created (`src/win32/controls
 A scroll bar control does not move itself: as on Windows it reports what the user did and the parent calls
 `SetScrollPos` or `SetScrollInfo` (`SIF_RANGE`, `SIF_PAGE`, `SIF_POS`, `SIF_TRACKPOS`, `SIF_DISABLENOSCROLL`;
 the largest position is `nMax - nPage + 1`). Also there: `GetScrollInfo`, `Set/GetScrollPos`, `Set/GetScrollRange`,
-`EnableScrollBar` (the arrows can be disabled one at a time), `ShowScrollBar`. For an ordinary window the
-`SB_HORZ` and `SB_VERT` bars keep their state so the calls succeed, but nothing is drawn: a window with
-`WS_VSCROLL` has no scroll bar frame yet (use a `SCROLLBAR` control next to the content, as the list box does inside).
+`EnableScrollBar` (the arrows can be disabled one at a time), `ShowScrollBar`.
+
+**Scroll bars in a window's frame.** A window (top-level or child, of a class that is not one of the standard
+controls) created with `WS_VSCROLL` and/or `WS_HSCROLL` gets a 17-pixel bar right of and/or below its client
+area, with a grey corner where they meet; the client area is the rest (`GetClientRect`, `WM_SIZE` and drawing
+use it, children are clipped to it; `GetWindowRect` and the size passed to `CreateWindow` / `MoveWindow` include
+the bars). They are the same bars as the control: the program configures them with `SetScrollInfo` /
+`SetScrollRange` / `SetScrollPos` using `SB_VERT` and `SB_HORZ`, and gets `WM_VSCROLL` / `WM_HSCROLL` itself
+(with `lParam` 0) when the user clicks, holds, or drags. A bar with nothing to scroll shows disabled until
+`SetScrollInfo` gives it a range; as on Windows, a call whose range makes the bar unnecessary hides it (unless
+`SIF_DISABLENOSCROLL`) and `SetScrollInfo` with something to scroll shows it, so a window can get its bars
+without the styles; `ShowScrollBar` shows and hides them (the window keeps its size; the client area gives
+or takes the room and gets a `WM_SIZE`). The mouse on a bar never reaches the program as a client click; the
+repeat timer is internal (the program sees no `WM_TIMER`). Not there: the non-client messages
+(`WM_NCHITTEST`, `WM_NCLBUTTONDOWN`, `WM_NCPAINT`, `WM_NCCALCSIZE` are not sent; `DefWindowProc` does the work
+inside the runtime), `SB_BOTH` for `SetScrollInfo`, `GetScrollBarInfo`, scrolling the pixels (`ScrollWindow` is
+the program's job), the mouse wheel and the keyboard (a window with bars does not react to them by itself).
 
 A combo box follows Windows' layout rule: the height given to `CreateWindow` is the height of the drop-down
 list plus the field, but the window is only the field's height (20 pixels) while closed, so it
@@ -463,6 +477,10 @@ virtual FAT drive is not a good place for that). It runs, on the real desktop:
   arrows and the track, drags the thumb, clicks a disabled arrow and uses Home/End/PageDown/Down/Up; pixels
   show the thumb at the bottom after the drag; the program counts the notifications and checks the
   scroll API (17 checks), exit code = bit mask of failures;
+- `WINSBAR.EXE` (`tests/winsbar.c`): `WS_VSCROLL | WS_HSCROLL` on a top-level window and a child window. The kernel
+  clicks the arrows and the track, drags the thumb, clicks the corner, the client area and the child's bar,
+  hides the vertical bar with a key and shows it again; pixels show the bars, the thumb, the content
+  moved by the program and the client area taking the room back; 15 checks, exit code = bit mask of failures;
 - `WINBMP.EXE` (`tests/winbmp.c`, `winbmp.rc`, `pic.bmp`): memory DCs and bitmaps: raster operations,
   stretching and mirroring, DIB sections, `SetDIBits`/`GetDIBits`/`StretchDIBits`, a bitmap resource,
   text into a bitmap, a monochrome bitmap. 30 checks read pixels back from memory DCs; the kernel

@@ -2448,6 +2448,14 @@ static int cond_cmb_b_closed(void) { return syswin_test_pixel(300, 60) == 0x00C8
 static int cond_scr_track(void) { return syswin_test_pixel(18, 50) == 0x00F0F0F0 && syswin_test_pixel(18, 137) != 0x00F0F0F0; }       // the thumb is at the bottom
 static int cond_scr_thumb_bottom(void) { return syswin_test_pixel(18, 137) == 0x00CDCDCD; }
 static int cond_scr_glyph(void) { return syswin_test_pixel(18, 12) == 0x00000000 || syswin_test_pixel(18, 11) == 0x00000000; }       // the up arrow's triangle
+// WINSBAR.EXE: frame scroll bars. Client 387 x 274 in a 404 x 291 surface; the vertical bar is at x 387..404, the horizontal at y 274..291.
+static int cond_sbar_drawn(void) {
+  return syswin_test_pixel(395, 100) == 0x00F0F0F0 && syswin_test_pixel(395, 282) == 0x00F0F0F0 &&      // the window's two bars (and the corner)
+         syswin_test_pixel(300, 60) == 0x00008000 && syswin_test_pixel(361, 60) == 0x00F0F0F0;          // a child window and its bar
+}
+static int cond_sbar_thumb_bottom(void) { return syswin_test_pixel(395, 245) == 0x00CDCDCD && syswin_test_pixel(395, 100) == 0x00F0F0F0; }
+static int cond_sbar_marker(void) { return syswin_test_pixel(24, 200) == 0x00FF0000; }        // the program moved its marker (vertical 90, horizontal 1)
+static int cond_sbar_hidden(void) { return syswin_test_pixel(395, 245) == 0x00C8DCFF; }       // the bar went away, the client area took its place
 // WINBMP.EXE: blits from memory DCs and a bitmap resource onto the window.
 static int cond_bmp_canvas(void) { return syswin_test_pixel(15, 15) == 0x00FF0000 && syswin_test_pixel(45, 15) == 0x000000FF; }       // a 40x30 canvas, red | blue
 static int cond_bmp_pic(void) {                       // the 4x2 resource at 20x: red green blue yellow / cyan . . black
@@ -2744,6 +2752,42 @@ static int pe_supervisor_task(void *arg) {
     console_printf("[PE] WINSCROLL failed checks mask: 0x%x\r\n", (unsigned)code);
   }
   failures += pe_expect(pe_wait_for(cond_pe_no_windows, 500), "the scroll bar window was released");
+
+  // Scroll bars in the frame of a window and of a child window.
+  while (desktop_loop_count() < 3) {
+    wait_one_tick();
+  }
+  h = process_spawn("/APPS/WINSBAR.EXE");
+  failures += pe_expect(h >= 0 && pe_wait_for(cond_pe_window, 500), "WINSBAR.EXE: its window appeared");
+  failures += pe_expect(pe_wait_for(cond_sbar_drawn, 500), "window scroll bars: both bars of the window and the bar of a child window were drawn");
+  pe_click(395, 266);                                                    // the vertical bar's down arrow
+  pe_pause(4);
+  pe_click(395, 200);                                                    // its track below the thumb
+  pe_pause(4);
+  syswin_test_inject(SYSWIN_EV_MOUSE_DOWN, 395, 55, 0);                 // the thumb ...
+  pe_move(395, 150);
+  pe_move(395, 270);                                                     // ... dragged to the bottom
+  syswin_test_inject(SYSWIN_EV_MOUSE_UP, 395, 270, 0);
+  failures += pe_expect(pe_wait_for(cond_sbar_thumb_bottom, 500), "window scroll bars: the thumb followed the drag");
+  pe_click(380, 282);                                                    // the horizontal bar's right arrow
+  failures += pe_expect(pe_wait_for(cond_sbar_marker, 500), "window scroll bars: the program scrolled its content (marker moved)");
+  pe_click(395, 282);                                                    // the corner: nothing
+  pe_click(100, 100);                                                    // the client area: reaches the program
+  pe_click(361, 112);                                                    // the child window's own bar: line down
+  pe_pause(6);
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 'h');                         // the program hides its vertical bar
+  failures += pe_expect(pe_wait_for(cond_sbar_hidden, 500), "window scroll bars: hiding a bar gave its room back to the client area");
+  syswin_test_inject(SYSWIN_EV_KEY, 0, 0, 's');                         // and shows it again
+  failures += pe_expect(pe_wait_for(cond_sbar_thumb_bottom, 500), "window scroll bars: shown again with its position kept");
+  pe_pause(4);
+  syswin_test_inject(SYSWIN_EV_CLOSE, 0, 0, 0);
+  code = 0xFFFFFFFFULL;
+  failures += pe_expect(h >= 0 && process_wait(h, &code) == PROCESS_OK && code == 0,
+                        "window scroll bars: every check in the program passed (exit code = failed checks bit mask)");
+  if (code != 0) {
+    console_printf("[PE] WINSBAR failed checks mask: 0x%x\r\n", (unsigned)code);
+  }
+  failures += pe_expect(pe_wait_for(cond_pe_no_windows, 500), "the frame scroll bar window was released");
 
   // Bitmaps: memory DCs, raster operations, DIBs and a bitmap resource.
   while (desktop_loop_count() < 3) {
