@@ -210,7 +210,9 @@ typedef struct {
   int edge[STB_MAX];          // right edge of each part, -1 = the right end of the bar
   char txt[STB_MAX][96];
   int type[STB_MAX];
+  ULONG_PTR data[STB_MAX];    // SBT_OWNERDRAW: the item data
   int simple, minh;
+  COLORREF bk;                // CLR_DEFAULT = the button face
   char stxt[96];
 } stb_t;
 
@@ -224,8 +226,26 @@ static void stb_rect(HWND h, const stb_t *s, int i, RECT *r) {
   r->bottom = c.bottom;
 }
 
+// The text of a part is up to three pieces split by tabs: "left\tcentred\tright". With no tab it is all left-aligned.
+static void stb_text(HDC dc, int pl, int pr, int hh, const char *s) {
+  int lo = pl + 4, hi = pr - 4, room = (hi - lo) / 8, i = 0, k;
+
+  for (k = 0; k < 3; ++k) {
+    const char *piece = s + i;
+    int n, x;
+
+    while (s[i] != 0 && s[i] != '\t') ++i;
+    n = (int)(s + i - piece);
+    if (n > room) n = room > 0 ? room : 0;
+    x = k == 0 ? lo : (k == 1 ? (lo + hi - n * 8) / 2 : hi - n * 8);
+    if (n > 0) text(dc, x, (hh - 8) / 2, piece, n, RGB(0, 0, 0));
+    if (s[i] != '\t') break;
+    ++i;
+  }
+}
+
 static void stb_pane(HDC dc, int l, int r, int hh, int last, const char *s, int type) {
-  int pl = l == 0 ? 2 : l + 1, pr = r - (last ? 2 : 1), n, room;
+  int pl = l == 0 ? 2 : l + 1, pr = r - (last ? 2 : 1);
 
   if (!(type & SBT_NOBORDERS)) {
     fill(dc, pl, 2, pr, 3, (type & SBT_POPOUT) ? HI : LO);        // sunken, or raised with SBT_POPOUT
@@ -233,10 +253,7 @@ static void stb_pane(HDC dc, int l, int r, int hh, int last, const char *s, int 
     fill(dc, pl, hh - 3, pr, hh - 2, (type & SBT_POPOUT) ? LO : HI);
     fill(dc, pr - 1, 2, pr, hh - 2, (type & SBT_POPOUT) ? LO : HI);
   }
-  n = slen(s);
-  room = (pr - pl - 8) / 8;
-  if (n > room) n = room > 0 ? room : 0;
-  text(dc, pl + 4, (hh - 8) / 2, s, n, RGB(0, 0, 0));
+  stb_text(dc, pl, pr, hh, s);
 }
 
 static void stb_paint(HWND h, stb_t *s) {
@@ -246,13 +263,31 @@ static void stb_paint(HWND h, stb_t *s) {
   int i;
 
   GetClientRect(h, &c);
-  fill(dc, 0, 0, c.right, c.bottom, face());
+  fill(dc, 0, 0, c.right, c.bottom, s->bk == CLR_DEFAULT ? face() : s->bk);
   if (s->simple) {
     stb_pane(dc, 0, c.right, c.bottom, 1, s->stxt, 0);
   } else {
     for (i = 0; i < s->n; ++i) {
       stb_rect(h, s, i, &pr);
-      stb_pane(dc, pr.left, pr.right, c.bottom, i == s->n - 1, s->txt[i], s->type[i]);
+      if (s->type[i] & SBT_OWNERDRAW) {                             // the parent draws the inside of the part
+        DRAWITEMSTRUCT di;
+
+        rt_memset(&di, 0, sizeof(di));
+        di.CtlType = ODT_STATIC;
+        di.CtlID = (UINT)GetDlgCtrlID(h);
+        di.itemID = (UINT)i;
+        di.itemAction = ODA_DRAWENTIRE;
+        di.hwndItem = h;
+        di.hDC = dc;
+        di.rcItem.left = pr.left + 2;
+        di.rcItem.top = 3;
+        di.rcItem.right = pr.right - 2;
+        di.rcItem.bottom = c.bottom - 3;
+        di.itemData = s->data[i];
+        SendMessageA(GetParent(h), WM_DRAWITEM, di.CtlID, (LPARAM)&di);
+      } else {
+        stb_pane(dc, pr.left, pr.right, c.bottom, i == s->n - 1, s->txt[i], s->type[i]);
+      }
     }
   }
   if (style_of(h) & SBARS_SIZEGRIP) {
@@ -289,9 +324,27 @@ static void stb_settext(stb_t *s, int part, const char *t) {
     return;
   }
   if (i < s->n) {
-    scopy(s->txt[i], t, sizeof(s->txt[i]));
+    if (type & SBT_OWNERDRAW) {
+      s->txt[i][0] = 0;
+      s->data[i] = (ULONG_PTR)t;                                  // lParam is the item data, not a string
+    } else {
+      scopy(s->txt[i], t, sizeof(s->txt[i]));
+    }
     s->type[i] = type;
   }
+}
+
+// The part under x (-1: none), for NM_CLICK and NM_DBLCLK.
+static int stb_hit(HWND h, const stb_t *s, int x) {
+  RECT r;
+  int i;
+
+  if (s->simple) return 255;
+  for (i = 0; i < s->n; ++i) {
+    stb_rect(h, s, i, &r);
+    if (x >= r.left && x < r.right) return i;
+  }
+  return -1;
 }
 
 static LRESULT CALLBACK statusbar_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
@@ -307,6 +360,7 @@ static LRESULT CALLBACK statusbar_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
       rt_memset(s, 0, sizeof(*s));
       s->n = 1;
       s->edge[0] = -1;
+      s->bk = CLR_DEFAULT;
       rt_wnd_set_ctl(h, s);
       return 1;
     case WM_NCDESTROY:
@@ -330,6 +384,24 @@ static LRESULT CALLBACK statusbar_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
       if (s != 0) stb_autosize(h, s);
       InvalidateRect(h, 0, FALSE);
       return 0;
+    case WM_LBUTTONDOWN: case WM_LBUTTONDBLCLK:
+      if (s != 0) {
+        NMMOUSE nm;
+
+        rt_memset(&nm, 0, sizeof(nm));
+        nm.dwItemSpec = (DWORD_PTR)stb_hit(h, s, sx(lp));
+        nm.pt.x = sx(lp);
+        nm.pt.y = sy(lp);
+        nm.dwHitInfo = 0;
+        notify(h, m == WM_LBUTTONDOWN ? NM_CLICK : NM_DBLCLK, &nm, sizeof(nm));
+      }
+      return 0;
+    case SB_SETBKCOLOR:
+      if (s == 0) return CLR_DEFAULT;
+      i = (int)s->bk;
+      s->bk = (COLORREF)lp;
+      InvalidateRect(h, 0, FALSE);
+      return (LRESULT)(COLORREF)i;
     case WM_SETTEXT:
       if (s == 0) return FALSE;
       scopy(s->txt[0], (const char *)lp, sizeof(s->txt[0]));
@@ -381,6 +453,9 @@ static LRESULT CALLBACK statusbar_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         type = s->type[i];
       } else {
         return 0;
+      }
+      if (type & SBT_OWNERDRAW) {                                 // the item data comes back instead of the text
+        return (LRESULT)s->data[i];
       }
       if (m == SB_GETTEXTA && lp != 0) scopy((char *)lp, t, 96);
       return (LRESULT)(slen(t) | (type << 16));
@@ -967,12 +1042,20 @@ static LRESULT CALLBACK updown_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
 #define TAB_H 22
 
 typedef struct {
-  int n, sel;
+  int n, sel, focus;
   char txt[TAB_MAX][64];
   LPARAM lp[TAB_MAX];
   int img[TAB_MAX];           // image index in `il`, -1 = none
   HIMAGELIST il;
+  int fixw, fixh;             // TCM_SETITEMSIZE (TCS_FIXEDWIDTH: every tab is fixw wide); fixh 0 = automatic
+  int padx, pady, minw;       // TCM_SETPADDING, TCM_SETMINTABWIDTH (-1 = none)
 } tab_t;
+
+// Where the tabs are: computed from the items and the window's size by tab_layout.
+typedef struct {
+  RECT rc[TAB_MAX];           // the full cell of tab i (before an unselected tab's top is cut)
+  int rows, th, bottom, buttons;
+} tab_lay_t;
 
 static int tab_iw(const tab_t *t, int i) {
   int w = 0, h = 0;
@@ -981,60 +1064,166 @@ static int tab_iw(const tab_t *t, int i) {
   return w > 0 ? w + 4 : 0;                                   // an image and the gap after it
 }
 
-static int tab_width(const tab_t *t, int i) { return slen(t->txt[i]) * 8 + 16 + tab_iw(t, i); }
+static int tab_width(HWND h, const tab_t *t, int i) {
+  int w;
 
-// Tab i: unselected tabs are two pixels shorter, so their top is lower.
-static void tab_rect(const tab_t *t, int i, RECT *r) {
-  int k, l = 2;
-
-  for (k = 0; k < i; ++k) l += tab_width(t, k);
-  SetRect(r, l, 0, l + tab_width(t, i), TAB_H);
+  if ((style_of(h) & TCS_FIXEDWIDTH) && t->fixw > 0) return t->fixw;
+  w = slen(t->txt[i]) * 8 + 2 * t->padx + tab_iw(t, i);
+  return w < t->minw ? t->minw : w;
 }
 
-static int tab_hit(const tab_t *t, int x, int y) {
+// A row of tabs wraps with TCS_MULTILINE. The row holding the selected tab is the one next to the page, the rows
+// after it are above it (at the far edge) and the rows before it come after those, as on Windows. Unless
+// TCS_RAGGEDRIGHT is set, the tabs of each row are widened to fill the width.
+static void tab_layout(HWND h, const tab_t *t, tab_lay_t *L) {
+  DWORD st = style_of(h);
+  RECT c;
+  int i, x = 2, row = 0, rows[TAB_MAX], first = 0, selrow, gap;
+
+  GetClientRect(h, &c);
+  L->th = t->fixh > 0 ? t->fixh : 8 + 2 * t->pady;
+  L->bottom = (st & TCS_BOTTOM) != 0;
+  L->buttons = (st & TCS_BUTTONS) != 0;
+  gap = L->buttons ? 2 : 0;
+  for (i = 0; i < t->n; ++i) {
+    int w = tab_width(h, t, i);
+
+    if ((st & TCS_MULTILINE) && i > first && x + w > c.right - 2) {
+      ++row;
+      first = i;
+      x = 2;
+    }
+    rows[i] = row;
+    L->rc[i].left = x;
+    L->rc[i].right = x + w;
+    x += w + gap;
+  }
+  L->rows = t->n > 0 ? row + 1 : 1;
+  if ((st & TCS_MULTILINE) && !(st & TCS_RAGGEDRIGHT) && !((st & TCS_FIXEDWIDTH) && t->fixw > 0) && L->rows > 1) {
+    int a = 0;
+
+    while (a < t->n) {                                         // stretch the tabs [a, e) of one row
+      int e = a, extra, k, add = 0;
+
+      while (e < t->n && rows[e] == rows[a]) ++e;
+      extra = c.right - 2 - (L->rc[e - 1].right + 0);
+      for (k = a; k < e; ++k) {
+        int share = extra > 0 ? (extra * (k - a + 1)) / (e - a) : 0;
+
+        L->rc[k].left += add;
+        L->rc[k].right += share;
+        add = share;
+      }
+      a = e;
+    }
+  }
+  selrow = t->sel >= 0 && t->sel < t->n ? rows[t->sel] : L->rows - 1;
+  for (i = 0; i < t->n; ++i) {
+    int slot = rows[i] > selrow ? rows[i] - selrow - 1 : rows[i] + L->rows - selrow - 1;   // 0 = far from the page
+    int y = L->bottom ? c.bottom - L->rows * L->th + (L->rows - 1 - slot) * L->th : slot * L->th;
+
+    L->rc[i].top = y;
+    L->rc[i].bottom = y + L->th;
+  }
+}
+
+// The visible part of tab i: an unselected tab is two pixels shorter at its far edge.
+static void tab_visible(const tab_lay_t *L, int sel, int i, RECT *r) {
+  *r = L->rc[i];
+  if (L->buttons || i == sel) return;
+  if (L->bottom) r->bottom -= 2;
+  else r->top += 2;
+}
+
+static int tab_hit(HWND h, const tab_t *t, int x, int y) {
+  tab_lay_t L;
   int i;
 
+  tab_layout(h, t, &L);
   for (i = 0; i < t->n; ++i) {
     RECT r;
 
-    tab_rect(t, i, &r);
-    if (x >= r.left && x < r.right && y >= (i == t->sel ? 0 : 2) && y < TAB_H) {
+    tab_visible(&L, t->sel, i, &r);
+    if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) {
       return i;
     }
   }
   return -1;
 }
 
+// Fills rows t..b (0 = the far edge of the tab, th = the edge next to the page) of the tab whose cell is `cell`.
+static void tab_fill(HDC dc, const RECT *cell, int bottom, int l, int t, int r, int b, COLORREF c) {
+  int th = cell->bottom - cell->top;
+
+  if (bottom) fill(dc, l, cell->top + th - b, r, cell->top + th - t, c);
+  else fill(dc, l, cell->top + t, r, cell->top + b, c);
+}
+
 static void tab_paint(HWND h, tab_t *t) {
   PAINTSTRUCT ps;
   HDC dc = BeginPaint(h, &ps);
-  RECT c, r;
-  int i;
+  tab_lay_t L;
+  RECT c;
+  int i, band, ptop, pbot;
 
   GetClientRect(h, &c);
+  tab_layout(h, t, &L);
+  band = L.rows * L.th;
   fill(dc, 0, 0, c.right, c.bottom, face());
-  fill(dc, 0, TAB_H - 1, c.right - 1, TAB_H, HI);                // the page below the tabs
-  fill(dc, 0, TAB_H - 1, 1, c.bottom - 1, HI);
-  fill(dc, 0, c.bottom - 1, c.right, c.bottom, DK);
-  fill(dc, c.right - 1, TAB_H - 1, c.right, c.bottom, DK);
-  for (i = 0; i < t->n; ++i) {
-    int top = i == t->sel ? 0 : 2, n = slen(t->txt[i]);
-
-    tab_rect(t, i, &r);
-    fill(dc, r.left, top, r.right, TAB_H, face());
-    fill(dc, r.left, top, r.right - 1, top + 1, HI);
-    fill(dc, r.left, top, r.left + 1, TAB_H, HI);
-    fill(dc, r.right - 1, top, r.right, TAB_H - 1, DK);
-    if (i == t->sel) {
-      fill(dc, r.left + 1, TAB_H - 1, r.right - 1, TAB_H, face());       // joined to the page
+  if (!L.buttons) {                                              // the page next to the tabs
+    ptop = L.bottom ? 0 : band - 1;
+    pbot = L.bottom ? c.bottom - band + 1 : c.bottom;
+    fill(dc, 0, ptop, c.right - 1, ptop + 1, HI);
+    fill(dc, 0, ptop, 1, pbot - 1, HI);
+    fill(dc, 0, pbot - 1, c.right, pbot, DK);
+    fill(dc, c.right - 1, ptop, c.right, pbot, DK);
+    if (L.bottom) {
+      fill(dc, 0, pbot - 1, c.right, pbot, DK);
+      fill(dc, 0, ptop, c.right - 1, ptop + 1, HI);
     }
+  }
+  for (i = 0; i < t->n; ++i) {
+    int far_ = (i == t->sel || L.buttons) ? 0 : 2, n = slen(t->txt[i]), th = L.th, ty;
+    const RECT *r = &L.rc[i];
+
+    if (L.buttons) {
+      bevel(dc, r->left, r->top, r->right, r->bottom, i == t->sel);
+      fill(dc, r->left + 1, r->top + 1, r->right - 1, r->bottom - 1, i == t->sel ? RGB(248, 248, 248) : face());
+      far_ = i == t->sel ? 1 : 0;
+    } else {
+      tab_fill(dc, r, L.bottom, r->left, far_, r->right, th, face());
+      if (!L.bottom) {
+        tab_fill(dc, r, 0, r->left, far_, r->right - 1, far_ + 1, HI);
+        tab_fill(dc, r, 0, r->left, far_, r->left + 1, th, HI);
+        tab_fill(dc, r, 0, r->right - 1, far_, r->right, th - 1, DK);
+        if (i == t->sel) tab_fill(dc, r, 0, r->left + 1, th - 1, r->right - 1, th, face());   // joined to the page
+      } else {                                                    // the same, mirrored: the far edge is the bottom
+        tab_fill(dc, r, 1, r->left, far_, r->right - 1, far_ + 1, DK);
+        tab_fill(dc, r, 1, r->left, far_, r->left + 1, th, HI);
+        tab_fill(dc, r, 1, r->right - 1, far_, r->right, th - 1, DK);
+        if (i == t->sel) tab_fill(dc, r, 1, r->left + 1, th - 1, r->right - 1, th, face());
+      }
+    }
+    ty = L.bottom && !L.buttons ? r->top + (th - far_ - 8) / 2 : r->top + far_ + (th - far_ - 8) / 2;
     if (tab_iw(t, i) > 0) {
       int iw = 0, ih = 0;
 
       ImageList_GetIconSize(t->il, &iw, &ih);
-      ImageList_Draw(t->il, t->img[i], dc, r.left + 6, top + (TAB_H - top - ih) / 2, ILD_TRANSPARENT);
+      ImageList_Draw(t->il, t->img[i], dc, r->left + t->padx - 2, ty + 4 - ih / 2, ILD_TRANSPARENT);
     }
-    text(dc, r.left + 8 + tab_iw(t, i), top + (TAB_H - top - 8) / 2, t->txt[i], n, RGB(0, 0, 0));
+    text(dc, r->left + t->padx + tab_iw(t, i), ty, t->txt[i], n, RGB(0, 0, 0));
+    if (i == t->sel && GetFocus() == h) {                         // the focus: a dotted frame round the label
+      int x0 = r->left + t->padx - 2, x1 = r->left + t->padx + tab_iw(t, i) + n * 8 + 2, k;
+
+      for (k = x0; k < x1; k += 2) {
+        fill(dc, k, ty - 2, k + 1, ty - 1, RGB(0, 0, 0));
+        fill(dc, k, ty + 9, k + 1, ty + 10, RGB(0, 0, 0));
+      }
+      for (k = ty - 2; k < ty + 10; k += 2) {
+        fill(dc, x0, k, x0 + 1, k + 1, RGB(0, 0, 0));
+        fill(dc, x1 - 1, k, x1, k + 1, RGB(0, 0, 0));
+      }
+    }
   }
   EndPaint(h, &ps);
 }
@@ -1063,6 +1252,10 @@ static LRESULT CALLBACK tab_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
       }
       rt_memset(t, 0, sizeof(*t));
       t->sel = -1;
+      t->focus = -1;
+      t->padx = 8;
+      t->pady = 7;
+      t->minw = -1;
       rt_wnd_set_ctl(h, t);
       return 1;
     case WM_NCDESTROY:
@@ -1074,27 +1267,75 @@ static LRESULT CALLBACK tab_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_PAINT:
       if (t != 0) tab_paint(h, t);
       return 0;
-    case WM_SIZE:
+    case WM_SIZE: case WM_SETFOCUS: case WM_KILLFOCUS:
       InvalidateRect(h, 0, FALSE);
+      return 0;
+    case WM_GETDLGCODE:
+      return DLGC_WANTARROWS;
+    case WM_KEYDOWN:                                              // Left / Right, and Ctrl+Tab / Ctrl+Shift+Tab, select
+      if (t != 0 && t->n > 0) {
+        int ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0, shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        int cur = t->sel < 0 ? 0 : t->sel;
+
+        if (wp == VK_RIGHT || (wp == VK_TAB && ctrl && !shift)) {
+          tab_select(h, t, wp == VK_TAB ? (cur + 1) % t->n : cur + 1);
+        } else if (wp == VK_LEFT || (wp == VK_TAB && ctrl && shift)) {
+          tab_select(h, t, wp == VK_TAB ? (cur + t->n - 1) % t->n : cur - 1);
+        }
+      }
       return 0;
     case WM_LBUTTONDOWN: case WM_LBUTTONDBLCLK:
       if (t != 0) {
         SetFocus(h);
-        tab_select(h, t, tab_hit(t, sx(lp), sy(lp)));
+        tab_select(h, t, tab_hit(h, t, sx(lp), sy(lp)));
       }
       return 0;
     case TCM_GETITEMCOUNT:
       return t != 0 ? t->n : 0;
-    case TCM_GETROWCOUNT:
-      return 1;
+    case TCM_GETROWCOUNT: {
+      tab_lay_t L;
+
+      if (t == 0) return 0;
+      tab_layout(h, t, &L);
+      return L.rows;
+    }
     case TCM_GETCURSEL: case TCM_GETCURFOCUS:
       return t != 0 ? t->sel : -1;
+    case TCM_SETCURFOCUS:                                         // without TCS_BUTTONS the tab is selected
+      if (t != 0 && (int)wp >= 0 && (int)wp < t->n) tab_select(h, t, (int)wp);
+      return 0;
     case TCM_SETCURSEL:
       if (t == 0 || (int)wp >= t->n || (int)wp < -1) return -1;
       i = t->sel;
       t->sel = (int)wp;
       InvalidateRect(h, 0, FALSE);
       return i;
+    case TCM_SETITEMSIZE: {                                       // returns the old size; 0 height = automatic
+      int old;
+
+      if (t == 0) return 0;
+      old = MAKELONG(t->fixw, t->fixh > 0 ? t->fixh : 8 + 2 * t->pady);
+      t->fixw = (short)LOWORD(lp);
+      t->fixh = (short)HIWORD(lp);
+      InvalidateRect(h, 0, TRUE);
+      return old;
+    }
+    case TCM_SETPADDING:
+      if (t != 0) {
+        t->padx = (short)LOWORD(lp);
+        t->pady = (short)HIWORD(lp);
+        InvalidateRect(h, 0, TRUE);
+      }
+      return 0;
+    case TCM_SETMINTABWIDTH: {
+      int old;
+
+      if (t == 0) return -1;
+      old = t->minw;
+      t->minw = (int)lp;
+      InvalidateRect(h, 0, TRUE);
+      return old;
+    }
     case TCM_INSERTITEMA: {
       const TCITEMA *it = (const TCITEMA *)lp;
       int at = (int)wp;
@@ -1164,33 +1405,38 @@ static LRESULT CALLBACK tab_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
       }
       InvalidateRect(h, 0, FALSE);
       return TRUE;
-    case TCM_GETITEMRECT:
+    case TCM_GETITEMRECT: {
+      tab_lay_t L;
+
       if (t == 0 || lp == 0 || (int)wp < 0 || (int)wp >= t->n) return FALSE;
-      tab_rect(t, (int)wp, (RECT *)lp);
-      ((RECT *)lp)->top = (int)wp == t->sel ? 0 : 2;
+      tab_layout(h, t, &L);
+      tab_visible(&L, t->sel, (int)wp, (RECT *)lp);
       return TRUE;
+    }
     case TCM_HITTEST: {
       TCHITTESTINFO *hi = (TCHITTESTINFO *)lp;
 
       if (t == 0 || hi == 0) return -1;
-      i = tab_hit(t, hi->pt.x, hi->pt.y);
+      i = tab_hit(h, t, hi->pt.x, hi->pt.y);
       hi->flags = i >= 0 ? TCHT_ONITEM : TCHT_NOWHERE;
       return i;
     }
-    case TCM_ADJUSTRECT: {
+    case TCM_ADJUSTRECT: {                                         // the band of tabs is rows * the tab height
       RECT *r = (RECT *)lp;
+      tab_lay_t L;
+      int band, sign = wp ? -1 : 1;
 
-      if (r == 0) return 0;
-      if (wp) {                                                    // display area -> the window rectangle that has it
-        r->left -= 3;
-        r->top -= TAB_H + 2;
-        r->right += 3;
-        r->bottom += 3;
-      } else {                                                     // window rectangle -> the display area
-        r->left += 3;
-        r->top += TAB_H + 2;
-        r->right -= 3;
-        r->bottom -= 3;
+      if (r == 0 || t == 0) return 0;
+      tab_layout(h, t, &L);
+      band = L.rows * L.th + 2;
+      r->left += 3 * sign;
+      r->right -= 3 * sign;
+      if (L.bottom) {                                              // display area -> window rectangle: bigger
+        r->top += 3 * sign;
+        r->bottom -= band * sign;
+      } else {
+        r->top += band * sign;
+        r->bottom -= 3 * sign;
       }
       return 0;
     }

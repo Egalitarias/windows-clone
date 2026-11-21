@@ -186,7 +186,9 @@ Link with `comctl32.lib`. They draw with the 8x8 font and the same 3D look as th
   `PBS_VERTICAL` (without smooth the bar is made of 8-pixel blocks).
 - **Status bar** (`msctls_statusbar32`, `CreateStatusWindowA`): parts (`SB_SETPARTS`, `GETPARTS`, `GETRECT`), text
   per part (`SB_SETTEXT`, `GETTEXT`, `GETTEXTLENGTH`; `SBT_NOBORDERS`, `SBT_POPOUT`), simple mode, `WM_SETTEXT`
-  for the first part, `SBARS_SIZEGRIP`. The bar puts itself against the bottom (`CCS_TOP`: the top) of its
+  for the first part, `SBARS_SIZEGRIP`; text split by tabs is left / centred / right-aligned; `SBT_OWNERDRAW` parts
+  (`WM_DRAWITEM`, the item data comes back from `SB_GETTEXT`); `SB_SETBKCOLOR`; `NM_CLICK` / `NM_DBLCLK` with the part in
+  `NMMOUSE.dwItemSpec`. The bar puts itself against the bottom (`CCS_TOP`: the top) of its
   parent, 22 pixels high, when it is created and whenever it gets `WM_SIZE`, so the parent forwards its own
   `WM_SIZE` as usual; `CCS_NORESIZE` turns that off.
 - **Trackbar** (`msctls_trackbar32`): range, position, page and line size, tick frequency, `TBS_AUTOTICKS`,
@@ -198,7 +200,10 @@ Link with `comctl32.lib`. They draw with the 8x8 font and the same 3D look as th
   `UDS_SETBUDDYINT` (the buddy's text is the position, in both directions), `UDS_WRAP`, `UDS_HORZ`. A click
   (and the 400 ms / 100 ms auto-repeat) sends `WM_NOTIFY` `UDN_DELTAPOS` (the parent can cancel it or change
   `iDelta`), then `WM_VSCROLL` / `WM_HSCROLL` with `SB_THUMBPOSITION`, and `SB_ENDSCROLL` on release.
-- **Tab control** (`SysTabControl32`): up to 32 tabs in one row (no scrolling, no `TCS_MULTILINE`); images from an image list (`TCM_SETIMAGELIST`, `TCIF_IMAGE`):
+- **Tab control** (`SysTabControl32`): up to 32 tabs; `TCS_MULTILINE` rows (stretched unless `TCS_RAGGEDRIGHT`; the row of the
+  selected tab sits next to the page), `TCS_BOTTOM`, `TCS_BUTTONS`, `TCS_FIXEDWIDTH` with `TCM_SETITEMSIZE`, `TCM_SETPADDING`,
+  `TCM_SETMINTABWIDTH`, `TCM_SETCURFOCUS`, `TCM_GETROWCOUNT`; Left / Right and Ctrl+Tab select, the selected tab shows a
+  focus frame. No scrolling, no `TCS_VERTICAL`, no tab tips. Images from an image list (`TCM_SETIMAGELIST`, `TCIF_IMAGE`):
   `TCM_INSERTITEM`, `DELETEITEM`, `DELETEALLITEMS`, `GETITEM`, `SETITEM`, `GETITEMCOUNT`, `GETCURSEL`, `SETCURSEL`
   (no notification, as on Windows), `GETITEMRECT`, `HITTEST`, `ADJUSTRECT`. A click sends `TCN_SELCHANGING`
   (the parent can veto it) and `TCN_SELCHANGE` as `WM_NOTIFY`. The control does not hide or show pages: the
